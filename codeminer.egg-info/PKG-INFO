@@ -1,0 +1,22 @@
+Metadata-Version: 2.2
+Name: codeminer
+Version: 0.1.0
+Summary: A code analysis agent with graph-enhancement
+Author-email: Zhongming Yu <zhy025@ucsd.edu>
+License: MIT
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+Requires-Dist: networkx>=2.6.0
+Requires-Dist: matplotlib>=3.4.0
+Requires-Dist: pytest>=6.0.0
+Provides-Extra: dev
+Requires-Dist: black>=22.3.0; extra == "dev"
+Requires-Dist: isort>=5.10.1; extra == "dev"
+Requires-Dist: mypy>=0.950; extra == "dev"
+Requires-Dist: flake8>=4.0.1; extra == "dev"
+Provides-Extra: test
+Requires-Dist: pytest>=6.0.0; extra == "test"
+Requires-Dist: pytest-cov>=3.0.0; extra == "test"

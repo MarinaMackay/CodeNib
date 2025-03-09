@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codeminer"
+version = "0.1.0"
+description = "A code analysis agent with graph-enhancement"
+readme = "README.md"
+requires-python = ">=3.7"
+license = { text = "MIT" }
+authors = [{ name = "Zhongming Yu", email = "zhy025@ucsd.edu" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "networkx>=2.6.0",
+    "matplotlib>=3.4.0", # For visualization of graphs
+    "pytest>=6.0.0",     # For testing
+]
+
+[project.optional-dependencies]
+dev = ["black>=22.3.0", "isort>=5.10.1", "mypy>=0.950", "flake8>=4.0.1"]
+test = ["pytest>=6.0.0", "pytest-cov>=3.0.0"]
+
+[tool.pytest]
+testpaths = ["test"]
+python_files = "test_*.py"
