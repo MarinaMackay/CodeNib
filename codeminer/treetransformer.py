@@ -1,5 +1,8 @@
 import ast
 from collections import namedtuple
+from .log_utils import get_logger
+
+logger = get_logger(__name__)
 
 # Keep your existing definitions
 Loc = namedtuple("Loc", ["file_name", "node_name", "start_line", "end_line"])
@@ -63,26 +66,42 @@ class SymbolTable:
         """Resolve a call like 'a.xxx()' where a is an instance of class A"""
         # First get the type of the base variable
         base_type = self.get_variable_type(base_name, scope)
-
+        
         if not base_type:
+            # Check if base_name itself is an imported module alias
+            if base_name in self.imports:
+                imported_module = self.imports[base_name]
+                # Handle module.Class() pattern
+                module_parts = imported_module.split('.')
+                if len(module_parts) > 1:
+                    module_path = '/'.join(module_parts)
+                    return f"{module_path}.py::{attr_name}"
+                else:
+                    return f"{imported_module}.py::{attr_name}"
             return None
 
+        # Check if this is a direct method call on a known class
         result = self.get_method(base_type, attr_name)
-
-        # If not found and this is an imported class, we need to check
-        # if the class is imported from another module
-        if result is None and base_type in self.imports:
-            # The class may be imported from another module
-            imported_module = self.imports[base_type].split(".")[
-                0
-            ]  # Get the module name
-            print(
-                f"DEBUG: Looking for imported class {base_type} in module {imported_module}"
-            )
-            return f"my_project/{imported_module}.py::{base_type}::{attr_name}"
-
-        # Now look for the method in that class
-        return result
+        if result:
+            return result
+    
+        # Handle imported classes
+        if base_type in self.imports:
+            imported_path = self.imports[base_type]
+            # Handle nested modules like alg.alg.Alg
+            module_parts = imported_path.split('.')
+            
+            # Create proper file path from module parts
+            if len(module_parts) > 1:
+                # Handle case of nested modules
+                module_path = '/'.join(module_parts[:-1])
+                class_name = module_parts[-1]
+                return f"{module_path}.py::{class_name}::{attr_name}"
+            else:
+                # Simple import case
+                return f"{imported_path}.py::{base_type}::{attr_name}"
+                
+        return None
 
 
 class SymbolTableBuilder(ast.NodeVisitor):
@@ -165,6 +184,22 @@ class SymbolTableBuilder(ast.NodeVisitor):
             ):
                 var_type = node.value.func.id
 
+            # Add variable type to symbol table
+            if var_type:
+                self.symbol_table.add_variable(var_name, var_type, self.current_scope)
+            # Case: alg = AAA.Alg() - handling module attributes
+            elif isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute):
+                if isinstance(node.value.func.value, ast.Name):
+                    module_name = node.value.func.value.id
+                    class_name = node.value.func.attr
+                    
+                    # If the module is imported, track the variable as the class from that module
+                    if module_name in self.symbol_table.imports:
+                        imported_module = self.symbol_table.imports[module_name]
+                        var_type = class_name
+                        # Store the fully qualified class name for this variable
+                        self.symbol_table.add_import(var_type, f"{imported_module}.{class_name}")
+            
             # Add variable type to symbol table
             if var_type:
                 self.symbol_table.add_variable(var_name, var_type, self.current_scope)

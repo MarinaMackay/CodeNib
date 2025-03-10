@@ -4,4 +4,4 @@ my_project/
 *.json
 graph.png
 build/
-.egg-info/
+*.egg-info/
