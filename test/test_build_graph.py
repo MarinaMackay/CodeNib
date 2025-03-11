@@ -4,7 +4,7 @@ from codeminer import build_graph
 
 
 def test_build_graph():
-    repo_path = "./my_project"
+    repo_path = "./test_python_repo"
     # expand to full path
     repo_path = os.path.abspath(repo_path)
     build_graph(repo_path)
