@@ -1,11 +1,45 @@
 import ast
+import os
+import sys
 from collections import namedtuple
+
 from .log_utils import get_logger
 
 logger = get_logger(__name__)
 
 # Keep your existing definitions
 Loc = namedtuple("Loc", ["file_name", "node_name", "start_line", "end_line"])
+
+
+def is_local_module(module_name, repo_path):
+    """
+    Determine if a module is local to the repository (not a standard library or external package)
+
+    Args:
+        module_name: The module name (e.g., 'utils.helpers', 'os', 'numpy')
+        repo_path: The repository root path
+
+    Returns:
+        bool: True if the module is local to the repository, False otherwise
+    """
+    # First check standard library modules - these are definitely not local
+
+    if module_name in sys.stdlib_module_names:
+        return False
+
+    # Check if module exists as a directory or file in the repo
+    base_module = module_name.split(".")[0]  # Get the root module name
+
+    # Check if it's a directory package
+    if os.path.isdir(os.path.join(repo_path, base_module)):
+        return True
+
+    # Check if it's a .py file
+    if os.path.isfile(os.path.join(repo_path, f"{base_module}.py")):
+        return True
+
+    # If we get here, it's likely an external package
+    return False
 
 
 class SymbolTable:
@@ -43,9 +77,22 @@ class SymbolTable:
         if class_name in self.classes:
             self.classes[class_name]["attributes"].add(attr_name)
 
-    def add_import(self, name, import_path):
-        """Add an import to the symbol table"""
-        self.imports[name] = import_path
+    def add_import(self, name, import_path, is_local=True):
+        """
+        Add an import to the symbol table
+
+        Args:
+            name: The local name used for the import
+            import_path: The full import path
+            is_local: Whether this is a local module (not stdlib or external)
+        """
+        self.imports[name] = {"path": import_path, "is_local": is_local}
+
+    def get_import(self, name):
+        """Get information about an imported name"""
+        if name in self.imports:
+            return self.imports[name]
+        return None
 
     def get_variable_type(self, name, scope):
         """Get the type of a variable in a specific scope"""
@@ -62,19 +109,32 @@ class SymbolTable:
             return self.classes[class_name]["methods"][method_name]
         return None
 
-    def resolve_attribute_call(self, base_name, attr_name, scope, file_path):
+    def resolve_attribute_call(self, base_name, attr_name, scope):
         """Resolve a call like 'a.xxx()' where a is an instance of class A"""
         # First get the type of the base variable
         base_type = self.get_variable_type(base_name, scope)
-        
+
         if not base_type:
             # Check if base_name itself is an imported module alias
             if base_name in self.imports:
-                imported_module = self.imports[base_name]
+                import_info = self.imports[base_name]
+
+                # Skip external imports
+                if not import_info.get("is_local", True):
+                    logger.debug(
+                        f"Skipping external module reference: {base_name}.{attr_name}"
+                    )
+                    return None
+
+                imported_module = import_info["path"]
+                if base_name == "time":
+                    logger.info(
+                        f"Handling time module call: {base_name}.{attr_name}, imported as {imported_module}"
+                    )
                 # Handle module.Class() pattern
-                module_parts = imported_module.split('.')
+                module_parts = imported_module.split(".")
                 if len(module_parts) > 1:
-                    module_path = '/'.join(module_parts)
+                    module_path = "/".join(module_parts[:-1])
                     return f"{module_path}.py::{attr_name}"
                 else:
                     return f"{imported_module}.py::{attr_name}"
@@ -84,35 +144,43 @@ class SymbolTable:
         result = self.get_method(base_type, attr_name)
         if result:
             return result
-    
+
         # Handle imported classes
         if base_type in self.imports:
-            imported_path = self.imports[base_type]
+            import_info = self.imports[base_type]
+
+            # Skip external imports
+            if not import_info.get("is_local", True):
+                logger.debug(f"Skipping external class method: {base_type}.{attr_name}")
+                return None
+
+            imported_path = import_info["path"]
             # Handle nested modules like alg.alg.Alg
-            module_parts = imported_path.split('.')
-            
+            module_parts = imported_path.split(".")
+
             # Create proper file path from module parts
             if len(module_parts) > 1:
                 # Handle case of nested modules
-                module_path = '/'.join(module_parts[:-1])
+                module_path = "/".join(module_parts[:-1])
                 class_name = module_parts[-1]
                 return f"{module_path}.py::{class_name}::{attr_name}"
             else:
                 # Simple import case
                 return f"{imported_path}.py::{base_type}::{attr_name}"
-                
+
         return None
 
 
 class SymbolTableBuilder(ast.NodeVisitor):
     """Build a symbol table for the entire codebase"""
 
-    def __init__(self, file_path):
+    def __init__(self, file_path, repo_path=None):
         self.file_path = file_path
         self.symbol_table = SymbolTable()
         self.current_class = None
         self.current_function = None
         self.current_scope = file_path
+        self.repo_path = repo_path
 
     def visit_ClassDef(self, node):
         class_name = node.name
@@ -188,18 +256,24 @@ class SymbolTableBuilder(ast.NodeVisitor):
             if var_type:
                 self.symbol_table.add_variable(var_name, var_type, self.current_scope)
             # Case: alg = AAA.Alg() - handling module attributes
-            elif isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Attribute):
+            elif isinstance(node.value, ast.Call) and isinstance(
+                node.value.func, ast.Attribute
+            ):
                 if isinstance(node.value.func.value, ast.Name):
                     module_name = node.value.func.value.id
                     class_name = node.value.func.attr
-                    
+
                     # If the module is imported, track the variable as the class from that module
                     if module_name in self.symbol_table.imports:
                         imported_module = self.symbol_table.imports[module_name]
                         var_type = class_name
                         # Store the fully qualified class name for this variable
-                        self.symbol_table.add_import(var_type, f"{imported_module}.{class_name}")
-            
+                        self.symbol_table.add_variable(
+                            var_name,
+                            f"{imported_module['path']}::{var_type}",
+                            self.current_scope,
+                        )
+
             # Add variable type to symbol table
             if var_type:
                 self.symbol_table.add_variable(var_name, var_type, self.current_scope)
@@ -224,16 +298,23 @@ class SymbolTableBuilder(ast.NodeVisitor):
         for alias in node.names:
             imported_name = alias.name  # Full module name
             as_name = alias.asname or imported_name
-            self.symbol_table.add_import(as_name, imported_name)
+
+            # Add flag to indicate if this is a local import
+            is_local = is_local_module(imported_name, self.repo_path)
+            self.symbol_table.add_import(as_name, imported_name, is_local)
 
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node):
         """Track specific imports from a module."""
         module = node.module or ""
+
+        # Check if this is a local import
+        is_local = is_local_module(module, self.repo_path)
+
         for alias in node.names:
             imported_name = f"{module}.{alias.name}"
             as_name = alias.asname or alias.name
-            self.symbol_table.add_import(as_name, imported_name)
+            self.symbol_table.add_import(as_name, imported_name, is_local)
 
         self.generic_visit(node)

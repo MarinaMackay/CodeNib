@@ -1,6 +1,5 @@
 import ast
 import builtins
-import difflib
 import os
 from pprint import pprint
 from typing import Dict, List
@@ -48,6 +47,7 @@ class ReferenceVisitor(ast.NodeVisitor):
         function_definitions: Dict[str, List[str]],
         file_path: str,
         symbol_table: SymbolTable,
+        symbol_tables: Dict[str, SymbolTable],  # Added parameter
     ):
         self.graph = graph
         self.function_definitions = function_definitions
@@ -56,26 +56,7 @@ class ReferenceVisitor(ast.NodeVisitor):
         self.current_function = None
         self.current_scope = file_path
         self.symbol_table: SymbolTable = symbol_table
-        self.imports = {}  # Still track imports at this level for compatibility
-
-    def visit_Import(self, node):
-        """Track imported modules and their aliases."""
-        for alias in node.names:
-            imported_name = alias.name  # Full module name
-            as_name = alias.asname or imported_name
-            self.imports[as_name] = imported_name
-
-        self.generic_visit(node)
-
-    def visit_ImportFrom(self, node):
-        """Track specific imports from a module."""
-        module = node.module or ""
-        for alias in node.names:
-            imported_name = f"{module}.{alias.name}"
-            as_name = alias.asname or alias.name
-            self.imports[as_name] = imported_name
-
-        self.generic_visit(node)
+        self.symbol_tables = symbol_tables  # Access to all symbol tables
 
     def visit_FunctionDef(self, node):
         function_name = node.name
@@ -139,40 +120,83 @@ class ReferenceVisitor(ast.NodeVisitor):
         if function_name in all_builtins:
             return
 
-        # Check if it's an imported function/class
-        if function_name in self.imports:
-            import_module = self.imports[function_name]
-            # Handle imported function similar to your original code
-            parts = import_module.split(".")
-            callable_name = parts[-1]
-            module_name = "/".join(parts[:-1])
-            compare_str = f"{module_name}::{callable_name}"
+        caller = self.current_function
+        if not caller:
+            logger.debug(f"No current function when handling call to {function_name}")
+            return
 
-            if function_name in self.function_definitions:
-                callee_list = self.function_definitions[function_name]
-                # Find the most similar function in the callee_list
-                callee = difflib.get_close_matches(
-                    compare_str, callee_list, n=1, cutoff=0.0
-                )
-                if callee:
-                    callee = callee[0]
-                    caller = self.current_function
-                    if caller and callee:
+        logger.debug(f"Analyzing call to {function_name} in scope {self.current_scope}")
+
+        # Case 1: Local function call in the same file
+        if function_name in self.symbol_table.functions:
+            # Direct reference to a function in the same file
+            callee = self.symbol_table.functions[function_name]
+            logger.debug(f"Found local function {function_name} -> {callee}")
+            self.graph.add_edge(caller, callee, edge_type="references")
+            return
+
+        # Case 2: Imported function or class
+        if function_name in self.symbol_table.imports:
+            import_info = self.symbol_table.imports[function_name]
+
+            # Skip if this is an external import
+            if not import_info.get("is_local", True):
+                logger.debug(f"Skipping external import reference: {function_name}")
+                return
+
+            imported_path = import_info["path"]
+            module_parts = imported_path.split(".")
+
+            # Check if this is a class or function from another module
+            if len(module_parts) > 1:
+                # module_name = module_parts[0]  # Base module
+                imported_name = module_parts[-1]  # Actual entity name
+
+                # Look up the function/class in all symbol tables from other files
+                for file_path, sym_table in self.symbol_tables.items():
+                    # Check for function
+                    if imported_name in sym_table.functions:
+                        callee = sym_table.functions[imported_name]
+                        logger.debug(
+                            f"Found imported function {function_name} -> {callee}"
+                        )
                         self.graph.add_edge(caller, callee, edge_type="references")
+                        return
 
-        # Check local function definitions
-        elif function_name in self.function_definitions:
-            caller = self.current_function
-            callee_list = self.function_definitions[function_name]
+                    # Check for class constructor
+                    if imported_name in sym_table.classes:
+                        # This is a class constructor call
+                        class_node = f"{file_path}::{imported_name}"
+                        init_method = sym_table.get_method(imported_name, "__init__")
+                        if init_method:
+                            # Link to constructor if it exists
+                            callee = init_method
+                        else:
+                            # Link to class itself if no constructor
+                            callee = class_node
+                        logger.debug(
+                            f"Found imported class {function_name} -> {callee}"
+                        )
+                        self.graph.add_edge(caller, callee, edge_type="references")
+                        return
 
-            # Prefer functions in the same file
-            callee = difflib.get_close_matches(
-                self.current_file, callee_list, n=1, cutoff=0.0
-            )
-            if callee:
-                callee = callee[0]
-                if caller and callee:
-                    self.graph.add_edge(caller, callee, edge_type="references")
+        # Case 3: Class reference inside the file
+        for class_name, _ in self.symbol_table.classes.items():
+            if function_name == class_name:
+                # This is a class constructor call, e.g., `x = MyClass()`
+                class_node = f"{self.current_file}::{class_name}"
+                init_method = self.symbol_table.get_method(class_name, "__init__")
+                if init_method:
+                    # Link to constructor if it exists
+                    callee = init_method
+                else:
+                    # Link to class itself if no constructor
+                    callee = class_node
+                logger.debug(f"Found class constructor {function_name} -> {callee}")
+                self.graph.add_edge(caller, callee, edge_type="references")
+                return
+
+        logger.debug(f"Could not resolve function call: {function_name}")
 
     def _handle_attribute_call(self, base_name, method_name):
         """Handle method calls on objects: obj.method()"""
@@ -182,7 +206,7 @@ class ReferenceVisitor(ast.NodeVisitor):
 
         # Use the symbol table to resolve the method call
         resolved_method = self.symbol_table.resolve_attribute_call(
-            base_name, method_name, self.current_scope, self.current_file
+            base_name, method_name, self.current_scope
         )
         # debug
         logger.debug(
@@ -234,7 +258,9 @@ class ReferenceBuilder:
                     with open(file_path, "r") as f:
                         try:
                             tree = ast.parse(f.read())
-                            symbol_builder = SymbolTableBuilder(rel_file_path)
+                            symbol_builder = SymbolTableBuilder(
+                                rel_file_path, repo_path
+                            )
                             symbol_builder.visit(tree)
                             self.symbol_tables[rel_file_path] = (
                                 symbol_builder.symbol_table
@@ -271,6 +297,7 @@ class ReferenceBuilder:
                                 self.function_definitions,
                                 rel_file_path,
                                 symbol_table,
+                                self.symbol_tables,  # Pass all symbol tables
                             )
                             visitor.visit(tree)
                         except SyntaxError:
@@ -358,25 +385,6 @@ def build_graph(repo_path: str) -> nx.DiGraph:
     print("\nFunction definitions found:")
     pprint(function_definitions)
 
-    # Print the symbol tables
-    print("\nSymbol tables by file:")
-    for file_path, symbol_table in reference_builder.symbol_tables.items():
-
-        if file_path.startswith("my_project"):
-            print(f"\nFile: {file_path}")
-            print("  Classes:")
-            for class_name, class_info in symbol_table.classes.items():
-                print(f"    - {class_name}")
-                print(f"      Methods: {', '.join(class_info['methods'].keys())}")
-                print(f"      Attributes: {', '.join(class_info['attributes'])}")
-            print("  Functions:")
-            for func_name, _ in symbol_table.functions.items():
-                print(f"    - {func_name}")
-            print("  Variables with types:")
-            for (scope, var_name), var_type in symbol_table.variables.items():
-                if scope.startswith("my_project"):
-                    print(f"    - {var_name}: {var_type} (in {scope})")
-
     # # Save the graph to a file
     # nx.write_json_graph(graph, "graph.json")
     # print("Graph saved to graph.json")
@@ -386,9 +394,19 @@ def build_graph(repo_path: str) -> nx.DiGraph:
     method_calls = [
         (u, v)
         for u, v, d in graph.edges(data=True)
-        if d.get("edge_type") in ("method_call", "possible_method_call")
+        if d.get("edge_type") == "method_call"
     ]
     for caller, callee in method_calls:
+        print(f"  {caller} -> {callee}")
+
+    # Print detected references
+    print("\nFunction references detected:")
+    references = [
+        (u, v)
+        for u, v, d in graph.edges(data=True)
+        if d.get("edge_type") == "references"
+    ]
+    for caller, callee in references:
         print(f"  {caller} -> {callee}")
 
     return graph
