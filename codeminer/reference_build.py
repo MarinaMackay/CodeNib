@@ -1,6 +1,5 @@
 import ast
 import builtins
-import difflib
 import os
 from pprint import pprint
 from typing import Dict, List
@@ -58,26 +57,6 @@ class ReferenceVisitor(ast.NodeVisitor):
         self.current_scope = file_path
         self.symbol_table: SymbolTable = symbol_table
         self.symbol_tables = symbol_tables  # Access to all symbol tables
-        self.imports = {}  # Still track imports at this level for compatibility
-
-    def visit_Import(self, node):
-        """Track imported modules and their aliases."""
-        for alias in node.names:
-            imported_name = alias.name  # Full module name
-            as_name = alias.asname or imported_name
-            self.imports[as_name] = imported_name
-
-        self.generic_visit(node)
-
-    def visit_ImportFrom(self, node):
-        """Track specific imports from a module."""
-        module = node.module or ""
-        for alias in node.names:
-            imported_name = f"{module}.{alias.name}"
-            as_name = alias.asname or alias.name
-            self.imports[as_name] = imported_name
-
-        self.generic_visit(node)
 
     def visit_FunctionDef(self, node):
         function_name = node.name
@@ -158,23 +137,32 @@ class ReferenceVisitor(ast.NodeVisitor):
 
         # Case 2: Imported function or class
         if function_name in self.symbol_table.imports:
-            imported_path = self.symbol_table.imports[function_name]
+            import_info = self.symbol_table.imports[function_name]
+
+            # Skip if this is an external import
+            if not import_info.get("is_local", True):
+                logger.debug(f"Skipping external import reference: {function_name}")
+                return
+
+            imported_path = import_info["path"]
             module_parts = imported_path.split(".")
-            
+
             # Check if this is a class or function from another module
             if len(module_parts) > 1:
-                module_name = module_parts[0]  # Base module
+                # module_name = module_parts[0]  # Base module
                 imported_name = module_parts[-1]  # Actual entity name
-                
+
                 # Look up the function/class in all symbol tables from other files
                 for file_path, sym_table in self.symbol_tables.items():
                     # Check for function
                     if imported_name in sym_table.functions:
                         callee = sym_table.functions[imported_name]
-                        logger.debug(f"Found imported function {function_name} -> {callee}")
+                        logger.debug(
+                            f"Found imported function {function_name} -> {callee}"
+                        )
                         self.graph.add_edge(caller, callee, edge_type="references")
                         return
-                        
+
                     # Check for class constructor
                     if imported_name in sym_table.classes:
                         # This is a class constructor call
@@ -186,7 +174,9 @@ class ReferenceVisitor(ast.NodeVisitor):
                         else:
                             # Link to class itself if no constructor
                             callee = class_node
-                        logger.debug(f"Found imported class {function_name} -> {callee}")
+                        logger.debug(
+                            f"Found imported class {function_name} -> {callee}"
+                        )
                         self.graph.add_edge(caller, callee, edge_type="references")
                         return
 
@@ -205,9 +195,8 @@ class ReferenceVisitor(ast.NodeVisitor):
                 logger.debug(f"Found class constructor {function_name} -> {callee}")
                 self.graph.add_edge(caller, callee, edge_type="references")
                 return
-                
-        logger.debug(f"Could not resolve function call: {function_name}")
 
+        logger.debug(f"Could not resolve function call: {function_name}")
 
     def _handle_attribute_call(self, base_name, method_name):
         """Handle method calls on objects: obj.method()"""
@@ -217,7 +206,7 @@ class ReferenceVisitor(ast.NodeVisitor):
 
         # Use the symbol table to resolve the method call
         resolved_method = self.symbol_table.resolve_attribute_call(
-            base_name, method_name, self.current_scope, self.current_file
+            base_name, method_name, self.current_scope
         )
         # debug
         logger.debug(
@@ -269,7 +258,9 @@ class ReferenceBuilder:
                     with open(file_path, "r") as f:
                         try:
                             tree = ast.parse(f.read())
-                            symbol_builder = SymbolTableBuilder(rel_file_path)
+                            symbol_builder = SymbolTableBuilder(
+                                rel_file_path, repo_path
+                            )
                             symbol_builder.visit(tree)
                             self.symbol_tables[rel_file_path] = (
                                 symbol_builder.symbol_table
@@ -403,7 +394,7 @@ def build_graph(repo_path: str) -> nx.DiGraph:
     method_calls = [
         (u, v)
         for u, v, d in graph.edges(data=True)
-        if d.get("edge_type") in ("method_call", "possible_method_call")
+        if d.get("edge_type") == "method_call"
     ]
     for caller, callee in method_calls:
         print(f"  {caller} -> {callee}")
