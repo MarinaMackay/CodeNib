@@ -48,6 +48,7 @@ class SymbolTable:
         self.variables = {}  # name -> type info
         self.functions = {}  # name -> function info
         self.imports = {}  # name -> imported module/function/class
+        self.nested_functions = {}  # parent_function_path -> [nested_function_paths]
 
     def add_class(self, name, file_path, methods=None):
         """Add a class to the symbol table"""
@@ -109,6 +110,10 @@ class SymbolTable:
             return self.classes[class_name]["methods"][method_name]
         return None
 
+    def get_nested_functions(self, function_path):
+        """Get all nested functions defined inside a function"""
+        return self.nested_functions.get(function_path, [])
+
     def resolve_attribute_call(self, base_name, attr_name, scope):
         """Resolve a call like 'a.xxx()' where a is an instance of class A"""
         # First get the type of the base variable
@@ -127,10 +132,6 @@ class SymbolTable:
                     return None
 
                 imported_module = import_info["path"]
-                if base_name == "time":
-                    logger.info(
-                        f"Handling time module call: {base_name}.{attr_name}, imported as {imported_module}"
-                    )
                 # Handle module.Class() pattern
                 module_parts = imported_module.split(".")
                 if len(module_parts) > 1:
@@ -199,6 +200,7 @@ class SymbolTableBuilder(ast.NodeVisitor):
     def visit_FunctionDef(self, node):
         function_name = node.name
         prev_function = self.current_function
+        prev_scope = self.current_scope
 
         if self.current_class:
             # This is a method
@@ -213,6 +215,28 @@ class SymbolTableBuilder(ast.NodeVisitor):
                 function_name,
                 f"{self.file_path}::{self.current_class}::{function_name}",
             )
+        elif self.current_function:
+            # This is a nested function (def within another function)
+            parent_function = self.current_function
+            # Create a path that includes the parent function
+            nested_function_path = f"{parent_function}::{function_name}"
+            self.current_function = nested_function_path
+            self.current_scope = f"{self.file_path}::{nested_function_path}"
+
+            # Add nested function to symbol table
+            full_path = f"{self.file_path}::{nested_function_path}"
+            self.symbol_table.add_function(function_name, full_path)
+
+            # log
+            logger.info(
+                f"Nested function detected: {nested_function_path}, parent: {parent_function}"
+            )
+
+            # Track the nesting relationship
+            parent_path = f"{self.file_path}::{parent_function}"
+            if parent_path not in self.symbol_table.nested_functions:
+                self.symbol_table.nested_functions[parent_path] = []
+            self.symbol_table.nested_functions[parent_path].append(full_path)
         else:
             # This is a function
             self.current_function = function_name
@@ -228,15 +252,7 @@ class SymbolTableBuilder(ast.NodeVisitor):
 
         # Restore previous context
         self.current_function = prev_function
-        self.current_scope = (
-            self.file_path
-            if not prev_function
-            else (
-                f"{self.file_path}::{prev_function}"
-                if not self.current_class
-                else f"{self.file_path}::{self.current_class}::{prev_function}"
-            )
-        )
+        self.current_scope = prev_scope
 
     def visit_Assign(self, node):
         # Only handle assignments with a single target for simplicity

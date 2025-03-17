@@ -13,8 +13,8 @@ class LoggingManager:
         self.current_log_dir: str = ""
         self.use_stdout: bool = True
         self.rich_handler: RichHandler = RichHandler(
-            show_time=bool(os.environ.get("ORCAR_LOG_TIME", False)),
-            show_path=bool(os.environ.get("ORCAR_LOG_PATH", False)),
+            show_time=bool(os.environ.get("_LOG_TIME", False)),
+            show_path=bool(os.environ.get("_LOG_PATH", False)),
         )
         self.rich_handler.setLevel(logging.DEBUG)
 
@@ -65,7 +65,7 @@ class LoggingManager:
             "[%(asctime)s - %(name)s - %(levelname)s] %(message)s"
         )
 
-        unified_log_file = os.path.join(self.current_log_dir, f"orcar_total.log")
+        unified_log_file = os.path.join(self.current_log_dir, f"_total.log")
         if os.path.exists(unified_log_file):
             os.remove(unified_log_file)
         unified_file_handler = logging.FileHandler(unified_log_file)

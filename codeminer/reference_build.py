@@ -65,13 +65,12 @@ class ReferenceVisitor(ast.NodeVisitor):
             full_function_name = (
                 f"{self.current_file}::{self.current_class}::{function_name}"
             )
-            self.current_scope = full_function_name
         else:
             full_function_name = f"{self.current_file}::{function_name}"
-            self.current_scope = full_function_name
 
         prev_function = self.current_function
         self.current_function = full_function_name
+        self.current_scope = full_function_name
 
         self.generic_visit(node)
 
