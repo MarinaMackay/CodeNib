@@ -48,7 +48,6 @@ class SymbolTable:
         self.variables = {}  # name -> type info
         self.functions = {}  # name -> function info
         self.imports = {}  # name -> imported module/function/class
-        self.nested_functions = {}  # parent_function_path -> [nested_function_paths]
 
     def add_class(self, name, file_path, methods=None):
         """Add a class to the symbol table"""
@@ -109,10 +108,6 @@ class SymbolTable:
         ):
             return self.classes[class_name]["methods"][method_name]
         return None
-
-    def get_nested_functions(self, function_path):
-        """Get all nested functions defined inside a function"""
-        return self.nested_functions.get(function_path, [])
 
     def resolve_attribute_call(self, base_name, attr_name, scope):
         """Resolve a call like 'a.xxx()' where a is an instance of class A"""
@@ -215,28 +210,6 @@ class SymbolTableBuilder(ast.NodeVisitor):
                 function_name,
                 f"{self.file_path}::{self.current_class}::{function_name}",
             )
-        elif self.current_function:
-            # This is a nested function (def within another function)
-            parent_function = self.current_function
-            # Create a path that includes the parent function
-            nested_function_path = f"{parent_function}::{function_name}"
-            self.current_function = nested_function_path
-            self.current_scope = f"{self.file_path}::{nested_function_path}"
-
-            # Add nested function to symbol table
-            full_path = f"{self.file_path}::{nested_function_path}"
-            self.symbol_table.add_function(function_name, full_path)
-
-            # log
-            logger.info(
-                f"Nested function detected: {nested_function_path}, parent: {parent_function}"
-            )
-
-            # Track the nesting relationship
-            parent_path = f"{self.file_path}::{parent_function}"
-            if parent_path not in self.symbol_table.nested_functions:
-                self.symbol_table.nested_functions[parent_path] = []
-            self.symbol_table.nested_functions[parent_path].append(full_path)
         else:
             # This is a function
             self.current_function = function_name

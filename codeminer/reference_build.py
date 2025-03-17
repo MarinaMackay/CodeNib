@@ -60,31 +60,31 @@ class ReferenceVisitor(ast.NodeVisitor):
 
     def visit_FunctionDef(self, node):
         function_name = node.name
+        prev_function = self.current_function
+        prev_scope = self.current_scope
 
         if self.current_class:
-            full_function_name = (
+            # This is a method in a class
+            self.current_function = (
                 f"{self.current_file}::{self.current_class}::{function_name}"
             )
+        elif self.current_function:
+            # This is a nested function
+            # however, we use the parent function as the function
+            # log
+            logger.info(
+                f"Reference: Nested function found: {function_name} in {self.current_function}"
+            )
         else:
-            full_function_name = f"{self.current_file}::{function_name}"
-
-        prev_function = self.current_function
-        self.current_function = full_function_name
-        self.current_scope = full_function_name
+            # This is a top-level function
+            self.current_function = f"{self.current_file}::{function_name}"
+        self.current_scope = self.current_function
 
         self.generic_visit(node)
 
         # Restore previous context
         self.current_function = prev_function
-        self.current_scope = (
-            self.current_file
-            if not prev_function
-            else (
-                f"{self.current_file}::{prev_function}"
-                if not self.current_class
-                else f"{self.current_file}::{self.current_class}::{prev_function}"
-            )
-        )
+        self.current_scope = prev_scope
 
     def visit_ClassDef(self, node):
         class_name = node.name
@@ -265,7 +265,7 @@ class ReferenceBuilder:
                                 symbol_builder.symbol_table
                             )
                         except SyntaxError:
-                            print(f"Syntax error in {file_path}, skipping...")
+                            logger.error(f"Syntax error in {file_path}, skipping...")
                             continue
 
         # Second pass: Analyze function calls with symbol table information
@@ -371,7 +371,7 @@ def build_graph(repo_path: str) -> nx.DiGraph:
                                     class_info["methods"][method_name]
                                 )
                 except Exception as e:
-                    print(f"Error processing {file_path}: {e}")
+                    logger.error(f"Error processing {file_path}: {e}")
 
     # Now build the reference edges between functions using ReferenceBuilder
     # Use repo_path instead of repo_path to only analyze files within the project
