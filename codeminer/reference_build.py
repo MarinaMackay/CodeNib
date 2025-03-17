@@ -2,7 +2,7 @@ import ast
 import builtins
 import os
 from pprint import pprint
-from typing import Dict, List
+from typing import Dict
 
 import networkx as nx
 
@@ -44,13 +44,11 @@ class ReferenceVisitor(ast.NodeVisitor):
     def __init__(
         self,
         graph: nx.DiGraph,
-        function_definitions: Dict[str, List[str]],
         file_path: str,
         symbol_table: SymbolTable,
         symbol_tables: Dict[str, SymbolTable],  # Added parameter
     ):
         self.graph = graph
-        self.function_definitions = function_definitions
         self.current_file = file_path
         self.current_class = None
         self.current_function = None
@@ -229,10 +227,8 @@ class ReferenceVisitor(ast.NodeVisitor):
 
 
 class ReferenceBuilder:
-    def __init__(self, graph, function_definitions, swe_env=None):
+    def __init__(self, graph):
         self.graph = graph
-        self.function_definitions = function_definitions
-        self.swe_env = swe_env
         self.symbol_tables = {}  # file_path -> SymbolTable
 
     def build_references(self, repo_path):
@@ -293,7 +289,6 @@ class ReferenceBuilder:
                             )
                             visitor = ReferenceVisitor(
                                 self.graph,
-                                self.function_definitions,
                                 rel_file_path,
                                 symbol_table,
                                 self.symbol_tables,  # Pass all symbol tables
@@ -375,7 +370,7 @@ def build_graph(repo_path: str) -> nx.DiGraph:
 
     # Now build the reference edges between functions using ReferenceBuilder
     # Use repo_path instead of repo_path to only analyze files within the project
-    reference_builder = ReferenceBuilder(graph, function_definitions)
+    reference_builder = ReferenceBuilder(graph)
     reference_builder.build_references(repo_path)  # Changed from repo_path to repo_path
 
     # Print some statistics

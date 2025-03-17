@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 Loc = namedtuple("Loc", ["file_name", "node_name", "start_line", "end_line"])
 
 
-def is_local_module(module_name, repo_path):
+def is_local_module(module_name: str, repo_path: str) -> bool:
     """
     Determine if a module is local to the repository (not a standard library or external package)
 
@@ -50,7 +50,7 @@ class SymbolTable:
         self.functions = {}  # name -> function info
         self.imports = {}  # name -> imported module/function/class
 
-    def add_class(self, name, file_path, methods=None):
+    def add_class(self, name: str, file_path: str, methods=None):
         """Add a class to the symbol table"""
         if name not in self.classes:
             self.classes[name] = {
@@ -60,25 +60,25 @@ class SymbolTable:
             }
         return self.classes[name]
 
-    def add_method(self, class_name, method_name, file_path):
+    def add_method(self, class_name: str, method_name: str, file_path: str):
         """Add a method to a class"""
         if class_name in self.classes:
             self.classes[class_name]["methods"][method_name] = file_path
 
-    def add_function(self, name, file_path):
+    def add_function(self, name: str, file_path: str):
         """Add a function to the symbol table"""
         self.functions[name] = file_path
 
-    def add_variable(self, name, var_type, scope):
+    def add_variable(self, name: str, var_type: str, scope: str):
         """Add a variable with its type to the symbol table"""
         self.variables[(scope, name)] = var_type
 
-    def add_attribute(self, class_name, attr_name):
+    def add_attribute(self, class_name: str, attr_name: str):
         """Add an attribute to a class"""
         if class_name in self.classes:
             self.classes[class_name]["attributes"].add(attr_name)
 
-    def add_import(self, name, import_path, is_local=True):
+    def add_import(self, name: str, import_path: str, is_local: bool = True):
         """
         Add an import to the symbol table
 
@@ -89,19 +89,19 @@ class SymbolTable:
         """
         self.imports[name] = {"path": import_path, "is_local": is_local}
 
-    def get_import(self, name):
+    def get_import(self, name: str) -> str | None:
         """Get information about an imported name"""
         if name in self.imports:
             return self.imports[name]
         return None
 
-    def get_variable_type(self, name, scope):
+    def get_variable_type(self, name: str, scope: str) -> str | None:
         """Get the type of a variable in a specific scope"""
         if (scope, name) in self.variables:
             return self.variables[(scope, name)]
         return None
 
-    def get_method(self, class_name, method_name):
+    def get_method(self, class_name: str, method_name: str) -> str | None:
         """Get a method from a class"""
         if (
             class_name in self.classes
@@ -110,7 +110,9 @@ class SymbolTable:
             return self.classes[class_name]["methods"][method_name]
         return None
 
-    def resolve_attribute_call(self, base_name, attr_name, scope):
+    def resolve_attribute_call(
+        self, base_name: str, attr_name: str, scope: str
+    ) -> str | None:
         """Resolve a call like 'a.xxx()' where a is an instance of class A"""
         # First get the type of the base variable
         base_type = self.get_variable_type(base_name, scope)
@@ -171,7 +173,7 @@ class SymbolTable:
 class SymbolTableBuilder(ast.NodeVisitor):
     """Build a symbol table for the entire codebase"""
 
-    def __init__(self, file_path, repo_path=None):
+    def __init__(self, file_path: str, repo_path: str = None):
         self.file_path = file_path
         self.symbol_table = SymbolTable()
         self.current_class = None
@@ -179,7 +181,7 @@ class SymbolTableBuilder(ast.NodeVisitor):
         self.current_scope = file_path
         self.repo_path = repo_path
 
-    def visit_ClassDef(self, node):
+    def visit_ClassDef(self, node: ast.ClassDef):
         class_name = node.name
         prev_class = self.current_class
         self.current_class = class_name
@@ -193,7 +195,7 @@ class SymbolTableBuilder(ast.NodeVisitor):
         # Restore previous context
         self.current_class = prev_class
 
-    def visit_FunctionDef(self, node):
+    def visit_FunctionDef(self, node: ast.FunctionDef):
         function_name = node.name
         prev_function = self.current_function
         prev_scope = self.current_scope
@@ -228,7 +230,7 @@ class SymbolTableBuilder(ast.NodeVisitor):
         self.current_function = prev_function
         self.current_scope = prev_scope
 
-    def visit_Assign(self, node):
+    def visit_Assign(self, node: ast.Assign):
         # Only handle assignments with a single target for simplicity
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             var_name = node.targets[0].id
@@ -283,7 +285,7 @@ class SymbolTableBuilder(ast.NodeVisitor):
 
         self.generic_visit(node)
 
-    def visit_Import(self, node):
+    def visit_Import(self, node: ast.Import):
         """Track imported modules and their aliases."""
         for alias in node.names:
             imported_name = alias.name  # Full module name
@@ -295,7 +297,7 @@ class SymbolTableBuilder(ast.NodeVisitor):
 
         self.generic_visit(node)
 
-    def visit_ImportFrom(self, node):
+    def visit_ImportFrom(self, node: ast.Import):
         """Track specific imports from a module."""
         module = node.module or ""
 
