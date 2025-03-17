@@ -334,7 +334,7 @@ def build_graph(repo_path: str) -> nx.DiGraph:
                         tree = ast.parse(f.read())
 
                         # Build symbol table
-                        symbol_builder = SymbolTableBuilder(rel_file_path)
+                        symbol_builder = SymbolTableBuilder(rel_file_path, repo_path)
                         symbol_builder.visit(tree)
 
                         # Register functions and methods in the function_definitions dict

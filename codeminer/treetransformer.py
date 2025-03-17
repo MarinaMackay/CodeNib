@@ -31,6 +31,7 @@ def is_local_module(module_name, repo_path):
     base_module = module_name.split(".")[0]  # Get the root module name
 
     # Check if it's a directory package
+    # logger.debug(f"Checking if {base_module} is a local module in {repo_path}")
     if os.path.isdir(os.path.join(repo_path, base_module)):
         return True
 
