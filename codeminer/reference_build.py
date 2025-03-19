@@ -120,15 +120,16 @@ class ReferenceVisitor(ast.NodeVisitor):
         caller = self.current_function
         if not caller:
             logger.debug(f"No current function when handling call to {function_name}")
+            # TODO, this is global call from the file
             return
 
-        logger.debug(f"Analyzing call to {function_name} in scope {self.current_scope}")
+        # logger.debug(f"Analyzing call to {function_name} in scope {self.current_scope}")
 
         # Case 1: Local function call in the same file
         if function_name in self.symbol_table.functions:
             # Direct reference to a function in the same file
             callee = self.symbol_table.functions[function_name]
-            logger.debug(f"Found local function {function_name} -> {callee}")
+            # logger.debug(f"Found local function {function_name} -> {callee}")
             self.graph.add_edge(caller, callee, edge_type="references")
             return
 
@@ -154,9 +155,9 @@ class ReferenceVisitor(ast.NodeVisitor):
                     # Check for function
                     if imported_name in sym_table.functions:
                         callee = sym_table.functions[imported_name]
-                        logger.debug(
-                            f"Found imported function {function_name} -> {callee}"
-                        )
+                        # logger.debug(
+                        #     f"Found imported function {function_name} -> {callee}"
+                        # )
                         self.graph.add_edge(caller, callee, edge_type="references")
                         return
 
@@ -171,9 +172,9 @@ class ReferenceVisitor(ast.NodeVisitor):
                         else:
                             # Link to class itself if no constructor
                             callee = class_node
-                        logger.debug(
-                            f"Found imported class {function_name} -> {callee}"
-                        )
+                        # logger.debug(
+                        #     f"Found imported class {function_name} -> {callee}"
+                        # )
                         self.graph.add_edge(caller, callee, edge_type="references")
                         return
 
@@ -189,7 +190,7 @@ class ReferenceVisitor(ast.NodeVisitor):
                 else:
                     # Link to class itself if no constructor
                     callee = class_node
-                logger.debug(f"Found class constructor {function_name} -> {callee}")
+                # logger.debug(f"Found class constructor {function_name} -> {callee}")
                 self.graph.add_edge(caller, callee, edge_type="references")
                 return
 
@@ -203,27 +204,16 @@ class ReferenceVisitor(ast.NodeVisitor):
 
         # Use the symbol table to resolve the method call
         resolved_method = self.symbol_table.resolve_attribute_call(
-            base_name, method_name, self.current_scope
+            base_name, method_name, self.current_scope, self.symbol_tables
         )
         # debug
-        logger.debug(
-            f"Resolved method: {resolved_method}, base_name: {base_name}, method_name: {method_name}, scope: {self.current_scope}, file: {self.current_file}"
-        )
+        # logger.debug(
+        #     f"Resolved method: {resolved_method}, base_name: {base_name}, method_name: {method_name}, scope: {self.current_scope}, file: {self.current_file}"
+        # )
 
         if resolved_method:
             self.graph.add_edge(caller, resolved_method, edge_type="method_call")
             return
-
-        # Fallback: Try to find any method with this name in any class
-        # This is less accurate but can work when type information is missing
-        for class_info in self.symbol_table.classes.values():
-            if method_name in class_info["methods"]:
-                method_path = class_info["methods"][method_name]
-                self.graph.add_edge(
-                    caller, method_path, edge_type="possible_method_call"
-                )
-                # You might want to add a lower confidence score here
-                break
 
 
 class ReferenceBuilder:
@@ -369,9 +359,8 @@ def build_graph(repo_path: str) -> nx.DiGraph:
                     logger.error(f"Error processing {file_path}: {e}")
 
     # Now build the reference edges between functions using ReferenceBuilder
-    # Use repo_path instead of repo_path to only analyze files within the project
     reference_builder = ReferenceBuilder(graph)
-    reference_builder.build_references(repo_path)  # Changed from repo_path to repo_path
+    reference_builder.build_references(repo_path)
 
     # Print some statistics
     print(f"Total nodes in graph: {len(graph.nodes)}")

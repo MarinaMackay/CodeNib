@@ -78,7 +78,9 @@ class SymbolTable:
         if class_name in self.classes:
             self.classes[class_name]["attributes"].add(attr_name)
 
-    def add_import(self, name: str, import_path: str, is_local: bool = True):
+    def add_import(
+        self, name: str, import_path: str, is_local: bool = True, is_alias: bool = False
+    ):
         """
         Add an import to the symbol table
 
@@ -86,8 +88,13 @@ class SymbolTable:
             name: The local name used for the import
             import_path: The full import path
             is_local: Whether this is a local module (not stdlib or external)
+            is_alias: Whether this is an alias for the import
         """
-        self.imports[name] = {"path": import_path, "is_local": is_local}
+        self.imports[name] = {
+            "path": import_path,
+            "is_local": is_local,
+            "is_alias": is_alias,
+        }
 
     def get_import(self, name: str) -> str | None:
         """Get information about an imported name"""
@@ -111,7 +118,7 @@ class SymbolTable:
         return None
 
     def resolve_attribute_call(
-        self, base_name: str, attr_name: str, scope: str
+        self, base_name: str, attr_name: str, scope: str, symbol_tables: dict
     ) -> str | None:
         """Resolve a call like 'a.xxx()' where a is an instance of class A"""
         # First get the type of the base variable
@@ -130,21 +137,41 @@ class SymbolTable:
                     return None
 
                 imported_module = import_info["path"]
-                # Handle module.Class() pattern
-                module_parts = imported_module.split(".")
-                if len(module_parts) > 1:
-                    module_path = "/".join(module_parts[:-1])
-                    return f"{module_path}.py::{attr_name}"
-                else:
+                # check if the import module using alias
+                is_alias = import_info["is_alias"]
+                # Handle the case where base_name is an alias for an imported module
+                if is_alias:
+                    # Handle module.Class() pattern, import a.AA as module
+                    # a.AA is actually a path (imported_module)
+                    # base_name should be dropped, since base_name == imported_module
+                    # TODO: this seems to be more like refercne call?
+                    module_parts = imported_module.split(".")
+                    if len(module_parts) > 1:
+                        # join all parts
+                        module_path = "/".join(module_parts[:])
+                        logger.info(
+                            f"module_path: {module_path}, base_name: {base_name}, attr_name: {attr_name}"
+                        )
+                        return f"{module_path}.py::{attr_name}"
                     return f"{imported_module}.py::{attr_name}"
+                else:
+                    module_parts = imported_module.split(".")
+                    if len(module_parts) > 1:
+                        module_path = "/".join(module_parts[:-1])
+                        logger.info(
+                            f"Nested module detected: {module_parts}, base_name: {base_name}, attr_name: {attr_name}"
+                        )
+                        return f"{module_path}.py::{base_name}::{attr_name}"
+                    else:
+                        return f"{imported_module}.py::{base_name}::{attr_name}"
             return None
 
-        # Check if this is a direct method call on a known class
+        # Check if this is a direct method call on a known class in the symbol table
         result = self.get_method(base_type, attr_name)
         if result:
             return result
 
-        # Handle imported classes
+        # Handle base_type being an imported module
         if base_type in self.imports:
             import_info = self.imports[base_type]
 
@@ -156,7 +183,6 @@ class SymbolTable:
             imported_path = import_info["path"]
             # Handle nested modules like alg.alg.Alg
             module_parts = imported_path.split(".")
-
             # Create proper file path from module parts
             if len(module_parts) > 1:
                 # Handle case of nested modules
@@ -293,7 +319,11 @@ class SymbolTableBuilder(ast.NodeVisitor):
 
             # Add flag to indicate if this is a local import
             is_local = is_local_module(imported_name, self.repo_path)
-            self.symbol_table.add_import(as_name, imported_name, is_local)
+            is_alias = alias.asname is not None
+            self.symbol_table.add_import(as_name, imported_name, is_local, is_alias)
+            logger.debug(
+                f"Importing {imported_name} as {as_name}, is_local: {is_local}, is_alias: {is_alias}"
+            )
 
         self.generic_visit(node)
 
@@ -307,6 +337,9 @@ class SymbolTableBuilder(ast.NodeVisitor):
         for alias in node.names:
             imported_name = f"{module}.{alias.name}"
             as_name = alias.asname or alias.name
-            self.symbol_table.add_import(as_name, imported_name, is_local)
+            is_alias = alias.asname is not None
+            # Add flag to indicate if this is a local import
+            self.symbol_table.add_import(as_name, imported_name, is_local, is_alias)
+            # logger.debug(f"Importing {imported_name} as {as_name}, is_local: {is_local}, is_alias: {is_alias}")
 
         self.generic_visit(node)
