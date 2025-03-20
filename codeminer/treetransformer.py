@@ -122,6 +122,7 @@ class SymbolTable:
     ) -> str | None:
         """Resolve a call like 'a.xxx()' where a is an instance of class A"""
         # First get the type of the base variable
+
         base_type = self.get_variable_type(base_name, scope)
 
         if not base_type:
@@ -144,7 +145,7 @@ class SymbolTable:
                     # Handle module.Class() pattern, import a.AA as module
                     # a.AA is actually a path (imported_module)
                     # base_name should be dropped, since base_name == imported_module
-                    # TODO: this seems to be more like refercne call?
+                    # TODO: this seems to be more like reference call?
                     module_parts = imported_module.split(".")
                     if len(module_parts) > 1:
                         # join all parts
@@ -158,9 +159,9 @@ class SymbolTable:
                     module_parts = imported_module.split(".")
                     if len(module_parts) > 1:
                         module_path = "/".join(module_parts[:-1])
-                        logger.info(
-                            f"Nested module detected: {module_parts}, base_name: {base_name}, attr_name: {attr_name}"
-                        )
+                        # logger.info(
+                        #     f"Nested module detected: {module_parts}, base_name: {base_name}, attr_name: {attr_name}"
+                        # )
                         return f"{module_path}.py::{base_name}::{attr_name}"
                     else:
                         return f"{imported_module}.py::{base_name}::{attr_name}"
@@ -307,7 +308,19 @@ class SymbolTableBuilder(ast.NodeVisitor):
 
             attr_name = node.targets[0].attr
             # Add attribute to class
+            # in default, attribute type is stable
+            # TODO: what if dynamic assignment happens?
             self.symbol_table.add_attribute(self.current_class, attr_name)
+
+            # Also track the attribute's type if possible
+            if isinstance(node.value, ast.Call) and isinstance(
+                node.value.func, ast.Name
+            ):
+                attr_type = node.value.func.id
+                # logger.info(f"try to take down type of attribute: {self.current_class}.{attr_name} = {attr_type}")
+                # Store the attribute type in current class's scope
+                init_scope = f"{self.file_path}::{self.current_class}"
+                self.symbol_table.add_variable(attr_name, attr_type, init_scope)
 
         self.generic_visit(node)
 
@@ -321,9 +334,9 @@ class SymbolTableBuilder(ast.NodeVisitor):
             is_local = is_local_module(imported_name, self.repo_path)
             is_alias = alias.asname is not None
             self.symbol_table.add_import(as_name, imported_name, is_local, is_alias)
-            logger.debug(
-                f"Importing {imported_name} as {as_name}, is_local: {is_local}, is_alias: {is_alias}"
-            )
+            # logger.debug(
+            #     f"Importing {imported_name} as {as_name}, is_local: {is_local}, is_alias: {is_alias}"
+            # )
 
         self.generic_visit(node)
 
