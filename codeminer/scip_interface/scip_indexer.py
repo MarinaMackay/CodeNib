@@ -2,11 +2,8 @@
 import os
 import subprocess
 import argparse
-import shutil
 from pathlib import Path
 import logging
-import json
-import sys
 from typing import Dict, Optional, Union, Any
 
 # Configure logging
@@ -19,10 +16,21 @@ logger = logging.getLogger("scip_indexer")
 class SCIPIndexer:
     """Interface for working with the SCIP index using scip-python"""
     
-    def __init__(self, project_root: Union[str, Path]):
+    def __init__(self, project_root: Union[str, Path], output_dir: Optional[Union[str, Path]] = None):
         self.project_root = Path(project_root).absolute()
-        self.index_file = self.project_root / "index.scip"
-        self.decoded_file = self.project_root / "index.decoded"
+        
+        # Set output directory to /tmp/project_name by default
+        if output_dir:
+            self.output_dir = Path(output_dir).absolute()
+        else:
+            self.output_dir = Path('/tmp') / self.project_root.name
+            
+        # Create output directory if it doesn't exist
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        # Set paths for index files in the output directory
+        self.index_file = self.output_dir / "index.scip"
+        self.decoded_file = self.output_dir / "index.decoded"
         
         # Path to the conda environment file
         self.module_dir = Path(__file__).parent
@@ -125,24 +133,35 @@ class SCIPIndexer:
             logger.error(f"Error running command in conda environment: {e}")
             return False
         
-    def generate_index(self, project_name: Optional[str] = None, target_dir: Optional[str] = None) -> bool:
+    def generate_index(self, 
+                       cwd: Union[str, Path] = ".",
+                       project_name: Optional[str] = None, 
+                       target_dir: Optional[str] = None) -> bool:
         """
         Generate SCIP index for the project
         
         Args:
+            cwd: Working directory to run the index command
             project_name: Project name to use in the index
             target_dir: Optional subdirectory to target for indexing
             
         Returns:
             bool: True if index generation was successful, False otherwise
         """
-        cmd = ["scip-python", "index", "."]
+        cmd = ["scip-python", "index"]
+
+        if cwd:
+            cmd.append("--cwd")
+            cmd.append(str(Path(cwd).absolute()))
         
         if project_name:
             cmd.extend(["--project-name", project_name])
         else:
             # Use directory name as project name if not provided
             cmd.extend(["--project-name", self.project_root.name])
+
+        # default output path in /tmp/project_name/index.scip
+        cmd.extend(["--output", str(self.index_file)])
             
         if target_dir:
             cmd.extend(["--target-only", target_dir])
@@ -249,7 +268,7 @@ class SCIPIndexer:
             dict: Processed data from the SCIP index, or None if any step failed
         """
         if not skip_index:
-            if not self.generate_index(project_name, target_dir):
+            if not self.generate_index(cwd=self.project_root, project_name=project_name, target_dir=target_dir):
                 return None
         
         if not skip_decode:
@@ -266,12 +285,13 @@ def run_cli():
     parser.add_argument("--project-name", help="Project name for the index", default=None)
     parser.add_argument("--target-dir", help="Subdirectory to target for indexing", default=None)
     parser.add_argument("--output", help="Path to output processed index file", default="scip_graph.json")
+    parser.add_argument("--output-dir", help="Directory to store index files (default: /tmp/<project_name>)", default=None)
     parser.add_argument("--skip-index", action="store_true", help="Skip index generation, use existing index.scip")
     parser.add_argument("--skip-decode", action="store_true", help="Skip decoding, use existing index.decoded")
     
     args = parser.parse_args()
     
-    indexer = SCIPIndexer(args.project_dir)
+    indexer = SCIPIndexer(args.project_dir, args.output_dir)
     result = indexer.run_pipeline(
         project_name=args.project_name,
         target_dir=args.target_dir,

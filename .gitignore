@@ -5,3 +5,5 @@ my_project/
 graph.png
 build/
 *.egg-info/
+*.scip
+*.decoded
