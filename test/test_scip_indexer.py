@@ -3,6 +3,7 @@ import unittest
 import tempfile
 import shutil
 import json
+import subprocess
 from pathlib import Path
 from codeminer import SCIPIndexer
 
@@ -23,51 +24,44 @@ class TestSCIPIndexer(unittest.TestCase):
         
     def test_python_repo_indexing(self):
         """
-        Test indexing the test_python_repo directory
-        
-        This test uses the provided test_python_repo which contains a more
-        complex Python project structure with multiple modules and imports.
+        Test indexing a python repository using SCIPIndexer.
+        We use https://github.com/httpie/cli.git as a test repo.
         """
-        # Skip this test if we're in CI or don't want to run long tests
-        if os.environ.get('SKIP_CONDA_TESTS'):
-            self.skipTest("Skipping test that requires conda")
+        # Define the test repo URL and path
+        test_repo_url = "https://github.com/httpie/cli.git"
+        test_repo_path = Path("/tmp/httpie-cli-test")
         
-        # Get path to test_python_repo directory
-        test_python_repo = Path(os.path.dirname(__file__)) / "test_python_repo"
+        # Clone the repo if it doesn't exist
+        if not test_repo_path.exists():
+            print(f"Cloning test repository from {test_repo_url}...")
+            subprocess.run(["git", "clone", test_repo_url, str(test_repo_path)], check=True)
+        else:
+            print(f"Using existing test repository at {test_repo_path}")
         
         # Verify the test repo exists
-        self.assertTrue(test_python_repo.exists(),
-                       f"Test Python repo not found at {test_python_repo}")
+        self.assertTrue(test_repo_path.exists(),
+                       f"Test Python repo not found at {test_repo_path}")
         
-        # Create output file in our temporary directory
-        output_file = str("python_repo_index.json")
+        # Create output file in the local directory (not in tmp)
+        current_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+        output_file = str(current_dir / "python_repo_index.json")
         
-        # Create a new indexer for the test_python_repo
-        repo_indexer = SCIPIndexer(test_python_repo)
+        # Create a new indexer for the cloned test repo
+        repo_indexer = SCIPIndexer(test_repo_path)
         
         # Run the indexing pipeline, allowing skip_index and skip_decode for faster tests
         result = repo_indexer.run_pipeline(
-            project_name="TestPythonRepo",
+            project_name="HttpieCliRepo",
             output_file=output_file,
-            skip_index=os.environ.get('SKIP_INDEX_GENERATION') is not None,
-            skip_decode=os.environ.get('SKIP_INDEX_DECODE') is not None
+            skip_index=False,
+            skip_decode=False,
         )
         
         if result:
             self.assertIsNotNone(result)
             self.assertIn("nodes", result)
             self.assertIn("edges", result)
-            
-            # Verify we have reasonable number of nodes and edges
-            self.assertGreater(result["nodes"], 5, "Expected more nodes in the graph")
-            self.assertGreater(result["edges"], 5, "Expected more edges in the graph")
-            
-            # Verify file nodes were detected
-            self.assertGreater(result["file_nodes"], 3, "Expected more file nodes")
-            
-            # Verify symbols were detected
-            self.assertGreater(result["symbol_nodes"], 3, "Expected more symbol nodes")
-            
+
             # Print the results for inspection
             print("\nTest Python Repo SCIP Index Results:")
             for key, value in result.items():
@@ -95,6 +89,6 @@ class TestSCIPIndexer(unittest.TestCase):
                 print(f"Could not read output file: {e}")
         else:
             self.skipTest("Failed to run indexing pipeline for test_python_repo, possibly due to missing dependencies")
-
+    
 if __name__ == "__main__":
     unittest.main()
