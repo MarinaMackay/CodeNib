@@ -5,14 +5,14 @@ We copy the scip.proto to the local directory for convenience.
 
 Related links are listed as below:
 [scip-python](https://github.com/sourcegraph/scip-python)
-Usage: 
+Usage:
 ``` bash
 scip-python index . --project-name=$MY_PROJECT --target-only=src/subdir
 ```
 
 ### Convert index.scip to index.decoded
 
-First install the [protobuf](https://protobuf.dev/installation/). 
+First install the [protobuf](https://protobuf.dev/installation/).
 Get the scip.proto from [SCIP](https://github.com/sourcegraph/scip/tree/main).
 
 ### Using the SCIPIndexer
