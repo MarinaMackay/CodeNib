@@ -205,6 +205,7 @@ class SCIPIndexer:
             cmd = [
                 "protoc",
                 "--decode=scip.Index",
+                f"--proto_path={self.module_dir}",
                 "scip.proto",
                 f"< {self.index_file}",
                 f"> {self.decoded_file}",
@@ -249,30 +250,14 @@ class SCIPIndexer:
                 decoder.save_graph(str(output_path))
                 logger.info(f"Saved processed SCIP index to {output_path}")
 
-            # Return some basic stats
+            # Calculate stats for igraph (different API than NetworkX)
             result = {
-                "nodes": len(graph.nodes),
-                "edges": len(graph.edges),
-                "file_nodes": sum(
-                    1
-                    for _, attrs in graph.nodes(data=True)
-                    if attrs.get("type") == "file"
-                ),
-                "symbol_nodes": sum(
-                    1
-                    for _, attrs in graph.nodes(data=True)
-                    if attrs.get("type") == "symbol"
-                ),
-                "contain_edges": sum(
-                    1
-                    for _, _, attrs in graph.edges(data=True)
-                    if attrs.get("type") == "contain"
-                ),
-                "reference_edges": sum(
-                    1
-                    for _, _, attrs in graph.edges(data=True)
-                    if attrs.get("type") == "reference"
-                ),
+                "nodes": graph.vcount(),
+                "edges": graph.ecount(),
+                "file_nodes": sum(1 for v in graph.vs if v["type"] == "file"),
+                "symbol_nodes": sum(1 for v in graph.vs if v["type"] == "symbol"),
+                "contain_edges": sum(1 for e in graph.es if e["type"] == "contain"),
+                "reference_edges": sum(1 for e in graph.es if e["type"] == "reference"),
             }
 
             return result

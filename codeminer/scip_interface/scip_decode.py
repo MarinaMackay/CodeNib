@@ -1,18 +1,12 @@
-import json
 import re
 
-import networkx as nx
+from ..code_graph import CodeGraph
 
 
 class SCIPGraphDecoder:
     def __init__(self, index_file_path):
         self.index_file_path = index_file_path
-        self.graph = nx.DiGraph()
-        self.current_file = None
-        self.current_scope = None
-        self.scope_stack = []
-        # Store line ranges for symbols
-        self.symbol_ranges = {}
+        self.code_graph = CodeGraph()
 
     def decode(self):
         with open(self.index_file_path, "r") as f:
@@ -26,7 +20,7 @@ class SCIPGraphDecoder:
         for document in document_blocks:
             self._process_document(document)
 
-        return self.graph
+        return self.code_graph.get_graph()
 
     def _process_document(self, document_text):
         # Extract file path
@@ -35,12 +29,9 @@ class SCIPGraphDecoder:
             return
 
         file_path = file_match.group(1)
-        self.current_file = file_path
 
         # Add file node
-        self.graph.add_node(file_path, type="file")
-        self.current_scope = file_path
-        self.scope_stack = [file_path]
+        self.code_graph.add_file_node(file_path)
 
         # Process occurrences
         occurrences = re.findall(r"occurrences\s*{(.*?)}", document_text, re.DOTALL)
@@ -109,7 +100,9 @@ class SCIPGraphDecoder:
 
                 # If this is a reference, point to the file instead
                 if symbol_roles == 8:
-                    self.graph.add_edge(self.current_scope, file_path, type="reference")
+                    self.code_graph._add_edge(
+                        self.code_graph.current_scope, file_path, "reference"
+                    )
                 return
 
         # Update current scope if this is a definition with enclosing range
@@ -117,91 +110,29 @@ class SCIPGraphDecoder:
             scope_start_line = int(enclosing_ranges[0])
             scope_end_line = int(enclosing_ranges[2])
 
-            # Store symbol range
-            self.symbol_ranges[cleaned_symbol] = (scope_start_line, scope_end_line)
+            # Add symbol node with scope range
+            self.code_graph.add_symbol_node(
+                cleaned_symbol, line, scope_start_line, scope_end_line
+            )
+
+            # Add containment edge
+            self.code_graph.add_containment_edge(cleaned_symbol)
 
             # Update current scope
-            self.current_scope = cleaned_symbol
-            self.scope_stack.append(cleaned_symbol)
+            self.code_graph.update_current_scope(cleaned_symbol)
 
-            # Add symbol node
-            self.graph.add_node(
-                cleaned_symbol,
-                type="symbol",
-                file=self.current_file,
-                start_line=scope_start_line,
-                end_line=scope_end_line,
-            )
-
-            # Add 'contain' edge from file to symbol (without attributes)
-            parent_scope = (
-                self.scope_stack[-2] if len(self.scope_stack) > 1 else self.current_file
-            )
-            self.graph.add_edge(parent_scope, cleaned_symbol, type="contain")
         # Handle definition (symbol_roles == 1) with no enclosing range
         elif symbol_roles == 1:
-            # If the symbol doesn't exist, create it without range info (only one line)
-            if cleaned_symbol not in self.graph:
-                self.graph.add_node(
-                    cleaned_symbol,
-                    type="symbol",
-                    file=self.current_file,
-                    start_line=line,
-                    end_line=line,
-                )
+            self.code_graph.add_symbol_node(cleaned_symbol, line)
 
-            # Add 'contain' edge from current scope to symbol (without attributes)
-            self.graph.add_edge(self.current_scope, cleaned_symbol, type="contain")
+            # Add 'contain' edge from current scope to symbol
+            self.code_graph._add_edge(
+                self.code_graph.current_scope, cleaned_symbol, "contain"
+            )
 
         # Handle reference (symbol_roles == 8)
         elif symbol_roles == 8:
-            # If the symbol doesn't exist, create it without range info (to be filled later when we see the definition)
-            if cleaned_symbol not in self.graph:
-                self.graph.add_node(cleaned_symbol, type="symbol", file=module_path)
-
-            # Add 'reference' edge from current scope to referenced symbol (without attributes)
-            self.graph.add_edge(self.current_scope, cleaned_symbol, type="reference")
+            self.code_graph.add_symbol_reference(cleaned_symbol, module_path)
 
     def save_graph(self, output_path):
-        # Convert graph to JSON
-        data = {"nodes": [], "edges": []}
-
-        for node, attrs in self.graph.nodes(data=True):
-            node_data = {"id": node, **attrs}
-            data["nodes"].append(node_data)
-
-        for source, target, attrs in self.graph.edges(data=True):
-            edge_data = {"source": source, "target": target, "type": attrs.get("type")}
-            data["edges"].append(edge_data)
-
-        with open(output_path, "w") as f:
-            json.dump(data, f, indent=2)
-
-
-# Usage
-if __name__ == "__main__":
-    decoder = SCIPGraphDecoder("index.decoded")
-    graph = decoder.decode()
-    decoder.save_graph("scip_graph.json")
-
-    # Print some stats
-    print(f"Graph created with {len(graph.nodes)} nodes and {len(graph.edges)} edges")
-
-    # Count node types
-    file_nodes = sum(
-        1 for _, attrs in graph.nodes(data=True) if attrs.get("type") == "file"
-    )
-    symbol_nodes = sum(
-        1 for _, attrs in graph.nodes(data=True) if attrs.get("type") == "symbol"
-    )
-
-    # Count edge types
-    contain_edges = sum(
-        1 for _, _, attrs in graph.edges(data=True) if attrs.get("type") == "contain"
-    )
-    reference_edges = sum(
-        1 for _, _, attrs in graph.edges(data=True) if attrs.get("type") == "reference"
-    )
-
-    print(f"Files: {file_nodes}, Symbols: {symbol_nodes}")
-    print(f"Contain edges: {contain_edges}, Reference edges: {reference_edges}")
+        self.code_graph.save_graph(output_path)
