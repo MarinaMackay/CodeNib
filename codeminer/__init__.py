@@ -1,3 +1,4 @@
-from .reference_build import build_graph
-from .scip_interface import *
-__all__ = ["build_graph", "SCIPIndexer"]
+from .code_graph import CodeGraph
+from .scip_interface import SCIPIndexer
+
+__all__ = ["SCIPIndexer", "CodeGraph"]

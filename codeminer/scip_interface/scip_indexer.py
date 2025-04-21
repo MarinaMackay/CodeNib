@@ -1,150 +1,164 @@
 #!/usr/bin/env python3
+import argparse
+import logging
 import os
 import subprocess
-import argparse
 from pathlib import Path
-import logging
-from typing import Dict, Optional, Union, Any
+from typing import Dict, Optional, Union
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("scip_indexer")
 
+
 class SCIPIndexer:
     """Interface for working with the SCIP index using scip-python"""
-    
-    def __init__(self, project_root: Union[str, Path], output_dir: Optional[Union[str, Path]] = None):
+
+    def __init__(
+        self,
+        project_root: Union[str, Path],
+        output_dir: Optional[Union[str, Path]] = None,
+    ):
         self.project_root = Path(project_root).absolute()
-        
+
         # Set output directory to /tmp/project_name by default
         if output_dir:
             self.output_dir = Path(output_dir).absolute()
         else:
-            self.output_dir = Path('/tmp') / self.project_root.name
-            
+            self.output_dir = Path("/tmp") / self.project_root.name
+
         # Create output directory if it doesn't exist
         os.makedirs(self.output_dir, exist_ok=True)
-        
+
         # Set paths for index files in the output directory
         self.index_file = self.output_dir / "index.scip"
         self.decoded_file = self.output_dir / "index.decoded"
-        
+
         # Path to the conda environment file
         self.module_dir = Path(__file__).parent
         self.env_file = self.module_dir / "scip-environment.yml"
         self.conda_env_name = "scip-env"
-        
+
     def _ensure_conda_env(self) -> bool:
         """
         Ensure that the conda environment for SCIP is available
-        
+
         Returns:
             bool: True if environment is available, False otherwise
         """
         try:
             # Check if conda is available
             subprocess.run(["conda", "--version"], check=True, capture_output=True)
-            
+
             # Check if environment exists
             result = subprocess.run(
-                ["conda", "env", "list"], 
-                check=True, 
-                capture_output=True,
-                text=True
+                ["conda", "env", "list"], check=True, capture_output=True, text=True
             )
-            
+
             if self.conda_env_name in result.stdout:
                 logger.info(f"Conda environment '{self.conda_env_name}' already exists")
                 return True
-                
+
             # Create the environment if it doesn't exist
             if self.env_file.exists():
                 logger.info(f"Creating conda environment '{self.conda_env_name}'...")
-                
+
                 # Use optimized flags to speed up environment creation
                 create_cmd = [
-                    "conda", "env", "create",
+                    "conda",
+                    "env",
+                    "create",
                     "--quiet",
-                    "--file", str(self.env_file),
-                    "--solver=libmamba"  # Much faster solver
+                    "--file",
+                    str(self.env_file),
+                    "--solver=libmamba",  # Much faster solver
                 ]
-                
+
                 try:
                     # First try with the optimized solver
                     subprocess.run(create_cmd, check=True, timeout=300)
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-                    logger.warning(f"Fast environment creation failed: {e}. Falling back to standard method...")
-                    
+                    logger.warning(
+                        f"Fast environment creation failed: {e}. Falling back to standard method..."
+                    )
+
                     # Fall back to standard conda if the optimized approach fails
                     subprocess.run(
                         ["conda", "env", "create", "--file", str(self.env_file)],
-                        check=True
+                        check=True,
                     )
-                    logger.info(f"Conda environment '{self.conda_env_name}' created successfully")
+                    logger.info(
+                        f"Conda environment '{self.conda_env_name}' created successfully"
+                    )
                     return True
             else:
                 logger.error(f"Environment file not found at {self.env_file}")
                 return False
-                
+
         except subprocess.CalledProcessError as e:
             logger.error(f"Error setting up conda environment: {e}")
-            if hasattr(e, 'output') and e.output:
+            if hasattr(e, "output") and e.output:
                 logger.error(f"Command output: {e.output}")
-            if hasattr(e, 'stderr') and e.stderr:
+            if hasattr(e, "stderr") and e.stderr:
                 logger.error(f"Error details: {e.stderr}")
             return False
         except FileNotFoundError:
-            logger.error("Conda not found in PATH. Please install conda or add it to PATH.")
+            logger.error(
+                "Conda not found in PATH. Please install conda or add it to PATH."
+            )
             return False
-                
-    def _run_in_conda_env(self, cmd: list, cwd: Optional[Union[str, Path]] = None) -> bool:
+
+    def _run_in_conda_env(
+        self, cmd: list, cwd: Optional[Union[str, Path]] = None
+    ) -> bool:
         """
         Run a command in the SCIP conda environment
-        
+
         Args:
             cmd: Command to run
             cwd: Working directory
-            
+
         Returns:
             bool: True if command succeeded, False otherwise
         """
         if not self._ensure_conda_env():
             return False
-            
+
         try:
             # Construct the command to run in the conda environment
             conda_cmd = ["conda", "run", "-n", self.conda_env_name] + cmd
             shell = False
-                
+
             logger.info(f"Running in conda environment: {cmd}")
-            
+
             # Run the command
             subprocess.run(
                 conda_cmd,
                 check=True,
                 cwd=cwd if cwd else self.project_root,
-                shell=shell
+                shell=shell,
             )
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Error running command in conda environment: {e}")
             return False
-        
-    def generate_index(self, 
-                       cwd: Union[str, Path] = ".",
-                       project_name: Optional[str] = None, 
-                       target_dir: Optional[str] = None) -> bool:
+
+    def generate_index(
+        self,
+        cwd: Union[str, Path] = ".",
+        project_name: Optional[str] = None,
+        target_dir: Optional[str] = None,
+    ) -> bool:
         """
         Generate SCIP index for the project
-        
+
         Args:
             cwd: Working directory to run the index command
             project_name: Project name to use in the index
             target_dir: Optional subdirectory to target for indexing
-            
+
         Returns:
             bool: True if index generation was successful, False otherwise
         """
@@ -153,7 +167,7 @@ class SCIPIndexer:
         if cwd:
             cmd.append("--cwd")
             cmd.append(str(Path(cwd).absolute()))
-        
+
         if project_name:
             cmd.extend(["--project-name", project_name])
         else:
@@ -162,23 +176,23 @@ class SCIPIndexer:
 
         # default output path in /tmp/project_name/index.scip
         cmd.extend(["--output", str(self.index_file)])
-            
+
         if target_dir:
             cmd.extend(["--target-only", target_dir])
-            
+
         logger.info(f"Running command: {' '.join(cmd)}")
-        
+
         # Run in conda environment
         if self._run_in_conda_env(cmd, self.project_root):
             logger.info(f"Successfully generated SCIP index at {self.index_file}")
             return True
         else:
             return False
-    
+
     def decode_index(self) -> bool:
         """
         Decode the SCIP index using protobuf to create a readable version
-        
+
         Returns:
             bool: True if decoding was successful, False otherwise
         """
@@ -189,117 +203,148 @@ class SCIPIndexer:
         try:
             # Using protoc to decode the binary SCIP file
             cmd = [
-                "protoc", 
-                "--decode=scip.Index", 
-                "scip.proto", 
-                f"< {self.index_file}", 
-                f"> {self.decoded_file}"
+                "protoc",
+                "--decode=scip.Index",
+                f"--proto_path={self.module_dir}",
+                "scip.proto",
+                f"< {self.index_file}",
+                f"> {self.decoded_file}",
             ]
-            
+
             # We need to use shell=True for the redirect operators
             cmd_str = " ".join(cmd)
             logger.info(f"Running command: {cmd_str}")
-            
+
             subprocess.run(cmd_str, shell=True, check=True, cwd=self.module_dir)
             logger.info(f"Successfully decoded SCIP index to {self.decoded_file}")
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Error decoding SCIP index: {e}")
             return False
-    
-    def process_index(self, output_file: Optional[str] = None) -> Optional[Dict[str, int]]:
+
+    def process_index(
+        self, output_file: Optional[str] = None
+    ) -> Optional[Dict[str, int]]:
         """
         Process the decoded SCIP index into a more usable format
-        
+
         Args:
             output_file: Path to write the processed data to
-            
+
         Returns:
             dict: Processed data from the SCIP index, or None if processing failed
         """
         if not self.decoded_file.exists():
             logger.error(f"Decoded index file not found at {self.decoded_file}")
             return None
-            
+
         try:
             # Import here to avoid circular imports
             from .scip_decode import SCIPGraphDecoder
-            
+
             decoder = SCIPGraphDecoder(str(self.decoded_file))
             graph = decoder.decode()
-            
+
             if output_file:
                 output_path = Path(output_file)
                 decoder.save_graph(str(output_path))
                 logger.info(f"Saved processed SCIP index to {output_path}")
-                
-            # Return some basic stats
+
+            # Calculate stats for igraph (different API than NetworkX)
             result = {
-                "nodes": len(graph.nodes),
-                "edges": len(graph.edges),
-                "file_nodes": sum(1 for _, attrs in graph.nodes(data=True) if attrs.get('type') == 'file'),
-                "symbol_nodes": sum(1 for _, attrs in graph.nodes(data=True) if attrs.get('type') == 'symbol'),
-                "contain_edges": sum(1 for _, _, attrs in graph.edges(data=True) if attrs.get('type') == 'contain'),
-                "reference_edges": sum(1 for _, _, attrs in graph.edges(data=True) if attrs.get('type') == 'reference')
+                "nodes": graph.vcount(),
+                "edges": graph.ecount(),
+                "file_nodes": sum(1 for v in graph.vs if v["type"] == "file"),
+                "symbol_nodes": sum(1 for v in graph.vs if v["type"] == "symbol"),
+                "contain_edges": sum(1 for e in graph.es if e["type"] == "contain"),
+                "reference_edges": sum(1 for e in graph.es if e["type"] == "reference"),
             }
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"Error processing SCIP index: {e}")
             return None
-            
-    def run_pipeline(self, project_name: Optional[str] = None, 
-                   target_dir: Optional[str] = None,
-                   output_file: Optional[str] = None,
-                   skip_index: bool = False,
-                   skip_decode: bool = False) -> Optional[Dict[str, int]]:
+
+    def run_pipeline(
+        self,
+        project_name: Optional[str] = None,
+        target_dir: Optional[str] = None,
+        output_file: Optional[str] = None,
+        skip_index: bool = False,
+        skip_decode: bool = False,
+    ) -> Optional[Dict[str, int]]:
         """
         Run the complete SCIP indexing pipeline: generate, decode, and process
-        
+
         Args:
             project_name: Project name to use in the index
             target_dir: Optional subdirectory to target for indexing
             output_file: Path to write the processed data to
             skip_index: Skip index generation, use existing index.scip
             skip_decode: Skip decoding, use existing index.decoded
-            
+
         Returns:
             dict: Processed data from the SCIP index, or None if any step failed
         """
         if not skip_index:
-            if not self.generate_index(cwd=self.project_root, project_name=project_name, target_dir=target_dir):
+            if not self.generate_index(
+                cwd=self.project_root, project_name=project_name, target_dir=target_dir
+            ):
                 return None
-        
+
         if not skip_decode:
             if not self.decode_index():
                 return None
-        
+
         return self.process_index(output_file)
+
 
 # Command-line interface
 def run_cli():
     """CLI entry point for the SCIP indexer"""
     parser = argparse.ArgumentParser(description="SCIP Index Interface")
-    parser.add_argument("--project-dir", help="Path to the project root directory", default=".")
-    parser.add_argument("--project-name", help="Project name for the index", default=None)
-    parser.add_argument("--target-dir", help="Subdirectory to target for indexing", default=None)
-    parser.add_argument("--output", help="Path to output processed index file", default="scip_graph.json")
-    parser.add_argument("--output-dir", help="Directory to store index files (default: /tmp/<project_name>)", default=None)
-    parser.add_argument("--skip-index", action="store_true", help="Skip index generation, use existing index.scip")
-    parser.add_argument("--skip-decode", action="store_true", help="Skip decoding, use existing index.decoded")
-    
+    parser.add_argument(
+        "--project-dir", help="Path to the project root directory", default="."
+    )
+    parser.add_argument(
+        "--project-name", help="Project name for the index", default=None
+    )
+    parser.add_argument(
+        "--target-dir", help="Subdirectory to target for indexing", default=None
+    )
+    parser.add_argument(
+        "--output",
+        help="Path to output processed index file",
+        default="scip_graph.json",
+    )
+    parser.add_argument(
+        "--output-dir",
+        help="Directory to store index files (default: /tmp/<project_name>)",
+        default=None,
+    )
+    parser.add_argument(
+        "--skip-index",
+        action="store_true",
+        help="Skip index generation, use existing index.scip",
+    )
+    parser.add_argument(
+        "--skip-decode",
+        action="store_true",
+        help="Skip decoding, use existing index.decoded",
+    )
+
     args = parser.parse_args()
-    
+
     indexer = SCIPIndexer(args.project_dir, args.output_dir)
     result = indexer.run_pipeline(
         project_name=args.project_name,
         target_dir=args.target_dir,
         output_file=args.output,
         skip_index=args.skip_index,
-        skip_decode=args.skip_decode
+        skip_decode=args.skip_decode,
     )
-    
+
     if result:
         print("SCIP Index Processing Complete:")
         for key, value in result.items():
