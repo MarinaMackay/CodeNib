@@ -56,30 +56,27 @@ class TestSCIPIndexer(unittest.TestCase):
         repo_indexer = SCIPIndexer(test_repo_path)
 
         # Run the indexing pipeline, allowing skip_index and skip_decode for faster tests
-        result = repo_indexer.run_pipeline(
+        graph = repo_indexer.run_pipeline(
             project_name="HttpieCliRepo",
             output_file=output_file,
             skip_index=False,
             skip_decode=False,
         )
 
-        if result:
-            self.assertIsNotNone(result)
-            self.assertIn("nodes", result)
-            self.assertIn("edges", result)
-
-            # Print the results for inspection
-            print("\nTest Python Repo SCIP Index Results:")
-            for key, value in result.items():
-                print(f"  {key}: {value}")
-
-            # Check that the output file was created
+        if graph:
+            graph.print_graph_basic_info()
+            self.assertIsNotNone(graph)
+            # Print some sample data from the output file
             self.assertTrue(
                 os.path.exists(output_file),
                 f"Expected output file {output_file} was not created",
             )
-
-            # Print some sample data from the output file
+            # Check that index files were created in the temporary directory, not in the project
+            index_file = Path("/tmp") / test_repo_path.name / "index.scip"
+            self.assertTrue(
+                index_file.exists(),
+                f"Expected index file {index_file} was not created in tmp directory",
+            )
             try:
                 with open(output_file, "r") as f:
                     data = json.load(f)
@@ -129,28 +126,25 @@ class TestSCIPIndexer(unittest.TestCase):
         # Create output file in the local directory (not in tmp)
         current_dir = Path(os.path.dirname(os.path.abspath(__file__)))
         output_file = str(current_dir / "samplemod_index.json")
+        graph_image_file = str(current_dir / "samplemod_graph.jpg")
 
         # Create a new indexer for the cloned test repo
         # Use our improved SCIPIndexer that stores data in /tmp
         repo_indexer = SCIPIndexer(test_repo_path)
 
         # Run the indexing pipeline
-        result = repo_indexer.run_pipeline(
+        graph = repo_indexer.run_pipeline(
             project_name="SampleModRepo",
             output_file=output_file,
             skip_index=False,
             skip_decode=False,
         )
 
-        if result:
-            self.assertIsNotNone(result)
-            self.assertIn("nodes", result)
-            self.assertIn("edges", result)
-
-            # Print the results for inspection
-            print("\nSample Module Repo SCIP Index Results:")
-            for key, value in result.items():
-                print(f"  {key}: {value}")
+        if graph:
+            graph.print_graph_basic_info()
+            self.assertIsNotNone(graph)
+            # visualize the graph and save it to a file
+            graph.visualize_graph(graph_image_file)
 
             # Check that the output file was created
             self.assertTrue(
@@ -181,6 +175,7 @@ class TestSCIPIndexer(unittest.TestCase):
 
                     for i, node in enumerate(symbol_nodes[:3]):
                         print(f"  Symbol node {i+1}: {node['id']}")
+
             except (json.JSONDecodeError, FileNotFoundError) as e:
                 print(f"Could not read output file: {e}")
         else:
