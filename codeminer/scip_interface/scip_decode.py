@@ -20,7 +20,7 @@ class SCIPGraphDecoder:
         for document in document_blocks:
             self._process_document(document)
 
-        return self.code_graph.get_graph()
+        return self.code_graph
 
     def _process_document(self, document_text):
         # Extract file path
@@ -86,8 +86,10 @@ class SCIPGraphDecoder:
 
         module_path = match.group(1)
 
-        # Clean up the symbol for node name
-        cleaned_symbol = re.sub(r"scip-python python \. [a-f0-9]+ `?", "", symbol)
+        # Clean up the symbol by simply splitting on spaces and taking the last part
+        # For example: "scip-python python HttpieCliRepo 5b604c37c6c67e18e7c3e9aee6c88a8c22b98345 extras.profiling.benchmarks/QuietSimpleHTTPServer#log_message()."
+        # Will become: "extras.profiling.benchmarks/QuietSimpleHTTPServer#log_message()."
+        cleaned_symbol = symbol.split(" ")[-1]
         cleaned_symbol = re.sub(r"`", "", cleaned_symbol)
 
         # Handle __init__ symbols - convert to file reference

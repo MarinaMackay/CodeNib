@@ -4,7 +4,9 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Optional, Union
+
+from ..code_graph import CodeGraph
 
 # Configure logging
 logging.basicConfig(
@@ -224,7 +226,7 @@ class SCIPIndexer:
 
     def process_index(
         self, output_file: Optional[str] = None
-    ) -> Optional[Dict[str, int]]:
+    ) -> Union[CodeGraph, None]:
         """
         Process the decoded SCIP index into a more usable format
 
@@ -232,7 +234,7 @@ class SCIPIndexer:
             output_file: Path to write the processed data to
 
         Returns:
-            dict: Processed data from the SCIP index, or None if processing failed
+            CodeGraph: Processed graph object
         """
         if not self.decoded_file.exists():
             logger.error(f"Decoded index file not found at {self.decoded_file}")
@@ -243,24 +245,14 @@ class SCIPIndexer:
             from .scip_decode import SCIPGraphDecoder
 
             decoder = SCIPGraphDecoder(str(self.decoded_file))
-            graph = decoder.decode()
+            graph: CodeGraph = decoder.decode()
 
             if output_file:
                 output_path = Path(output_file)
                 decoder.save_graph(str(output_path))
                 logger.info(f"Saved processed SCIP index to {output_path}")
 
-            # Calculate stats for igraph (different API than NetworkX)
-            result = {
-                "nodes": graph.vcount(),
-                "edges": graph.ecount(),
-                "file_nodes": sum(1 for v in graph.vs if v["type"] == "file"),
-                "symbol_nodes": sum(1 for v in graph.vs if v["type"] == "symbol"),
-                "contain_edges": sum(1 for e in graph.es if e["type"] == "contain"),
-                "reference_edges": sum(1 for e in graph.es if e["type"] == "reference"),
-            }
-
-            return result
+            return graph
 
         except Exception as e:
             logger.error(f"Error processing SCIP index: {e}")
@@ -273,7 +265,7 @@ class SCIPIndexer:
         output_file: Optional[str] = None,
         skip_index: bool = False,
         skip_decode: bool = False,
-    ) -> Optional[Dict[str, int]]:
+    ) -> Union[CodeGraph, None]:
         """
         Run the complete SCIP indexing pipeline: generate, decode, and process
 
@@ -285,7 +277,8 @@ class SCIPIndexer:
             skip_decode: Skip decoding, use existing index.decoded
 
         Returns:
-            dict: Processed data from the SCIP index, or None if any step failed
+            CodeGraph: Processed graph object
+
         """
         if not skip_index:
             if not self.generate_index(
