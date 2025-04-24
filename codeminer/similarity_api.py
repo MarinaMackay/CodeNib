@@ -13,7 +13,8 @@ MAX_SEQ_LENGTH = 8192 # Can be reduced to increase the speed
 def _load_model() -> SentenceTransformer:
     model = SentenceTransformer(
         "jinaai/jina-embeddings-v2-base-code",
-        trust_remote_code=True
+        trust_remote_code=True,
+        device="cpu"  # Force CPU usage
     )
     model.max_seq_length = MAX_SEQ_LENGTH
     return model
