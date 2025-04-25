@@ -1,12 +1,15 @@
 import re
+from pathlib import Path
 
 from ..code_graph import CodeGraph
 
 
 class SCIPGraphDecoder:
-    def __init__(self, index_file_path):
+    def __init__(self, index_file_path, project_root=None):
         self.index_file_path = index_file_path
         self.code_graph = CodeGraph()
+        self.project_root = project_root
+        self.indexed_directories = set()
 
     def decode(self):
         with open(self.index_file_path, "r") as f:
@@ -17,10 +20,22 @@ class SCIPGraphDecoder:
             r"documents\s*{(.*?)(?=documents\s*{|$)", content, re.DOTALL
         )
 
+        # Add the root node to the graph
+        self._add_root_node(".")
+
+        # Process all documents
         for document in document_blocks:
             self._process_document(document)
 
         return self.code_graph
+
+    def _add_root_node(self, project_root):
+        """Add the root node to the graph"""
+        self.code_graph._add_vertex(project_root, {"type": "root"})
+
+    def _add_directory_node(self, dir_path):
+        """Add a directory node to the graph"""
+        self.code_graph._add_vertex(dir_path, {"type": "directory"})
 
     def _process_document(self, document_text):
         # Extract file path
@@ -30,8 +45,23 @@ class SCIPGraphDecoder:
 
         file_path = file_match.group(1)
 
+        # Iteratively Extract the directory path from the file path
+        dir_path = Path(file_path).parent
+        while dir_path != dir_path.parent:  # Stop at the root directory
+            dir_path_str = str(dir_path)
+            if dir_path_str not in self.indexed_directories:
+                # Add directory node if not already indexed
+                self._add_directory_node(dir_path_str)
+                self.indexed_directories.add(dir_path_str)
+                # Add containment edge from parent directory to this directory
+                self.code_graph._add_edge(str(dir_path.parent), dir_path_str, "contain")
+            dir_path = dir_path.parent
+
         # Add file node
         self.code_graph.add_file_node(file_path)
+
+        # Add file containment edge
+        self.code_graph._add_edge(str(Path(file_path).parent), file_path, "contain")
 
         # Process occurrences
         occurrences = re.findall(r"occurrences\s*{(.*?)}", document_text, re.DOTALL)

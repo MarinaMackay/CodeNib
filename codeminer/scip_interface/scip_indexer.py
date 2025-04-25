@@ -244,7 +244,10 @@ class SCIPIndexer:
             # Import here to avoid circular imports
             from .scip_decode import SCIPGraphDecoder
 
-            decoder = SCIPGraphDecoder(str(self.decoded_file))
+            # Pass the project root to the decoder to enable directory indexing
+            decoder = SCIPGraphDecoder(
+                str(self.decoded_file), project_root=self.project_root
+            )
             graph: CodeGraph = decoder.decode()
 
             if output_file:

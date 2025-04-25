@@ -167,6 +167,13 @@ class CodeGraph:
             else self.name_to_vertex[target_name]
         )
 
+        # Check if the edge already exists
+        if self.graph.are_adjacent(source_id, target_id):
+            # Edge already exists, return its ID
+            edge_id = self.graph.get_eid(source_id, target_id, error=False)
+            if edge_id is not None:
+                return edge_id
+
         # Add edge
         self.graph.add_edges([(source_id, target_id)])
         edge_id = self.graph.ecount() - 1
@@ -260,6 +267,8 @@ class CodeGraph:
         node_type_colors = {
             "file": "skyblue",
             "symbol": "lightgreen",
+            "directory": "orange",  # Add directory node color
+            "root": "lightgrey",  # Root node color
             # Add more node types and colors as needed
         }
 
