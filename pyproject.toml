@@ -16,7 +16,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "networkx>=2.6.0",
+    "igraph>=0.11.6",                  # For graph data structure and algorithms
     "matplotlib>=3.4.0",                  # For visualization of graphs
     "pytest>=6.0.0",                      # For testing
     "llama-index-retrievers-bm25>=0.5.0", # For BM25 retrieval
@@ -25,3 +25,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["black>=22.3.0", "isort>=5.10.1", "mypy>=0.950", "flake8>=4.0.1"]
 test = ["pytest>=6.0.0", "pytest-cov>=3.0.0"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"codeminer.scip_interface" = ["*.proto", "*.yml", "*.sh", "README.md"]
