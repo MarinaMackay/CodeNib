@@ -75,10 +75,25 @@ if __name__ == "__main__":
         "gethmm",  # No underscore
         "get hmm",  # Different word segmentation
     ]
+    # Save and load index example
+    index_dir = current_dir / "bm25_index_test"
+    print(f"\nSaving BM25 index to {index_dir}...")
+
+    if not index_dir.exists():
+        index_dir.mkdir(parents=True)
+
+    indexer.save_index(str(index_dir))
+
+    print("Loading BM25 index from disk...")
+    new_indexer = BM25CodeIndexer()
+    new_indexer.load_index(str(index_dir))
+
+    # Test search with the loaded index
+    print("\nSearching with loaded index:")
 
     for query in search_queries:
         print(f"\nSearching for '{query}':")
-        results = indexer.search(query)
+        results = new_indexer.search(query)
 
         if not results:
             print(f"  No results found for '{query}'")
@@ -92,16 +107,5 @@ if __name__ == "__main__":
                 print(f"     File: {result['file']}")
             if "start_line" in result and "end_line" in result:
                 print(f"     Lines: {result['start_line']}-{result['end_line']}")
-
-    # Save and load index example
-    index_dir = current_dir / "bm25_index_test"
-    print(f"\nSaving BM25 index to {index_dir}...")
-
-    if not index_dir.exists():
-        index_dir.mkdir(parents=True)
-
-    indexer.save_index(str(index_dir))
-
-    print("Loading BM25 index from disk...")
-    new_indexer = BM25CodeIndexer()
-    new_indexer.load_index(str(index_dir))
+    print("\n--- BM25 Index Testing Completed ---")
+    print("Test completed successfully.")

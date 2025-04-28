@@ -14,11 +14,13 @@ class BM25CodeIndexer:
     search functionality.
     """
 
-    def __init__(self, top_k: int = 10, language: str = "english"):
+    def __init__(self, code_graph=None, top_k: int = 10, language: str = "english"):
         """
-        Initialize the BM25CodeIndexer.
+        Initialize the BM25CodeIndexer and optionally build the index immediately.
 
         Args:
+            code_graph: CodeGraph instance containing nodes to index. If provided,
+                       the index will be built immediately.
             top_k: Number of results to return in searches
             language: Language for stopword removal and stemming
                       Default is "english" which works well for processing code tokens
@@ -28,8 +30,11 @@ class BM25CodeIndexer:
         self.language = language
         self.documents = []
         self.nodes = []
-        self.node_id_to_graph_node = {}
         self.retriever = None
+
+        # Build the index immediately if a code_graph is provided
+        if code_graph is not None:
+            self.build_index_from_graph(code_graph)
 
     def build_index_from_graph(self, code_graph: CodeGraph) -> BM25Retriever:
         """
@@ -41,7 +46,6 @@ class BM25CodeIndexer:
         # Reset the index
         self.documents = []
         self.nodes = []
-        self.node_id_to_graph_node = {}
 
         # Convert graph nodes to documents
         for vertex in code_graph.graph.vs:
@@ -51,8 +55,6 @@ class BM25CodeIndexer:
                 # Create TextNode from Document for BM25Retriever
                 text_node = TextNode(text=doc.text, id_=doc.id_, metadata=doc.metadata)
                 self.nodes.append(text_node)
-                # Store mapping from document ID to graph node for later retrieval
-                self.node_id_to_graph_node[doc.id_] = vertex
 
         # Create BM25Retriever
         self.retriever = BM25Retriever.from_defaults(
@@ -119,6 +121,9 @@ class BM25CodeIndexer:
         for key in vertex.attributes():
             if key not in ["name", "type", "file", "start_line", "end_line"]:
                 metadata[key] = vertex[key]
+
+        # Store the node ID in metadata for retrieval
+        metadata["node_id"] = node_id
 
         # Create a unique ID for the document
         doc_id = f"node_{node_id}"
@@ -205,31 +210,25 @@ class BM25CodeIndexer:
         # Convert results to a more usable format
         processed_results = []
         for result_node in results:
-            # Get the original graph node using the document ID
-            doc_id = result_node.node.id_
-            if doc_id in self.node_id_to_graph_node:
-                graph_node = self.node_id_to_graph_node[doc_id]
+            # Extract all metadata directly from the node
+            metadata = result_node.node.metadata
 
-                # Create result dict with the score from the retriever
-                result = {
-                    "score": float(
-                        result_node.score or 0.0
-                    ),  # Ensure score is included and convert to float
-                    "node_id": graph_node.index,
-                    "node_type": (
-                        graph_node["type"]
-                        if "type" in graph_node.attributes()
-                        else "unknown"
-                    ),
-                    "name": graph_node["name"],
-                }
+            # Create result dict with the score from the retriever
+            result = {
+                "score": float(
+                    result_node.score or 0.0
+                ),  # Ensure score is included and convert to float
+                "node_id": metadata.get("node_id"),
+                "node_type": metadata.get("type", "unknown"),
+                "name": metadata.get("name", ""),
+            }
 
-                # Add all vertex attributes
-                for key in graph_node.attributes():
-                    if key != "name":  # already included above
-                        result[key] = graph_node[key]
+            # Add all metadata
+            for key, value in metadata.items():
+                if key not in ["node_id"]:  # already included above
+                    result[key] = value
 
-                processed_results.append(result)
+            processed_results.append(result)
 
         return processed_results
 
@@ -249,6 +248,7 @@ class BM25CodeIndexer:
         os.makedirs(directory_path, exist_ok=True)
 
         # Save the BM25 retriever using its built-in persist method
+        # This already persists the corpus and retriever configuration
         self.retriever.persist(directory_path)
 
     def load_index(self, directory_path: str):
@@ -257,10 +257,10 @@ class BM25CodeIndexer:
 
         Args:
             directory_path: Path to load the index from
-            code_graph: CodeGraph instance for reference
         """
         if not os.path.exists(directory_path):
             raise ValueError(f"Directory {directory_path} does not exist.")
 
         # Load the BM25 retriever using its built-in load method
+        # This already loads the corpus and configuration
         self.retriever = BM25Retriever.from_persist_dir(directory_path)
