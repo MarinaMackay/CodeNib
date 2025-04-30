@@ -225,6 +225,23 @@ class CodeGraph:
         """
         return self.graph
 
+    def get_neighbors(self, vertex):
+        """
+        Get the neighbors of a vertex.
+
+        Args:
+            vertex: Vertex ID or name
+
+        Returns:
+            List of neighbor vertex IDs
+        """
+        if isinstance(vertex, str):
+            vertex = self.name_to_vertex.get(vertex)
+            if vertex is None:
+                return []
+
+        return self.graph.neighbors(vertex)
+
     def print_graph_basic_info(self):
         """
         Print basic information about the graph.
