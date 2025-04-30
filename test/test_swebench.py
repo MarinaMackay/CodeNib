@@ -26,9 +26,9 @@ class TestSWEBench(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment for each test case"""
-        # Use ./codeminer as the cache directory
+        # Use ~/.codeminer as the cache directory
         user_home = str(Path.home())
-        self.cache_dir = os.path.join(user_home, "codeminer")
+        self.cache_dir = os.path.join(user_home, ".codeminer")
         os.makedirs(self.cache_dir, exist_ok=True)
 
         # Load test data - first try the class dataset, then the cached file
