@@ -112,10 +112,14 @@ class BM25CodeIndexer:
                 metadata["start_line"] = start_line
             if end_line:
                 metadata["end_line"] = end_line
+        elif node_type == "directory":
+            # For directories, just use the name
+            content = f"Directory: {node_name}"
+            metadata = {"type": "directory", "name": node_name}
         else:
-            # For unknown node types, use name as content
-            content = f"Unknown node: {node_name}"
-            metadata = {"type": "unknown"}
+            # root node
+            content = f"Root node: {node_name}"
+            metadata = {"type": "root", "name": node_name}
 
         # Add any additional attributes as metadata
         for key in vertex.attributes():

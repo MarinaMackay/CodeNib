@@ -289,7 +289,7 @@ class SCIPIndexer:
         should_generate_index = force or not self.index_file.exists()
         if skip_index:  # Honor legacy parameter if provided
             should_generate_index = False
-            
+
         # Generate the index if needed
         if should_generate_index:
             logger.info(f"Generating SCIP index (force={force})")
@@ -299,10 +299,10 @@ class SCIPIndexer:
                 return None
 
         # Determine whether to skip decode step
-        should_decode_index = force or not self.decoded_file.exists() 
+        should_decode_index = force or not self.decoded_file.exists()
         if skip_decode:  # Honor legacy parameter if provided
             should_decode_index = False
-            
+
         # Decode the index if needed
         if should_decode_index and self.index_file.exists():
             logger.info(f"Decoding SCIP index (force={force})")

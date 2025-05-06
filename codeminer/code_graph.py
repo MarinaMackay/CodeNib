@@ -224,23 +224,74 @@ class CodeGraph:
             The igraph Graph instance
         """
         return self.graph
-
-    def get_neighbors(self, vertex):
+    
+    def get_node_info(self, node_name):
         """
-        Get the neighbors of a vertex.
+        Get information about a node in the graph.
 
         Args:
-            vertex: Vertex ID or name
+            node_name: Name of the node
+
+        Returns:
+            Dictionary with vertex attributes or None if not found
+        """
+        if isinstance(node_name, str):
+            vertex = self.name_to_vertex.get(node_name)
+            if vertex is None:
+                return None
+
+        return self.graph.vs[vertex].attributes()
+
+    def get_neighbors(self, node_name):
+        """
+        Get the neighbors of a node in the graph.
+
+        Args:
+            node_name: Name of the node
 
         Returns:
             List of neighbor vertex IDs
         """
-        if isinstance(vertex, str):
-            vertex = self.name_to_vertex.get(vertex)
+        if isinstance(node_name, str):
+            vertex = self.name_to_vertex.get(node_name)
             if vertex is None:
                 return []
 
         return self.graph.neighbors(vertex)
+        
+    def get_successors(self, node_name):
+        """
+        Get the successors of a node_name (outgoing edges).
+
+        Args:
+            node_name: Name of the node
+
+        Returns:
+            List of successor vertex IDs
+        """
+        if isinstance(node_name, str):
+            vertex = self.name_to_vertex.get(node_name)
+            if vertex is None:
+                return []
+
+        return self.graph.successors(vertex)
+        
+    def get_predecessors(self, node_name):
+        """
+        Get the predecessors of a node_name (incoming edges).
+
+        Args:
+            node_name: Name of the node
+
+        Returns:
+            List of predecessor vertex IDs
+        """
+        if isinstance(node_name, str):
+            vertex = self.name_to_vertex.get(node_name)
+            if vertex is None:
+                return []
+
+        return self.graph.predecessors(vertex)
 
     def print_graph_basic_info(self):
         """
