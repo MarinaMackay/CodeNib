@@ -3,7 +3,9 @@ Keyword extraction agent for problem statements.
 This module extracts key terms from problem statements using llama_index.
 """
 
-from typing import List
+import os
+from pathlib import Path
+from typing import List, Union
 
 from llama_index.core.llms import ChatMessage
 from pydantic import BaseModel, Field
@@ -27,7 +29,7 @@ class KeywordExtractor:
     def __init__(
         self,
         model_name: str = "gpt-4o",
-        config_path: str = "key.cfg",
+        config_path: Union[Path, str] = "key.cfg",
         temperature: float = 0.0,
         **kwargs,
     ):
@@ -36,10 +38,14 @@ class KeywordExtractor:
 
         Args:
             model_name (str): Name of the LLM model to use
-            config_path (str): Path to the configuration file
+            config_path (Union[Path, str]): Path to the configuration file
             temperature (float): Temperature for the LLM, lower is more deterministic
             **kwargs: Additional arguments to pass to the LLM
         """
+        # Convert Path object to string if needed, but preserve relative paths
+        if isinstance(config_path, Path):
+            config_path = str(config_path)
+            
         # Load configuration
         codeminer_config = Config(config_path)
 
@@ -94,7 +100,7 @@ class KeywordExtractor:
 def extract_keywords_from_statement(
     problem_statement: str,
     model_name: str = "gpt-4o",
-    config_path: str = "key.cfg",
+    config_path: Union[Path, str] = "key.cfg",
     temperature: float = 0.0,
     **kwargs,
 ) -> KeywordExtraction:
@@ -104,7 +110,7 @@ def extract_keywords_from_statement(
     Args:
         problem_statement (str): The problem statement to extract keywords from
         model_name (str): Name of the LLM model to use
-        config_path (str): Path to the configuration file
+        config_path (Union[Path, str]): Path to the configuration file
         temperature (float): Temperature for the LLM, lower is more deterministic
         **kwargs: Additional arguments to pass to the LLM
 
@@ -118,25 +124,3 @@ def extract_keywords_from_statement(
         **kwargs,
     )
     return extractor.extract_keywords(problem_statement)
-
-
-# Example usage
-if __name__ == "__main__":
-    sample_problem = (
-        "There's an issue with the coordinates module in astropy. "
-        "The SkyCoord.from_name function is not resolving some object names correctly "
-        "when using the SIMBAD service. We need to fix the name resolution logic."
-    )
-
-    # Using default model (GPT)
-    extractor = KeywordExtractor()
-    result = extractor.extract_keywords(sample_problem)
-    print(f"Extracted keywords: {result.keywords}")
-
-    # Example with Claude model
-    try:
-        claude_extractor = KeywordExtractor(model_name="claude-3-sonnet-20240229")
-        claude_result = claude_extractor.extract_keywords(sample_problem)
-        print(f"\nClaude extracted keywords: {claude_result.keywords}")
-    except Exception as e:
-        print(f"Claude model extraction failed: {e}")
