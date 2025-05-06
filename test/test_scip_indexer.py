@@ -59,8 +59,7 @@ class TestSCIPIndexer(unittest.TestCase):
         graph = repo_indexer.run_pipeline(
             project_name="HttpieCliRepo",
             output_file=output_file,
-            skip_index=False,
-            skip_decode=False,
+            force=True
         )
 
         if graph:
@@ -136,8 +135,7 @@ class TestSCIPIndexer(unittest.TestCase):
         graph = repo_indexer.run_pipeline(
             project_name="SampleModRepo",
             output_file=output_file,
-            skip_index=False,
-            skip_decode=False,
+            force=True,
         )
 
         if graph:
