@@ -3,7 +3,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Union
 
 import datasets
 from datasets import Features, Value
@@ -93,7 +93,7 @@ def load_filter_swebench_dataset_explicit(
 
 
 def process_swebench_instance(
-    dataset_row: Dict[str, Any], cache_dir: str = "~/.codeminer"
+    dataset_row: Dict[str, Any], cache_dir: Union[Path, str] = "~/.codeminer"
 ) -> str:
     """
     Process a dataset instance by:
@@ -111,8 +111,10 @@ def process_swebench_instance(
     repo_name = dataset_row["repo"]
     base_commit = dataset_row["base_commit"]
 
-    # Create cache directory if it doesn't exist
-    cache_dir = os.path.abspath(cache_dir)
+    # Properly expand and normalize cache_dir
+    if isinstance(cache_dir, str):
+        cache_dir = os.path.expanduser(cache_dir)
+    cache_dir = str(Path(cache_dir).absolute())
     os.makedirs(cache_dir, exist_ok=True)
 
     # Repository paths
