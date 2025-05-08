@@ -2,8 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 
-from codeminer import SCIPIndexer
 from codeminer.bm25_index import BM25CodeIndexer
+from codeminer.scip_interface import SCIPIndexer
 
 
 def setup_samplemod_repo():
