@@ -3,5 +3,7 @@ from .code_graph import CodeGraph
 from .extract_agent import KeywordExtractor
 from .scip_interface import SCIPIndexer
 from .search import CodeSearchEngine
+from .similarity_api import SimilarityAPI
 
-__all__ = ["SCIPIndexer", "CodeGraph", "BM25CodeIndexer", "KeywordExtractor", "CodeSearchEngine"]
+__all__ = ["SCIPIndexer", "CodeGraph", "BM25CodeIndexer", "KeywordExtractor", "CodeSearchEngine", 
+           "SimilarityAPI"]
