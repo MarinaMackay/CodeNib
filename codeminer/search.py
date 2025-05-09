@@ -1,21 +1,22 @@
-from typing import List, Dict, Any, Optional, Union
 import os
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
-from .scip_interface import SCIPIndexer
 from .bm25_index import BM25CodeIndexer
-from .extract_agent import extract_keywords_from_statement, KeywordExtraction
-from .log_utils import get_logger
 from .code_graph import CodeGraph
+from .extract_agent import KeywordExtraction, extract_keywords_from_statement
+from .log_utils import get_logger
+from .scip_interface import SCIPIndexer
 
 logger = get_logger(__name__)
+
 
 class CodeSearchEngine:
     """
     Integrated search engine that combines SCIP indexing, code graph representation,
     BM25 indexing, and keyword extraction to provide context-aware code search.
     """
-    
+
     def __init__(
         self,
         repo_path: str,
@@ -27,7 +28,7 @@ class CodeSearchEngine:
     ):
         """
         Initialize the CodeSearchEngine.
-        
+
         Args:
             repo_path: Path to the repository to index and search
             llm_model: LLM model to use for keyword extraction
@@ -38,37 +39,37 @@ class CodeSearchEngine:
         """
         self.repo_path = os.path.abspath(repo_path)
         self.repo_name = os.path.basename(self.repo_path)
-                
+
         # Convert Path object to string if needed, but preserve relative paths
         if isinstance(config_path, Path):
             config_path = str(config_path)
-        
+
         self.config_path = config_path
-        
+
         # Configuration
         self.llm_model = llm_model
         self.top_k = top_k
         self.language = language
-        
+
         # Components
-        self.code_graph : CodeGraph = None
+        self.code_graph: CodeGraph = None
         self.bm25_indexer = None
-        
+
         logger.info(f"Initialized CodeSearchEngine for repository: {self.repo_name}")
         self.index_repository(repo_name=self.repo_name, instance_id=instance_id)
-    
+
     def index_repository(
-        self, 
+        self,
         repo_name: Optional[str] = None,
         instance_id: Optional[str] = None,
     ) -> bool:
         """
         Index the repository using SCIP and build BM25 index.
-        
+
         Args:
             repo_name: Optional name for the repository
             instance_id: Optional instance ID for the dataset
-            
+
         Returns:
             bool: True if indexing was successful, False otherwise
         """
@@ -85,31 +86,27 @@ class CodeSearchEngine:
 
         # Build code graph
         # Run the indexing pipeline
-        code_graph = scip_indexer.run_pipeline(
-            project_name=instance_id
-        )
-        
+        self.code_graph = scip_indexer.run_pipeline(project_name=instance_id)
+
         # Build BM25 index
         logger.info("Building BM25 index from code graph...")
         try:
             self.bm25_indexer = BM25CodeIndexer(
-                code_graph=code_graph,
-                top_k=self.top_k, 
-                language=self.language
+                code_graph=self.code_graph, top_k=self.top_k, language=self.language
             )
         except Exception as e:
             logger.error(f"Error building BM25 index: {e}")
             return False
-        
+
         return True
-    
+
     def extract_keywords(self, problem_statement: str) -> KeywordExtraction:
         """
         Extract keywords from a problem statement.
-        
+
         Args:
             problem_statement: The problem statement to analyze
-            
+
         Returns:
             KeywordExtraction object containing extracted keywords
         """
@@ -119,36 +116,38 @@ class CodeSearchEngine:
                 problem_statement,
                 model_name=self.llm_model,
                 config_path=self.config_path,
-                temperature=0.0
+                temperature=0.0,
             )
-            logger.info(f"Extracted {len(keywords.keywords)} keywords: {', '.join(keywords.keywords)}")
+            logger.info(
+                f"Extracted {len(keywords.keywords)} keywords: {', '.join(keywords.keywords)}"
+            )
             return keywords
         except Exception as e:
             logger.error(f"Error extracting keywords: {e}")
             # Return empty keywords if extraction fails
             return KeywordExtraction(keywords=[])
-    
+
     def search(
-        self, 
+        self,
         problem_statement: str,
         use_keyword_extraction: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Search the repository for code relevant to the problem statement.
-        
+
         Args:
             problem_statement: The problem statement or query
             use_keyword_extraction: Whether to use keyword extraction (True) or use the raw problem statement (False)
-            
+
         Returns:
             List of search results with scores and locations
         """
         if self.bm25_indexer is None:
             logger.error("Repository is not indexed. Call index_repository() first.")
             return []
-        
+
         search_query = problem_statement
-        
+
         # Extract keywords if requested
         if use_keyword_extraction:
             extracted = self.extract_keywords(problem_statement)
@@ -156,9 +155,8 @@ class CodeSearchEngine:
                 # Combine extracted keywords into a search query
                 search_query = " ".join(extracted.keywords)
 
-        
         logger.info(f"Searching with query: {search_query}")
-        
+
         # Perform search
         try:
             results = self.bm25_indexer.search(search_query)
@@ -167,18 +165,17 @@ class CodeSearchEngine:
         except Exception as e:
             logger.error(f"Error during search: {e}")
             return []
-        
 
     def get_code_context(
-            self,
-            result: Dict[str, Any],
+        self,
+        result: Dict[str, Any],
     ) -> Optional[str]:
         """
         Get source code context for a search result.
-        
+
         Args:
             result: A single search result from the search method
-            
+
         Returns:
             Source code context as a string, or None if not available
         """
@@ -189,9 +186,9 @@ class CodeSearchEngine:
             file_path = os.path.join(self.repo_path, result["file"])
             if not os.path.exists(file_path):
                 return None
-            
+
             try:
-                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     return f.read()
             except Exception as e:
                 logger.error(f"Error reading file {file_path}: {e}")
@@ -200,21 +197,20 @@ class CodeSearchEngine:
             file_path = os.path.join(self.repo_path, result["file"])
             if not os.path.exists(file_path):
                 return None
-            
+
             try:
-                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()
-                
+
                 start_line = result.get("start_line", 0)
                 end_line = result.get("end_line", len(lines))
-                
+
                 # Extract the relevant lines
-                context_code = ''.join(lines[start_line:end_line])
+                context_code = "".join(lines[start_line:end_line])
                 return context_code
             except Exception as e:
                 logger.error(f"Error getting code context: {e}")
                 return None
-            
 
     def get_code_context_by_node_name(
         self,
@@ -222,10 +218,10 @@ class CodeSearchEngine:
     ) -> Optional[str]:
         """
         Get source code context for a node by its name.
-        
+
         Args:
             node_name: The name of the graph node
-            
+
         Returns:
             Source code context as a string, or None if not available
         """
@@ -242,9 +238,9 @@ class CodeSearchEngine:
             if not os.path.exists(file_path):
                 logger.warning(f"File '{file_path}' does not exist.")
                 return None
-            
+
             try:
-                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     return f.read()
             except Exception as e:
                 logger.error(f"Error reading file {file_path}: {e}")
@@ -254,96 +250,94 @@ class CodeSearchEngine:
             if not os.path.exists(file_path):
                 logger.warning(f"File '{file_path}' does not exist.")
                 return None
-            
+
             try:
-                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()
-                
+
                 start_line = attributes.get("start_line", 0)
                 end_line = attributes.get("end_line", len(lines))
-                
+
                 # Extract the relevant lines
-                context_code = ''.join(lines[start_line:end_line])
+                context_code = "".join(lines[start_line:end_line])
                 return context_code
             except Exception as e:
                 logger.error(f"Error getting code context: {e}")
                 return None
-        
+
     def get_predecessor_nodes(
-            self,
-            node_name: str,
+        self,
+        node_name: str,
     ) -> List[str]:
         """
         Get predecessor nodes for a given node name.
-        
+
         Args:
             node_name: The name of the graph node
-            
+
         Returns:
             List of predecessor node names
         """
         if self.code_graph is None:
             logger.error("Code graph is not initialized.")
             return []
-        
+
         predecessors = self.code_graph.get_predecessors(node_name)
         if not predecessors:
             logger.warning(f"No predecessors found for node '{node_name}'.")
-        
+
         return predecessors
-        
+
     def get_rich_result_context(
-        self,
-        result: Dict[str, Any],
-        context_lines: int = 5
+        self, result: Dict[str, Any], context_lines: int = 5
     ) -> Dict[str, Any]:
         """
         Enhance a search result with source code context.
-        
+
         Args:
             result: A single search result from the search method
             context_lines: Number of context lines to include before and after
-            
+
         Returns:
             Enhanced result with source code context
         """
         if "file" not in result or not result["file"]:
             return result
-        
+
         file_path = os.path.join(self.repo_path, result["file"])
         if not os.path.exists(file_path):
             return result
-        
+
         # Copy the result to avoid modifying the original
         enhanced_result = dict(result)
-        
+
         try:
             # Get line range from the result
             start_line = result.get("start_line")
             end_line = result.get("end_line")
-            
+
             if start_line is not None and end_line is not None:
                 # Calculate context range
                 context_start = max(0, start_line - context_lines)
-                
-                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()
-                
+
                 # Adjust context end based on file length
                 context_end = min(len(lines), end_line + context_lines)
-                
+
                 # Extract the relevant lines
-                context_code = ''.join(lines[context_start:context_end])
+                context_code = "".join(lines[context_start:context_end])
                 enhanced_result["context_code"] = context_code
                 enhanced_result["context_range"] = {
                     "start": context_start,
-                    "end": context_end
+                    "end": context_end,
                 }
         except Exception as e:
             logger.error(f"Error getting code context: {e}")
-        
+
         return enhanced_result
-    
+
     def search_with_context(
         self,
         problem_statement: str,
@@ -352,12 +346,12 @@ class CodeSearchEngine:
     ) -> List[Dict[str, Any]]:
         """
         Search and include source code context in the results.
-        
+
         Args:
             problem_statement: The problem statement or query
             context_lines: Number of context lines to include
             use_keyword_extraction: Whether to use keyword extraction
-            
+
         Returns:
             List of search results with code context
         """
@@ -366,11 +360,11 @@ class CodeSearchEngine:
             problem_statement,
             use_keyword_extraction=use_keyword_extraction,
         )
-        
+
         # Enhance each result with context
         enhanced_results = []
         for result in results:
             enhanced_result = self.get_rich_result_context(result, context_lines)
             enhanced_results.append(enhanced_result)
-        
+
         return enhanced_results
