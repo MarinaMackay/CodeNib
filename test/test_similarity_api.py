@@ -1,24 +1,23 @@
 import unittest
 import time
-import pytest
 import requests
-from codeminer import SimilarityAPI
+from codeminer.api import SimilarityAPI, BaseAPI
 
 class TestSimilarityAPI(unittest.TestCase):
-    """Test functionality of the SimilarityAPI class"""
+    """Test cases for the SimilarityAPI class"""
     
     @classmethod
     def setUpClass(cls):
         """Execute once before all tests"""
         # Make sure the API service is not running
-        SimilarityAPI.stop()
-        time.sleep(1)  # Wait for the service to completely stop
+        BaseAPI.stop()
+        time.sleep(1)
     
     @classmethod
     def tearDownClass(cls):
         """Execute once after all tests"""
         # Make sure the API service is closed
-        SimilarityAPI.stop()
+        BaseAPI.stop()
     
     def setUp(self):
         """Execute before each test method"""
@@ -30,13 +29,13 @@ class TestSimilarityAPI(unittest.TestCase):
     def tearDown(self):
         """Execute after each test method"""
         # Make sure the API service is stopped
-        SimilarityAPI.stop()
-        time.sleep(1)  # Wait for the service to completely stop
+        BaseAPI.stop()
+        time.sleep(1)
     
     def test_start_server(self):
         """Test starting the API service"""
-        # Start the service
-        SimilarityAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
+        # Start the service using BaseAPI
+        BaseAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
         
         # Wait for the service to start
         time.sleep(2)
@@ -45,14 +44,13 @@ class TestSimilarityAPI(unittest.TestCase):
         try:
             response = requests.get(f"{self.base_url}/docs")
             self.assertEqual(response.status_code, 200)
-            print("Service started successfully")
         except requests.RequestException:
             self.fail("Service failed to start")
     
     def test_query_similarity(self):
         """Test the similarity calculation functionality"""
         # Start the service
-        SimilarityAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
+        BaseAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
         
         # Test code and query
         code = "def greet(name):\n    return f'Hello, {name}!'"
@@ -65,15 +63,11 @@ class TestSimilarityAPI(unittest.TestCase):
         self.assertIn("score", result)
         self.assertIsInstance(result["score"], float)
         self.assertIn("latency_sec", result)
-        
-        # Print results
-        print(f"Similarity score: {result['score']}")
-        print(f"Latency: {result['latency_sec']} seconds")
     
     def test_stop_server(self):
         """Test stopping the API service"""
         # Start the service
-        SimilarityAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
+        BaseAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
         time.sleep(2)  # Wait for the service to start
         
         # First confirm that the service is running
@@ -83,32 +77,30 @@ class TestSimilarityAPI(unittest.TestCase):
             self.fail("Service failed to start, cannot test stop functionality")
         
         # Stop the service
-        SimilarityAPI.stop()
+        BaseAPI.stop()
         time.sleep(2)  # Wait for the service to stop
         
         # Verify that the service has stopped
         with self.assertRaises(requests.ConnectionError):
             requests.get(f"{self.base_url}/docs", timeout=1)
-        print("Service stopped successfully")
     
     def test_multiple_starts(self):
         """Test starting the service multiple times"""
         # First start
-        SimilarityAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
+        BaseAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
         time.sleep(1)
         
         # Second start (should return directly instead of creating a new instance)
-        SimilarityAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
+        BaseAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
         
         # Verify that the service is running normally
         response = requests.get(f"{self.base_url}/docs")
         self.assertEqual(response.status_code, 200)
-        print("Multiple starts test passed")
     
     def test_query_without_start(self):
         """Test querying when the service is not started"""
         # Make sure the service is stopped
-        SimilarityAPI.stop()
+        BaseAPI.stop()
         time.sleep(1)
         
         # Try to query, should raise an exception
@@ -117,7 +109,56 @@ class TestSimilarityAPI(unittest.TestCase):
         
         with self.assertRaises(RuntimeError):
             SimilarityAPI.query(code, query)
-        print("Query without start test passed")
+    
+    def test_continuous_queries(self):
+        """Test multiple continuous queries to the similarity API"""
+        # Start the service
+        BaseAPI.start(host=self.test_host, port=self.test_port, log_level="critical")
+        
+        # Define test data pairs (code and query)
+        test_pairs = [
+            (
+                "def add(a, b):\n    return a + b", 
+                "Function to add two numbers"
+            ),
+            (
+                "class User:\n    def __init__(self, name):\n        self.name = name", 
+                "Define a User class with a name"
+            ),
+            (
+                "async def fetch_data():\n    response = await client.get('https://api.example.com')\n    return response.json()", 
+                "Asynchronous function to fetch data from an API"
+            ),
+            (
+                "def factorial(n):\n    if n <= 1:\n        return 1\n    return n * factorial(n-1)", 
+                "Recursive function to calculate factorial"
+            ),
+            (
+                "import pandas as pd\n\ndf = pd.read_csv('data.csv')\nresult = df.groupby('category').mean()", 
+                "Process CSV data using pandas"
+            )
+        ]
+        
+        # Test multiple queries in sequence
+        results = []
+        for code, query in test_pairs:
+            result = SimilarityAPI.query(code, query)
+            self.assertIn("score", result)
+            self.assertIsInstance(result["score"], float)
+            self.assertIn("latency_sec", result)
+            results.append(result)
+            
+        # Check that all queries returned valid results
+        self.assertEqual(len(results), len(test_pairs))
+        
+        # Ensure 2nd and subsequent queries are faster (model already loaded)
+        if len(results) > 1:
+            first_latency = results[0]["latency_sec"]
+            for i, result in enumerate(results[1:], 1):
+                # Note: This might not always be true in CI environments
+                # So we'll just log rather than assert
+                current_latency = result["latency_sec"]
+                print(f"Query {i} latency: {current_latency}s (1st query: {first_latency}s)")
 
 if __name__ == "__main__":
     unittest.main()
