@@ -1,36 +1,31 @@
 # CodeMiner
 
-## SimilarityAPI
+## CodeMiner API
+A modular FastAPI-based framework for code and query similarity services, with support for easy extension to more APIs.
+
+### 1. Start the API Server
+
+```python
+from codeminer.api import BaseAPI
+
+# Start the API server (registers all APIs and preloads models)
+BaseAPI.start(host="127.0.0.1", port=8000, log_level="info")
+```
+
+### 2. Query Code Similarity
 
 The `SimilarityAPI` class provides a simple interface for calculating code-to-query similarity using `jina-embeddings-v2-base-code`.
 
-### API Reference
-
-#### SimilarityAPI.start()
-
-Starts the similarity API server in a background thread.
-
-The server will automatically shut down when your program exits.
-
 ```python
-SimilarityAPI.start(
-    host="127.0.0.1",     # API server host (default: 127.0.0.1)
-    port=8000,            # API server port (default: 8000)
-    log_level="warning"   # Log level (default: warning)
-)
+from codeminer.api import SimilarityAPI
+
+code = "def greet(name):\n    return f'Hello, {name}!'"
+query = "Define a function that greets someone"
+
+# Send a request to the running API server
+result = SimilarityAPI.query(code, query)
+print(result)  # Example output: {'score': 0.85, 'latency_sec': 0.05}
 ```
 
-#### SimilarityAPI.query()
+For more details, see the code and docstrings in the `codeminer/api/` directory.
 
-Calculates the similarity between a code snippet and a natural language query.
-
-```python
-result = SimilarityAPI.query(
-    code="def add(a, b): return a + b",
-    query="function to add two numbers"
-)
-```
-
-Return a dictionary containing:
-- `score` (float): Similarity score between 0 and 1, where higher values indicate greater similarity
-- `latency_sec` (float): Time taken to calculate the similarity, in seconds
