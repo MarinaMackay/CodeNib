@@ -60,12 +60,8 @@ if __name__ == "__main__":
         # Extract subgraph with k-hop neighbors
         k_hop = 2
         subgraph = roi_subgraph.extract_subgraph(node_ids, k_hop)
+        # get filtered subgraph nodes
+        filtered_nodes = roi_subgraph.get_filtered_subgraph_nodes(subgraph)
 
-        # Print subgraph information
-        print(f"Subgraph with {len(subgraph.vs)} vertices and {len(subgraph.es)} edges")
-        # Print subgraph vertices and edges
-        print("Subgraph vertices:")
-        for vertex in subgraph.vs:
-            print(
-                f"Vertex ID: {vertex.index}, Vertex Type: {vertex['type']}, Vertex Name: {vertex['name']}"
-            )
+        # Print filtered nodes
+        print(f"Filtered nodes: {filtered_nodes}")

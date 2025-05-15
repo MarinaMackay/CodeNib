@@ -123,6 +123,57 @@ class ROISubgraph:
         )
         return self.extract_subgraph(node_ids, k_hop, edge_types)
 
+    def get_filtered_subgraph_nodes(
+        self,
+        subgraph: ig.Graph,
+        node_types: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract useful nodes from a subgraph, filtering out nodes where
+        start_line equals end_line (unless explicitly included).
+
+        Args:
+            subgraph: An igraph Graph object (from extract_subgraph or extract_roi_from_search_results)
+            node_types: Optional list of node types to include (None for all types)
+
+        Returns:
+            List of dictionaries containing node attributes for useful nodes
+        """
+        filtered_nodes = []
+
+        # Process each node in the subgraph
+        for node in subgraph.vs:
+            try:
+                # Get original node ID and attributes
+                original_id = node["original_id"]
+                node_attrs = self.get_node_info(original_id)
+
+                # Check if this node has start_line and end_line attributes
+                has_line_info = "start_line" in node_attrs and "end_line" in node_attrs
+
+                # Filter by node type if specified
+                if node_types and "type" in node_attrs:
+                    if node_attrs["type"] not in node_types:
+                        continue
+
+                # Skip nodes with zero line span unless explicitly included
+                if has_line_info:
+                    if node_attrs["start_line"] == node_attrs["end_line"]:
+                        continue
+
+                # Add original_id to the node attributes
+                node_attrs["original_id"] = original_id
+
+                # Add to filtered nodes list
+                filtered_nodes.append(node_attrs)
+
+            except Exception as e:
+                logger.error(f"Error processing node {node.index}: {e}")
+                continue
+
+        logger.info(f"Extracted {len(filtered_nodes)} useful nodes from subgraph")
+        return filtered_nodes
+
     def _get_neighbors(
         self, node_id: int, edge_types: Optional[List[str]] = None
     ) -> List[int]:
