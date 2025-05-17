@@ -228,7 +228,7 @@ class SCIPIndexer:
         self, output_file: Optional[str] = None
     ) -> Union[CodeGraph, None]:
         """
-        Process the decoded SCIP index into a code graph
+        Process the decoded SCIP index into a more usable format
 
         Args:
             output_file: Path to write the processed data to
@@ -248,18 +248,17 @@ class SCIPIndexer:
             decoder = SCIPGraphDecoder(
                 str(self.decoded_file), project_root=self.project_root
             )
-            logger.info(f"Decoding SCIP index from {self.decoded_file}")
             graph: CodeGraph = decoder.decode()
 
             if output_file:
                 output_path = Path(output_file)
                 decoder.save_graph(str(output_path))
-                logger.info(f"Saved processed SCIP codegraph to {output_path}")
+                logger.info(f"Saved processed SCIP index to {output_path}")
 
             return graph
 
         except Exception as e:
-            logger.error(f"Error processing SCIP codegraph: {e}")
+            logger.error(f"Error processing SCIP index: {e}")
             return None
 
     def run_pipeline(
@@ -267,9 +266,8 @@ class SCIPIndexer:
         project_name: Optional[str] = None,
         target_dir: Optional[str] = None,
         output_file: Optional[str] = None,
-        force: bool = False,
-        skip_index: bool = False,  # Kept for backward compatibility
-        skip_decode: bool = False,  # Kept for backward compatibility
+        skip_index: bool = False,
+        skip_decode: bool = False,
     ) -> Union[CodeGraph, None]:
         """
         Run the complete SCIP indexing pipeline: generate, decode, and process
@@ -278,38 +276,23 @@ class SCIPIndexer:
             project_name: Project name to use in the index
             target_dir: Optional subdirectory to target for indexing
             output_file: Path to write the processed data to
-            force: Force regeneration of index and decoded files even if they exist
-            skip_index: Skip index generation, use existing index.scip (deprecated, kept for compatibility)
-            skip_decode: Skip decoding, use existing index.decoded (deprecated, kept for compatibility)
+            skip_index: Skip index generation, use existing index.scip
+            skip_decode: Skip decoding, use existing index.decoded
 
         Returns:
             CodeGraph: Processed graph object
-        """
-        # Determine whether to skip index generation
-        should_generate_index = force or not self.index_file.exists()
-        if skip_index:  # Honor legacy parameter if provided
-            should_generate_index = False
 
-        # Generate the index if needed
-        if should_generate_index:
-            logger.info(f"Generating SCIP index (force={force})")
+        """
+        if not skip_index:
             if not self.generate_index(
                 cwd=self.project_root, project_name=project_name, target_dir=target_dir
             ):
                 return None
 
-        # Determine whether to skip decode step
-        should_decode_index = force or not self.decoded_file.exists()
-        if skip_decode:  # Honor legacy parameter if provided
-            should_decode_index = False
-
-        # Decode the index if needed
-        if should_decode_index and self.index_file.exists():
-            logger.info(f"Decoding SCIP index (force={force})")
+        if not skip_decode:
             if not self.decode_index():
                 return None
 
-        # Process the index
         return self.process_index(output_file)
 
 
@@ -337,19 +320,14 @@ def run_cli():
         default=None,
     )
     parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force regeneration of index and decoded files even if they exist",
-    )
-    parser.add_argument(
         "--skip-index",
         action="store_true",
-        help="Skip index generation, use existing index.scip (deprecated)",
+        help="Skip index generation, use existing index.scip",
     )
     parser.add_argument(
         "--skip-decode",
         action="store_true",
-        help="Skip decoding, use existing index.decoded (deprecated)",
+        help="Skip decoding, use existing index.decoded",
     )
 
     args = parser.parse_args()
@@ -359,7 +337,6 @@ def run_cli():
         project_name=args.project_name,
         target_dir=args.target_dir,
         output_file=args.output,
-        force=args.force,
         skip_index=args.skip_index,
         skip_decode=args.skip_decode,
     )
