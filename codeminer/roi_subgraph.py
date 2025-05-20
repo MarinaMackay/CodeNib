@@ -5,6 +5,7 @@ import igraph as ig
 
 from .code_graph import CodeGraph
 from .log_utils import get_logger
+from .types import NodeAttributes
 
 logger = get_logger(__name__)
 
@@ -127,7 +128,7 @@ class ROISubgraph:
         self,
         subgraph: ig.Graph,
         node_types: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[NodeAttributes]:
         """
         Extract useful nodes from a subgraph, filtering out nodes where
         start_line equals end_line (unless explicitly included).
@@ -137,7 +138,7 @@ class ROISubgraph:
             node_types: Optional list of node types to include (None for all types)
 
         Returns:
-            List of dictionaries containing node attributes for useful nodes
+            List of NodeAttributes objects
         """
         filtered_nodes = []
 
@@ -148,23 +149,19 @@ class ROISubgraph:
                 original_id = node["original_id"]
                 node_attrs = self.get_node_info(original_id)
 
-                # Check if this node has start_line and end_line attributes
-                has_line_info = "start_line" in node_attrs and "end_line" in node_attrs
-
                 # Filter by node type if specified
-                if node_types and "type" in node_attrs:
-                    if node_attrs["type"] not in node_types:
-                        continue
+                if node_types and node_attrs.type not in node_types:
+                    continue
 
-                # Skip nodes with zero line span unless explicitly included
-                if has_line_info:
-                    if node_attrs["start_line"] == node_attrs["end_line"]:
-                        continue
+                # Skip nodes with zero line span or None values
+                if (
+                    node_attrs.start_line is None
+                    or node_attrs.end_line is None
+                    or node_attrs.start_line == node_attrs.end_line
+                ):
+                    continue
 
-                # Add original_id to the node attributes
-                node_attrs["original_id"] = original_id
-
-                # Add to filtered nodes list
+                # Add just the node attributes to the list
                 filtered_nodes.append(node_attrs)
 
             except Exception as e:
@@ -239,7 +236,7 @@ class ROISubgraph:
 
         return subgraph
 
-    def get_node_info(self, node_id: int) -> Dict[str, Any]:
+    def get_node_info(self, node_id: int) -> NodeAttributes:
         """
         Get information about a node in the original graph.
 
@@ -247,10 +244,11 @@ class ROISubgraph:
             node_id: ID of the node in the original graph
 
         Returns:
-            Dictionary of node attributes
+            NodeAttributes containing the node attributes
         """
         try:
-            return self.full_graph.vs[node_id].attributes()
+            attributes = self.full_graph.vs[node_id].attributes()
+            return NodeAttributes(**attributes)
         except Exception as e:
             logger.error(f"Error getting node info for node {node_id}: {e}")
-            return {}
+            return NodeAttributes(type="")
