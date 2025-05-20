@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from codeminer import SCIPIndexer
+from codeminer.scip_interface import SCIPIndexer
 
 
 class TestSCIPIndexer(unittest.TestCase):
@@ -57,9 +57,7 @@ class TestSCIPIndexer(unittest.TestCase):
 
         # Run the indexing pipeline, allowing skip_index and skip_decode for faster tests
         graph = repo_indexer.run_pipeline(
-            project_name="HttpieCliRepo",
-            output_file=output_file,
-            force=True
+            project_name="HttpieCliRepo", output_file=output_file, force=True
         )
 
         if graph:

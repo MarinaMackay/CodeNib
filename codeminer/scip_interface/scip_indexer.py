@@ -266,8 +266,9 @@ class SCIPIndexer:
         project_name: Optional[str] = None,
         target_dir: Optional[str] = None,
         output_file: Optional[str] = None,
-        skip_index: bool = False,
-        skip_decode: bool = False,
+        force: bool = False,
+        skip_index: bool = False,  # Kept for backward compatibility
+        skip_decode: bool = False,  # Kept for backward compatibility
     ) -> Union[CodeGraph, None]:
         """
         Run the complete SCIP indexing pipeline: generate, decode, and process
@@ -276,23 +277,38 @@ class SCIPIndexer:
             project_name: Project name to use in the index
             target_dir: Optional subdirectory to target for indexing
             output_file: Path to write the processed data to
-            skip_index: Skip index generation, use existing index.scip
-            skip_decode: Skip decoding, use existing index.decoded
+            force: Force regeneration of index and decoded files even if they exist
+            skip_index: Skip index generation, use existing index.scip (deprecated, kept for compatibility)
+            skip_decode: Skip decoding, use existing index.decoded (deprecated, kept for compatibility)
 
         Returns:
             CodeGraph: Processed graph object
-
         """
-        if not skip_index:
+        # Determine whether to skip index generation
+        should_generate_index = force or not self.index_file.exists()
+        if skip_index:  # Honor legacy parameter if provided
+            should_generate_index = False
+
+        # Generate the index if needed
+        if should_generate_index:
+            logger.info(f"Generating SCIP index (force={force})")
             if not self.generate_index(
                 cwd=self.project_root, project_name=project_name, target_dir=target_dir
             ):
                 return None
 
-        if not skip_decode:
+        # Determine whether to skip decode step
+        should_decode_index = force or not self.decoded_file.exists()
+        if skip_decode:  # Honor legacy parameter if provided
+            should_decode_index = False
+
+        # Decode the index if needed
+        if should_decode_index and self.index_file.exists():
+            logger.info(f"Decoding SCIP index (force={force})")
             if not self.decode_index():
                 return None
 
+        # Process the index
         return self.process_index(output_file)
 
 
