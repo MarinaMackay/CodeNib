@@ -226,7 +226,7 @@ class CodeSearchEngine:
             Source code context as a string, or None if not available
         """
         # Search for the node in the code graph
-        attributes = self.code_graph.get_node_info(node_name)
+        attributes = self.code_graph.get_node_info_by_name(node_name)
         if not attributes:
             logger.warning(f"Node '{node_name}' not found in the code graph.")
             return None
