@@ -7,8 +7,8 @@ from ..code_graph import CodeGraph
 class SCIPGraphDecoder:
     def __init__(self, index_file_path, project_root=None):
         self.index_file_path = index_file_path
-        self.code_graph = CodeGraph()
         self.project_root = project_root
+        self.code_graph = CodeGraph(project_root)
         self.indexed_directories = set()
 
     def decode(self):

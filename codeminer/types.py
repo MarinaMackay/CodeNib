@@ -10,3 +10,9 @@ class NodeAttributes(BaseModel):
     file: Optional[str] = None
     start_line: Optional[int] = None
     end_line: Optional[int] = None
+
+
+class NodeWithContent(NodeAttributes):
+    """Node attributes with content."""
+
+    content: str = ""
