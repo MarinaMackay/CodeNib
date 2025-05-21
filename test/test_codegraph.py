@@ -1,8 +1,11 @@
-from codeminer.scip_interface import SCIPIndexer
-from codeminer.env.process_data import load_filter_swebench_dataset, process_swebench_instance
 import argparse
 from pathlib import Path
 
+from codeminer.env.process_data import (
+    load_filter_swebench_dataset,
+    process_swebench_instance,
+)
+from codeminer.scip_interface import SCIPIndexer
 
 args_dict = {
     "model": "gpt-4o",
@@ -23,12 +26,10 @@ if __name__ == "__main__":
         )
         print(f"Base commit: {instance['base_commit']}")
         print(f"Problem statement: {instance['problem_statement']}")
-        repo_path = process_swebench_instance(
-            instance
-        )
+        repo_path = process_swebench_instance(instance)
         # set output path with ~/.codeminer/instance_id
         output_path = str(Path.home()) + "/.codeminer/" + instance["instance_id"]
-        
+
         # setup codegraph
         repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
 
@@ -39,7 +40,7 @@ if __name__ == "__main__":
 
         # get node info
         # node name = astropy.modeling.separable/separability_matrix().
-        attributes = graph.get_node_info(
+        attributes = graph.get_node_info_by_name(
             node_name="astropy.modeling.separable/separability_matrix()."
         )
         print(f"Node attributes: {attributes}")
