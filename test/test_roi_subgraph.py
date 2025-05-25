@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+from codeminer.api import SimilarityAPI
 from codeminer.bm25_index import BM25CodeIndexer
 from codeminer.env.process_data import (
     load_filter_swebench_dataset,
@@ -63,5 +64,20 @@ if __name__ == "__main__":
         # get filtered subgraph nodes
         filtered_nodes = roi_subgraph.get_filtered_subgraph_nodes(subgraph)
 
-        # Print filtered nodes
-        print(f"Filtered nodes: {filtered_nodes}")
+        # Print filtered nodes (sample 3 nodes), return type is NodeWithContent
+        for i, node in enumerate(filtered_nodes[:3]):
+            print(f"Filtered node {i+1}")
+            print(f"Node Name: {node.node_name}")
+            print(f"Node Type: {node.type}")
+            print(f"Node Content: {node.content}")
+            print(f"Node File: {node.file}")
+            print(f"Node Start Line: {node.start_line}")
+            print(f"Node End Line: {node.end_line}")
+
+        # use SimilarityAPI to query the filtered nodes's content
+        for i, node in enumerate(filtered_nodes):
+            print(f"Querying node {i+1} content")
+            # query the node content
+            result = SimilarityAPI.query(node.content, instance["problem_statement"])
+            print(f"Node Name: {node.node_name}, Query Result: {result}")
+            # Print node attributes

@@ -5,7 +5,7 @@ import igraph as ig
 
 from .code_graph import CodeGraph
 from .log_utils import get_logger
-from .types import NodeAttributes
+from .types import NodeInfo, NodeWithContent
 
 logger = get_logger(__name__)
 
@@ -128,7 +128,7 @@ class ROISubgraph:
         self,
         subgraph: ig.Graph,
         node_types: Optional[List[str]] = None,
-    ) -> List[NodeAttributes]:
+    ) -> List[NodeWithContent]:
         """
         Extract useful nodes from a subgraph, filtering out nodes where
         start_line equals end_line (unless explicitly included).
@@ -138,16 +138,15 @@ class ROISubgraph:
             node_types: Optional list of node types to include (None for all types)
 
         Returns:
-            List of NodeAttributes objects
+            List of NodeWithContent objects including the node content
         """
         filtered_nodes = []
 
-        # Process each node in the subgraph
         for node in subgraph.vs:
             try:
                 # Get original node ID and attributes
                 original_id = node["original_id"]
-                node_attrs = self.get_node_info(original_id)
+                node_attrs = self.get_node_info_by_id(original_id)
 
                 # Filter by node type if specified
                 if node_types and node_attrs.type not in node_types:
@@ -161,8 +160,20 @@ class ROISubgraph:
                 ):
                     continue
 
-                # Add just the node attributes to the list
-                filtered_nodes.append(node_attrs)
+                # Get the node content
+                content = self.get_node_content(original_id) or ""
+
+                # Create NodeWithContent and add to the list
+                node_with_content = NodeWithContent(
+                    node_name=node_attrs.node_name,
+                    type=node_attrs.type,
+                    file=node_attrs.file,
+                    start_line=node_attrs.start_line,
+                    end_line=node_attrs.end_line,
+                    content=content,
+                )
+
+                filtered_nodes.append(node_with_content)
 
             except Exception as e:
                 logger.error(f"Error processing node {node.index}: {e}")
@@ -224,7 +235,6 @@ class ROISubgraph:
         Returns:
             An igraph Graph object representing the subgraph
         """
-        # Convert set to list to have stable indices
         node_list = list(node_ids)
 
         # Create a subgraph from the original graph
@@ -236,7 +246,7 @@ class ROISubgraph:
 
         return subgraph
 
-    def get_node_info(self, node_id: int) -> NodeAttributes:
+    def get_node_info_by_id(self, node_id: int) -> NodeInfo:
         """
         Get information about a node in the original graph.
 
@@ -244,11 +254,39 @@ class ROISubgraph:
             node_id: ID of the node in the original graph
 
         Returns:
-            NodeAttributes containing the node attributes
+            NodeInfo containing the node attributes
         """
         try:
-            attributes = self.full_graph.vs[node_id].attributes()
-            return NodeAttributes(**attributes)
+            vertex = self.full_graph.vs[node_id]
+            attributes = vertex.attributes()
+
+            # In igraph, the vertex name is stored in the "name" attribute
+            node_name = vertex["name"]
+
+            node_info_dict = {
+                "node_name": node_name,
+                "type": attributes.get("type", ""),
+                "file": attributes.get("file", None),
+                "start_line": attributes.get("start_line", None),
+                "end_line": attributes.get("end_line", None),
+            }
+
+            return NodeInfo(**node_info_dict)
         except Exception as e:
             logger.error(f"Error getting node info for node {node_id}: {e}")
-            return NodeAttributes(type="")
+            return NodeInfo(type="")
+
+    def get_node_content(self, node_id: int) -> Optional[str]:
+        """
+        Get the content of a node in the original graph.
+
+        Args:
+            node_id: ID of the node in the original graph
+        Returns:
+            The content of the node, or None if not available
+        """
+        node_content = self.code_graph.get_node_content(node_id)
+        if node_content is None:
+            logger.warning(f"No content found for node {node_id}")
+            return None
+        return node_content

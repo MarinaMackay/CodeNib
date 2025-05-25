@@ -9,11 +9,12 @@ class CodeGraph:
     A class to represent and manipulate a code graph using igraph.
     """
 
-    def __init__(self):
+    def __init__(self, project_root=None):
         # Create a directed graph
         self.graph = ig.Graph(directed=True)
         self.current_file = None
         self.current_scope = None
+        self.project_root = project_root
         self.scope_stack = []
         # Store line ranges for symbols
         self.symbol_ranges = {}
@@ -224,8 +225,8 @@ class CodeGraph:
             The igraph Graph instance
         """
         return self.graph
-    
-    def get_node_info(self, node_name):
+
+    def get_node_info_by_name(self, node_name):
         """
         Get information about a node in the graph.
 
@@ -241,6 +242,69 @@ class CodeGraph:
                 return None
 
         return self.graph.vs[vertex].attributes()
+
+    def get_node_info_by_id(self, node_id):
+        """
+        Get information about a node in the graph.
+
+        Args:
+            node_id: ID of the node
+
+        Returns:
+            Dictionary with vertex attributes or None if not found
+        """
+        if isinstance(node_id, int):
+            vertex = self.graph.vs[node_id]
+            return vertex.attributes()
+
+        return None
+
+    def get_node_content(self, node_id):
+        """
+        Get the content of a node in the graph.
+        Read the file from start_line to end_line.
+        If the node is a file, return the file content.
+
+        Args:
+            node_id: ID of the node
+
+        Returns:
+            Content of the node or None if not found
+        """
+        node = self.graph.vs[node_id]
+        node_type = node["type"] if "type" in node.attributes() else "unknown"
+        if node_type == "file":
+            # file path need to add self.project_root
+            file_path = node["name"]
+            if self.project_root:
+                file_path = f"{self.project_root}/{file_path}"
+            try:
+                with open(file_path, "r") as f:
+                    content = f.read()
+                return content
+            except FileNotFoundError:
+                print(f"File not found: {file_path}")
+                return None
+        elif node_type == "symbol":
+            # Get the start and end lines
+            start_line = node["start_line"]
+            end_line = node["end_line"]
+
+            # Get the file path
+            file_path = node["file"] if "file" in node.attributes() else None
+            if self.project_root and file_path:
+                file_path = f"{self.project_root}/{file_path}"
+
+            # Read the file content
+            if file_path:
+                try:
+                    with open(file_path, "r") as f:
+                        lines = f.readlines()
+                    return "".join(lines[start_line - 1 : end_line])
+                except FileNotFoundError:
+                    print(f"File not found: {file_path}")
+                    return None
+        return None
 
     def get_neighbors(self, node_name):
         """
@@ -258,7 +322,7 @@ class CodeGraph:
                 return []
 
         return self.graph.neighbors(vertex)
-        
+
     def get_successors(self, node_name):
         """
         Get the successors of a node_name (outgoing edges).
@@ -275,7 +339,7 @@ class CodeGraph:
                 return []
 
         return self.graph.successors(vertex)
-        
+
     def get_predecessors(self, node_name):
         """
         Get the predecessors of a node_name (incoming edges).
