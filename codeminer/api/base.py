@@ -15,6 +15,7 @@ import sys
 import inspect
 from contextlib import asynccontextmanager
 import asyncio
+import requests
 
 from ..log_utils import get_logger
 
@@ -198,8 +199,19 @@ class BaseAPI:
         cls._api_server = threading.Thread(target=run_api, daemon=True)
         cls._api_server.start()
         cls._initialized = True
-        time.sleep(1)
-        logger.info(f"API server started at http://{cls._host}:{cls._port}")
+        
+        # Wait for server to be ready and test connectivity
+        max_retries = 30
+        for i in range(max_retries):
+            try:
+                response = requests.get(f"http://{cls._host}:{cls._port}/docs", timeout=1)
+                if response.status_code == 200:
+                    logger.info(f"API server started successfully at http://{cls._host}:{cls._port}")
+                    break
+            except requests.RequestException:
+                time.sleep(1)
+                if i == max_retries - 1:
+                    logger.warning("API server started but may not be fully ready")
         
         # Set exit handler
         cls._setup_exit_handlers()
