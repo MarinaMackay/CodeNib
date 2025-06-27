@@ -17,3 +17,9 @@ class NodeWithContent(NodeInfo):
     """Node attributes with content."""
 
     content: str = ""
+
+
+class NodeWithScore(NodeInfo):
+    """Node attributes with relevance score."""
+
+    score: float = 0.0
