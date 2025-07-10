@@ -1,12 +1,12 @@
 import argparse
 from pathlib import Path
 
-from codeminer.api import SimilarityAPI
 from codeminer.bm25_index import BM25CodeIndexer
 from codeminer.env.process_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
+from codeminer.rerank_agent import RerankAgent
 from codeminer.roi_subgraph import ROISubgraph
 from codeminer.scip_interface import SCIPIndexer
 
@@ -74,10 +74,38 @@ if __name__ == "__main__":
             print(f"Node Start Line: {node.start_line}")
             print(f"Node End Line: {node.end_line}")
 
-        # use SimilarityAPI to query the filtered nodes's content
-        for i, node in enumerate(filtered_nodes):
-            print(f"Querying node {i+1} content")
-            # query the node content
-            result = SimilarityAPI.query(node.content, instance["problem_statement"])
-            print(f"Node Name: {node.node_name}, Query Result: {result}")
-            # Print node attributes
+        # Use rerank agent to rank the filtered nodes by relevance to the problem statement
+        print(
+            f"\nReranking {len(filtered_nodes)} nodes by relevance to problem statement..."
+        )
+        rerank_agent = RerankAgent(model_name="gpt-4o")
+        ranked_nodes = rerank_agent.rerank_nodes(
+            query=instance["problem_statement"], nodes=filtered_nodes, top_k=10
+        )
+
+        # Print top ranked nodes with scores
+        print(f"\nTop ranked nodes (showing top 5):")
+        for i, node in enumerate(ranked_nodes[:5]):
+            print(f"Rank {i+1} (Score: {node.score:.3f})")
+            print(f"  Node Name: {node.node_name}")
+            print(f"  Node Type: {node.type}")
+            print(f"  Node File: {node.file}")
+            print(f"  Lines: {node.start_line}-{node.end_line}")
+            print()
+
+        # Also demonstrate the rerank_with_metadata method for detailed results
+        print("Detailed ranking with metadata:")
+        detailed_results = rerank_agent.rerank_with_metadata(
+            query=instance["problem_statement"],
+            nodes=filtered_nodes,
+            top_k=3,
+            include_content=True,
+        )
+
+        for result in detailed_results:
+            print(f"Rank {result['rank']} (Score: {result['score']:.3f})")
+            print(f"  Name: {result['node_name']}")
+            print(f"  Type: {result['type']}")
+            print(f"  File: {result['file']}")
+            print(f"  Preview: {result.get('content_preview', 'N/A')}")
+            print()
