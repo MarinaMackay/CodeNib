@@ -3,6 +3,14 @@ import json
 import igraph as ig
 import matplotlib.pyplot as plt
 
+from .types import (
+    EDGE_TYPE_CONTAIN,
+    EDGE_TYPE_REFERENCE,
+    NODE_TYPE_DIRECTORY,
+    NODE_TYPE_FILE,
+    NODE_TYPE_SYMBOL,
+)
+
 
 class CodeGraph:
     """
@@ -31,7 +39,7 @@ class CodeGraph:
         self.current_file = file_path
 
         # Add vertex for file
-        self._add_vertex(file_path, {"type": "file"})
+        self._add_vertex(file_path, {"type": NODE_TYPE_FILE})
 
         self.current_scope = file_path
         self.scope_stack = [file_path]
@@ -54,7 +62,7 @@ class CodeGraph:
             self._add_vertex(
                 symbol,
                 {
-                    "type": "symbol",
+                    "type": NODE_TYPE_SYMBOL,
                     "file": self.current_file,
                     "start_line": scope_start_line,
                     "end_line": scope_end_line,
@@ -65,7 +73,7 @@ class CodeGraph:
             self._add_vertex(
                 symbol,
                 {
-                    "type": "symbol",
+                    "type": NODE_TYPE_SYMBOL,
                     "file": self.current_file,
                     "start_line": line,
                     "end_line": line,
@@ -83,10 +91,10 @@ class CodeGraph:
         # If the symbol doesn't exist, create it without range info
         if symbol not in self.name_to_vertex:
             file_attr = module_path if module_path else None
-            self._add_vertex(symbol, {"type": "symbol", "file": file_attr})
+            self._add_vertex(symbol, {"type": NODE_TYPE_SYMBOL, "file": file_attr})
 
         # Add reference edge
-        self._add_edge(self.current_scope, symbol, "reference")
+        self._add_edge(self.current_scope, symbol, EDGE_TYPE_REFERENCE)
 
     def update_current_scope(self, symbol):
         """
@@ -108,7 +116,7 @@ class CodeGraph:
         parent_scope = (
             self.scope_stack[-2] if len(self.scope_stack) > 1 else self.current_file
         )
-        self._add_edge(parent_scope, target_symbol, "contain")
+        self._add_edge(parent_scope, target_symbol, EDGE_TYPE_CONTAIN)
 
     def _add_vertex(self, name, attributes=None):
         """
@@ -273,7 +281,7 @@ class CodeGraph:
         """
         node = self.graph.vs[node_id]
         node_type = node["type"] if "type" in node.attributes() else "unknown"
-        if node_type == "file":
+        if node_type == NODE_TYPE_FILE:
             # file path need to add self.project_root
             file_path = node["name"]
             if self.project_root:
@@ -285,7 +293,7 @@ class CodeGraph:
             except FileNotFoundError:
                 print(f"File not found: {file_path}")
                 return None
-        elif node_type == "symbol":
+        elif node_type == NODE_TYPE_SYMBOL:
             # Get the start and end lines
             start_line = node["start_line"]
             end_line = node["end_line"]
@@ -397,16 +405,16 @@ class CodeGraph:
 
         # Define color schemes
         node_type_colors = {
-            "file": "skyblue",
-            "symbol": "lightgreen",
-            "directory": "orange",  # Add directory node color
+            NODE_TYPE_FILE: "skyblue",
+            NODE_TYPE_SYMBOL: "lightgreen",
+            NODE_TYPE_DIRECTORY: "orange",  # Add directory node color
             "root": "lightgrey",  # Root node color
             # Add more node types and colors as needed
         }
 
         edge_type_colors = {
-            "reference": "red",
-            "contain": "blue",
+            EDGE_TYPE_REFERENCE: "red",
+            EDGE_TYPE_CONTAIN: "blue",
             # Add more edge types and colors as needed
         }
 
@@ -430,7 +438,7 @@ class CodeGraph:
         # Set vertex sizes (files can be larger than symbols)
         vertex_sizes = []
         for vertex in self.graph.vs:
-            if "type" in vertex.attributes() and vertex["type"] == "file":
+            if "type" in vertex.attributes() and vertex["type"] == NODE_TYPE_FILE:
                 vertex_sizes.append(20)
             else:
                 vertex_sizes.append(10)
