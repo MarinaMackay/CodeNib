@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 
 from ..code_graph import CodeGraph
+from ..types import EDGE_TYPE_CONTAIN, EDGE_TYPE_REFERENCE, NODE_TYPE_DIRECTORY
 
 
 class SCIPGraphDecoder:
@@ -35,7 +36,7 @@ class SCIPGraphDecoder:
 
     def _add_directory_node(self, dir_path):
         """Add a directory node to the graph"""
-        self.code_graph._add_vertex(dir_path, {"type": "directory"})
+        self.code_graph._add_vertex(dir_path, {"type": NODE_TYPE_DIRECTORY})
 
     def _process_document(self, document_text):
         # Extract file path
@@ -54,14 +55,18 @@ class SCIPGraphDecoder:
                 self._add_directory_node(dir_path_str)
                 self.indexed_directories.add(dir_path_str)
                 # Add containment edge from parent directory to this directory
-                self.code_graph._add_edge(str(dir_path.parent), dir_path_str, "contain")
+                self.code_graph._add_edge(
+                    str(dir_path.parent), dir_path_str, EDGE_TYPE_CONTAIN
+                )
             dir_path = dir_path.parent
 
         # Add file node
         self.code_graph.add_file_node(file_path)
 
         # Add file containment edge
-        self.code_graph._add_edge(str(Path(file_path).parent), file_path, "contain")
+        self.code_graph._add_edge(
+            str(Path(file_path).parent), file_path, EDGE_TYPE_CONTAIN
+        )
 
         # Process occurrences
         occurrences = re.findall(r"occurrences\s*{(.*?)}", document_text, re.DOTALL)
@@ -133,7 +138,7 @@ class SCIPGraphDecoder:
                 # If this is a reference, point to the file instead
                 if symbol_roles == 8:
                     self.code_graph._add_edge(
-                        self.code_graph.current_scope, file_path, "reference"
+                        self.code_graph.current_scope, file_path, EDGE_TYPE_REFERENCE
                     )
                 return
 
@@ -159,7 +164,7 @@ class SCIPGraphDecoder:
 
             # Add 'contain' edge from current scope to symbol
             self.code_graph._add_edge(
-                self.code_graph.current_scope, cleaned_symbol, "contain"
+                self.code_graph.current_scope, cleaned_symbol, EDGE_TYPE_CONTAIN
             )
 
         # Handle reference (symbol_roles == 8)
