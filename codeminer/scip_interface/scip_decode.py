@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 
 from ..code_graph import CodeGraph
-from ..types import EDGE_TYPE_CONTAIN, EDGE_TYPE_REFERENCE, NODE_TYPE_DIRECTORY
+from ..types import EDGE_TYPE_CONTAIN, EDGE_TYPE_REFERENCE
 
 
 class SCIPGraphDecoder:
@@ -22,21 +22,13 @@ class SCIPGraphDecoder:
         )
 
         # Add the root node to the graph
-        self._add_root_node(".")
+        self.code_graph.add_root_node(".")
 
         # Process all documents
         for document in document_blocks:
             self._process_document(document)
 
         return self.code_graph
-
-    def _add_root_node(self, project_root):
-        """Add the root node to the graph"""
-        self.code_graph._add_vertex(project_root, {"type": "root"})
-
-    def _add_directory_node(self, dir_path):
-        """Add a directory node to the graph"""
-        self.code_graph._add_vertex(dir_path, {"type": NODE_TYPE_DIRECTORY})
 
     def _process_document(self, document_text):
         # Extract file path
@@ -52,7 +44,7 @@ class SCIPGraphDecoder:
             dir_path_str = str(dir_path)
             if dir_path_str not in self.indexed_directories:
                 # Add directory node if not already indexed
-                self._add_directory_node(dir_path_str)
+                self.code_graph.add_directory_node(dir_path_str)
                 self.indexed_directories.add(dir_path_str)
                 # Add containment edge from parent directory to this directory
                 self.code_graph._add_edge(
