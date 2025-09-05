@@ -1,9 +1,17 @@
+# this file is revised from https://github.com/All-Hands-AI/openhands-aci/blob/main/openhands_aci/indexing/locagent/repo/dependency_graph/traverse_graph.py
+
 import re
 from collections import defaultdict
 from typing import List, Optional
 
 from .code_graph import CodeGraph
-from .types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NODE_TYPE_SYMBOL
+from .types import (
+    NODE_TYPE_DIRECTORY,
+    NODE_TYPE_FILE,
+    NODE_TYPE_SYMBOL,
+    SYMBOL_TYPES,
+    is_symbol_node,
+)
 
 
 def is_test_file(nid):
@@ -19,9 +27,14 @@ def is_test_file(nid):
 def wrap_code_snippet(code_snippet, start_line, end_line):
     """Wrap code snippet with line numbers"""
     lines = code_snippet.split("\n")
+
+    # Handle None values for files (use 0-based line numbering)
+    if start_line is None:
+        start_line = 0
+    if end_line is None:
+        end_line = len(lines) - 1
+
     max_line_number = start_line + len(lines) - 1
-    if not start_line == end_line == 1:  # which is a file
-        assert max_line_number == end_line
     number_width = len(str(max_line_number))
     return (
         "```\n"
@@ -108,14 +121,23 @@ class RepoEntitySearcher:
 
             formatted_data = {
                 "node_id": nid,
-                "type": vertex.get("type", "unknown"),
+                "type": vertex["type"] if "type" in vertex.attributes() else "unknown",
             }
 
             # Get code content from the CodeGraph
             code_content = self.code_graph.get_node_content(vertex_id)
             if code_content:
-                start_line = vertex.get("start_line", 1)
-                end_line = vertex.get("end_line", 1)
+                # Get start and end line with proper defaults
+                start_line = 0
+                end_line = 0
+
+                if (
+                    "start_line" in vertex.attributes()
+                    and vertex["start_line"] is not None
+                ):
+                    start_line = vertex["start_line"]
+                if "end_line" in vertex.attributes() and vertex["end_line"] is not None:
+                    end_line = vertex["end_line"]
 
                 formatted_data["start_line"] = start_line
                 formatted_data["end_line"] = end_line
@@ -136,7 +158,9 @@ class RepoEntitySearcher:
 
     def get_all_nodes_by_type(self, node_type):
         """Get all nodes of a specific type"""
-        valid_types = [NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NODE_TYPE_SYMBOL]
+        valid_types = [NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NODE_TYPE_SYMBOL] + list(
+            SYMBOL_TYPES
+        )
         assert node_type in valid_types
 
         nodes = []
@@ -144,7 +168,13 @@ class RepoEntitySearcher:
             nid = vertex["name"]
             if is_test_file(nid):
                 continue
-            if vertex.get("type") == node_type:
+
+            # Check if requested type matches vertex type, or if requesting symbols, check if vertex is any symbol type
+            type_matches = (vertex["type"] == node_type) or (
+                node_type == NODE_TYPE_SYMBOL and is_symbol_node(vertex["type"])
+            )
+
+            if type_matches:
                 if node_type == NODE_TYPE_FILE:
                     code_content = self.code_graph.get_node_content(vertex.index)
                     formatted_data = {
@@ -152,15 +182,31 @@ class RepoEntitySearcher:
                         "type": vertex["type"],
                         "content": code_content.split("\n") if code_content else [],
                     }
-                elif node_type == NODE_TYPE_SYMBOL:
+                elif node_type == NODE_TYPE_SYMBOL or is_symbol_node(vertex["type"]):
                     code_content = self.code_graph.get_node_content(vertex.index)
                     formatted_data = {
                         "name": nid.split(":")[-1] if ":" in nid else nid,
-                        "file": vertex.get("file"),
+                        "file": (
+                            vertex["file"] if "file" in vertex.attributes() else None
+                        ),
                         "type": vertex["type"],
                         "content": code_content.split("\n") if code_content else [],
-                        "start_line": vertex.get("start_line", 0),
-                        "end_line": vertex.get("end_line", 0),
+                        "start_line": (
+                            vertex["start_line"]
+                            if (
+                                "start_line" in vertex.attributes()
+                                and vertex["start_line"] is not None
+                            )
+                            else 0
+                        ),
+                        "end_line": (
+                            vertex["end_line"]
+                            if (
+                                "end_line" in vertex.attributes()
+                                and vertex["end_line"] is not None
+                            )
+                            else 0
+                        ),
                     }
                 elif node_type == NODE_TYPE_DIRECTORY:
                     formatted_data = {
@@ -215,7 +261,10 @@ class RepoDependencySearcher:
             neighbor_nid = neighbor_vertex["name"]
 
             # Apply filters
-            if ntype_filter and neighbor_vertex.get("type") not in ntype_filter:
+            if ntype_filter and (
+                "type" not in neighbor_vertex.attributes()
+                or neighbor_vertex["type"] not in ntype_filter
+            ):
                 continue
             if ignore_test_file and is_test_file(neighbor_nid):
                 continue
@@ -225,7 +274,7 @@ class RepoDependencySearcher:
                 edge_id = self.graph.get_eid(vertex_id, neighbor_id, error=False)
                 if edge_id is not None:
                     edge = self.graph.es[edge_id]
-                    etype = edge.get("type", "unknown")
+                    etype = edge["type"] if "type" in edge.attributes() else "unknown"
                     if etype_filter and etype not in etype_filter:
                         continue
                     edges.append((nid, neighbor_nid, 0, {"type": etype}))
@@ -234,124 +283,13 @@ class RepoDependencySearcher:
                 edge_id = self.graph.get_eid(neighbor_id, vertex_id, error=False)
                 if edge_id is not None:
                     edge = self.graph.es[edge_id]
-                    etype = edge.get("type", "unknown")
+                    etype = edge["type"] if "type" in edge.attributes() else "unknown"
                     if etype_filter and etype not in etype_filter:
                         continue
                     edges.append((neighbor_nid, nid, 0, {"type": etype}))
                     nodes.append(neighbor_nid)
 
         return nodes, edges
-
-
-def traverse_graph_structure(
-    code_graph: CodeGraph,
-    roots,
-    direction="downstream",
-    hops=2,
-    node_type_filter: Optional[List[str]] = None,
-    edge_type_filter: Optional[List[str]] = None,
-):
-    """
-    Traverse graph structure starting from root nodes
-
-    Args:
-        code_graph: CodeGraph instance
-        roots: List of root node IDs to start traversal from
-        direction: 'downstream', 'upstream', or 'both'
-        hops: Maximum number of hops to traverse (-1 for unlimited)
-        node_type_filter: Filter by node types
-        edge_type_filter: Filter by edge types
-
-    Returns:
-        String representation of the graph structure
-    """
-    if hops == -1:
-        hops = 20
-
-    searcher = RepoDependencySearcher(code_graph)
-
-    # Create a simple representation using lists instead of networkx
-    visited_nodes = set()
-    edges_list = []
-
-    # BFS traversal
-    frontiers = [(nid, 0) for nid in roots if nid in code_graph.name_to_vertex]
-
-    while frontiers:
-        nid, level = frontiers.pop(0)
-        if nid in visited_nodes or abs(level) >= hops:
-            continue
-        visited_nodes.add(nid)
-
-        ntype_filter, etype_filter = node_type_filter, edge_type_filter
-
-        # Forward search
-        if level > 0 or (
-            level == 0 and (direction == "downstream" or direction == "both")
-        ):
-            nodes, edges = searcher.get_neighbors(
-                nid,
-                "forward",
-                ntype_filter=ntype_filter,
-                etype_filter=etype_filter,
-                ignore_test_file=True,
-            )
-            frontiers.extend([(node, level + 1) for node in nodes])
-            edges_list.extend(edges)
-
-        # Backward search
-        if level < 0 or (
-            level == 0 and (direction == "upstream" or direction == "both")
-        ):
-            nodes, edges = searcher.get_neighbors(
-                nid,
-                "backward",
-                ntype_filter=ntype_filter,
-                etype_filter=etype_filter,
-                ignore_test_file=True,
-            )
-            frontiers.extend([(node, level - 1) for node in nodes])
-            edges_list.extend(edges)
-
-    if not visited_nodes:
-        return ""
-
-    # Create incident-based representation
-    rtn_strs = []
-    for node in visited_nodes:
-        if node not in code_graph.name_to_vertex:
-            continue
-
-        vertex_id = code_graph.name_to_vertex[node]
-        vertex = code_graph.graph.vs[vertex_id]
-        ntype = vertex.get("type", "unknown")
-
-        incident_dict = defaultdict(lambda: defaultdict(list))
-
-        # Find all edges involving this node
-        for edge in edges_list:
-            if edge[0] == node:  # outgoing edge
-                target = edge[1]
-                etype = edge[3]["type"]
-                target_vertex_id = code_graph.name_to_vertex.get(target)
-                if target_vertex_id is not None:
-                    target_type = code_graph.graph.vs[target_vertex_id].get(
-                        "type", "unknown"
-                    )
-                    incident_dict[etype][target_type].append(target)
-
-        if incident_dict:
-            s = f'{ntype} "{node}" '
-            for edge_type, neigh_dict in incident_dict.items():
-                s += f"{edge_type} "
-                for neigh_type, neigh_list in neigh_dict.items():
-                    neigh_list = ['"' + neigh + '"' for neigh in neigh_list]
-                    s += f'{neigh_type} {",".join(neigh_list)} '
-                s = s[:-1] + "; and "
-            s = s[:-6] + "."
-            rtn_strs.append(s)
-
-    return "\n\n".join(rtn_strs)
 
 
 def traverse_tree_structure(
@@ -423,7 +361,11 @@ def traverse_tree_structure(
             for neighbor_id in neighbor_ids:
                 neighbor_vertex = code_graph.graph.vs[neighbor_id]
                 neighbor = neighbor_vertex["name"]
-                neigh_type = neighbor_vertex.get("type", "unknown")
+                neigh_type = (
+                    neighbor_vertex["type"]
+                    if "type" in neighbor_vertex.attributes()
+                    else "unknown"
+                )
 
                 if is_ntype_not_valid(neigh_type):
                     continue
@@ -431,7 +373,11 @@ def traverse_tree_structure(
                 # Get edge type
                 edge_id = code_graph.graph.get_eid(vertex_id, neighbor_id, error=False)
                 if edge_id is not None:
-                    etype = code_graph.graph.es[edge_id].get("type", "unknown")
+                    etype = (
+                        code_graph.graph.es[edge_id]["type"]
+                        if "type" in code_graph.graph.es[edge_id].attributes()
+                        else "unknown"
+                    )
                     if is_etype_not_valid(etype):
                         continue
                     if not is_test_file(neighbor):
@@ -447,7 +393,11 @@ def traverse_tree_structure(
             for neighbor_id in neighbor_ids:
                 neighbor_vertex = code_graph.graph.vs[neighbor_id]
                 neighbor = neighbor_vertex["name"]
-                neigh_type = neighbor_vertex.get("type", "unknown")
+                neigh_type = (
+                    neighbor_vertex["type"]
+                    if "type" in neighbor_vertex.attributes()
+                    else "unknown"
+                )
 
                 if is_ntype_not_valid(neigh_type):
                     continue
@@ -455,7 +405,11 @@ def traverse_tree_structure(
                 # Get edge type
                 edge_id = code_graph.graph.get_eid(neighbor_id, vertex_id, error=False)
                 if edge_id is not None:
-                    etype = code_graph.graph.es[edge_id].get("type", "unknown")
+                    etype = (
+                        code_graph.graph.es[edge_id]["type"]
+                        if "type" in code_graph.graph.es[edge_id].attributes()
+                        else "unknown"
+                    )
                     if is_etype_not_valid(etype):
                         continue
                     if not is_test_file(neighbor):

@@ -3,6 +3,7 @@ import argparse
 import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional, Union
 
@@ -184,11 +185,21 @@ class SCIPIndexer:
 
         logger.info(f"Running command: {' '.join(cmd)}")
 
+        # Time the index generation
+        start_time = time.time()
+
         # Run in conda environment
-        if self._run_in_conda_env(cmd, self.project_root):
+        success = self._run_in_conda_env(cmd, self.project_root)
+
+        end_time = time.time()
+        duration = end_time - start_time
+
+        if success:
             logger.info(f"Successfully generated SCIP index at {self.index_file}")
+            logger.info(f"⏱️  Index generation took: {duration:.2f} seconds")
             return True
         else:
+            logger.error(f"❌ Index generation failed after {duration:.2f} seconds")
             return False
 
     def decode_index(self) -> bool:
@@ -217,8 +228,16 @@ class SCIPIndexer:
             cmd_str = " ".join(cmd)
             logger.info(f"Running command: {cmd_str}")
 
+            # Time the decoding
+            start_time = time.time()
+
             subprocess.run(cmd_str, shell=True, check=True, cwd=self.module_dir)
+
+            end_time = time.time()
+            duration = end_time - start_time
+
             logger.info(f"Successfully decoded SCIP index to {self.decoded_file}")
+            logger.info(f"⏱️  Index decoding took: {duration:.2f} seconds")
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Error decoding SCIP index: {e}")
@@ -244,17 +263,28 @@ class SCIPIndexer:
             # Import here to avoid circular imports
             from .scip_decode import SCIPGraphDecoder
 
+            # Time the processing
+            start_time = time.time()
+
             # Pass the project root to the decoder to enable directory indexing
+            logger.info("Starting SCIP index processing...")
             decoder = SCIPGraphDecoder(
                 str(self.decoded_file), project_root=self.project_root
             )
             graph: CodeGraph = decoder.decode()
 
+            end_time = time.time()
+            duration = end_time - start_time
+
             if output_file:
+                save_start = time.time()
                 output_path = Path(output_file)
                 decoder.save_graph(str(output_path))
+                save_duration = time.time() - save_start
                 logger.info(f"Saved processed SCIP index to {output_path}")
+                logger.info(f"⏱️  Graph saving took: {save_duration:.2f} seconds")
 
+            logger.info(f"⏱️  Index processing took: {duration:.2f} seconds")
             return graph
 
         except Exception as e:
