@@ -6,15 +6,21 @@ import matplotlib.pyplot as plt
 from .types import (
     EDGE_TYPE_CONTAIN,
     EDGE_TYPE_REFERENCE,
+    NODE_TYPE_CLASS,
     NODE_TYPE_DIRECTORY,
+    NODE_TYPE_FIELD,
     NODE_TYPE_FILE,
+    NODE_TYPE_FUNCTION,
+    NODE_TYPE_METHOD,
     NODE_TYPE_SYMBOL,
+    is_symbol_node,
 )
 
 
 class CodeGraph:
     """
     A class to represent and manipulate a code graph using igraph.
+    start_line uses 0-based index.
     """
 
     def __init__(self, project_root=None):
@@ -44,7 +50,9 @@ class CodeGraph:
         self.current_scope = file_path
         self.scope_stack = [file_path]
 
-    def add_symbol_node(self, symbol, line, scope_start_line=None, scope_end_line=None):
+    def add_symbol_node(
+        self, symbol, line, scope_start_line=None, scope_end_line=None, symbol_type=None
+    ):
         """
         Add a symbol node to the graph.
 
@@ -53,7 +61,11 @@ class CodeGraph:
             line: Line number of the symbol
             scope_start_line: Start line of the symbol's scope (optional)
             scope_end_line: End line of the symbol's scope (optional)
+            symbol_type: Type of symbol (NODE_TYPE_CLASS, NODE_TYPE_METHOD, NODE_TYPE_FUNCTION) (optional)
         """
+        # Use specific symbol type if provided, otherwise default to generic symbol
+        node_type = symbol_type if symbol_type else NODE_TYPE_SYMBOL
+
         if scope_start_line and scope_end_line:
             # Store symbol range
             self.symbol_ranges[symbol] = (scope_start_line, scope_end_line)
@@ -62,7 +74,7 @@ class CodeGraph:
             self._add_vertex(
                 symbol,
                 {
-                    "type": NODE_TYPE_SYMBOL,
+                    "type": node_type,
                     "file": self.current_file,
                     "start_line": scope_start_line,
                     "end_line": scope_end_line,
@@ -73,25 +85,27 @@ class CodeGraph:
             self._add_vertex(
                 symbol,
                 {
-                    "type": NODE_TYPE_SYMBOL,
+                    "type": node_type,
                     "file": self.current_file,
                     "start_line": line,
                     "end_line": line,
                 },
             )
 
-    def add_symbol_reference(self, symbol, module_path=None):
+    def add_symbol_reference(self, symbol, module_path=None, symbol_type=None):
         """
         Add a reference to a symbol.
 
         Args:
             symbol: Symbol being referenced
             module_path: Path of the module containing the symbol (optional)
+            symbol_type: Type of symbol (NODE_TYPE_CLASS, NODE_TYPE_METHOD, NODE_TYPE_FUNCTION) (optional)
         """
         # If the symbol doesn't exist, create it without range info
         if symbol not in self.name_to_vertex:
             file_attr = module_path if module_path else None
-            self._add_vertex(symbol, {"type": NODE_TYPE_SYMBOL, "file": file_attr})
+            node_type = symbol_type if symbol_type else NODE_TYPE_SYMBOL
+            self._add_vertex(symbol, {"type": node_type, "file": file_attr})
 
         # Add reference edge
         self._add_edge(self.current_scope, symbol, EDGE_TYPE_REFERENCE)
@@ -191,6 +205,14 @@ class CodeGraph:
         self.graph.es[edge_id]["type"] = edge_type
 
         return edge_id
+
+    def add_root_node(self, project_root):
+        """Add the root node to the graph"""
+        self._add_vertex(project_root, {"type": "root"})
+
+    def add_directory_node(self, dir_path):
+        """Add a directory node to the graph"""
+        self._add_vertex(dir_path, {"type": NODE_TYPE_DIRECTORY})
 
     def save_graph(self, output_path):
         """
@@ -293,7 +315,7 @@ class CodeGraph:
             except FileNotFoundError:
                 print(f"File not found: {file_path}")
                 return None
-        elif node_type == NODE_TYPE_SYMBOL:
+        elif is_symbol_node(node_type):
             # Get the start and end lines
             start_line = node["start_line"]
             end_line = node["end_line"]
@@ -407,6 +429,10 @@ class CodeGraph:
         node_type_colors = {
             NODE_TYPE_FILE: "skyblue",
             NODE_TYPE_SYMBOL: "lightgreen",
+            NODE_TYPE_CLASS: "gold",
+            NODE_TYPE_FUNCTION: "lightgreen",
+            NODE_TYPE_METHOD: "lightcoral",
+            NODE_TYPE_FIELD: "plum",
             NODE_TYPE_DIRECTORY: "orange",  # Add directory node color
             "root": "lightgrey",  # Root node color
             # Add more node types and colors as needed

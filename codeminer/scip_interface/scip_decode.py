@@ -101,6 +101,99 @@ class SCIPGraphDecoder:
         # Process the symbol
         self._process_symbol(symbol, line, symbol_roles, enclosing_ranges)
 
+    def _unify_symbol_name(self, symbol):
+        """
+        Unify symbol names to a consistent format.
+
+        Examples:
+        - src.calculator`/Calculator# -> src/calculator.py:Calculator
+        - src.calculator`/Calculator#add(). -> src/calculator.py:Calculator.add()
+        - src.utils.helpers`/validate_input(). -> src/utils/helpers.py:validate_input()
+        - src.calculator`/Calculator#history. -> src/calculator.py:Calculator.history (assuming history is a field)
+
+        Args:
+            symbol: Original symbol name
+
+        Returns:
+            Unified symbol name
+        """
+        # Remove backticks
+        clean_symbol = symbol.replace("`", "")
+
+        # Replace dots with slashes in module path and use colon as separator
+        if "/" in clean_symbol:
+            parts = clean_symbol.split("/", 1)
+            module_path = parts[0].replace(".", "/") + ".py"  # Add .py suffix
+            if len(parts) > 1:
+                symbol_part = parts[1]
+
+                # Handle class and method patterns
+                if "#" in symbol_part:
+                    # Split on # to separate class from method
+                    class_method_parts = symbol_part.split("#", 1)
+                    class_name = class_method_parts[0]
+
+                    if len(class_method_parts) > 1 and class_method_parts[1]:
+                        # Has method after #
+                        method_part = class_method_parts[1].rstrip(".")
+                        unified = f"{module_path}:{class_name}.{method_part}"
+                    else:
+                        # Just class (ends with #)
+                        unified = f"{module_path}:{class_name}"
+                else:
+                    # Function (no # symbol)
+                    func_name = symbol_part.rstrip(".")
+                    unified = f"{module_path}:{func_name}"
+            else:
+                unified = module_path
+        else:
+            # No module path separator, use as-is but clean
+            unified = clean_symbol.rstrip(".")
+
+        return unified
+
+    def _classify_symbol_type(self, unified_symbol, original_symbol=None):
+        """
+        Classify symbol type based on unified symbol format.
+
+        Args:
+            unified_symbol: Unified symbol name
+            original_symbol: Original symbol name (for additional context)
+
+        Returns:
+            Symbol type: NODE_TYPE_CLASS, NODE_TYPE_METHOD, NODE_TYPE_FIELD, or NODE_TYPE_FUNCTION
+        """
+        from codeminer.types import (
+            NODE_TYPE_CLASS,
+            NODE_TYPE_FIELD,
+            NODE_TYPE_FUNCTION,
+            NODE_TYPE_METHOD,
+        )
+
+        if ":" in unified_symbol:
+            symbol_part = unified_symbol.split(":", 1)[1]
+            if "." in symbol_part:
+                # Has a dot - could be method or field
+                # Check if the original symbol had parentheses (indicating method)
+                has_parentheses = False
+                if original_symbol:
+                    has_parentheses = "()" in original_symbol or "(" in original_symbol
+
+                # If original had parentheses, it's a method; otherwise it's a field
+                if has_parentheses:
+                    return NODE_TYPE_METHOD
+                else:
+                    return NODE_TYPE_FIELD
+            else:
+                # Could be class or function - check if it looks like a class
+                # Classes typically start with capital letter
+                if symbol_part and symbol_part[0].isupper():
+                    return NODE_TYPE_CLASS
+                else:
+                    return NODE_TYPE_FUNCTION
+        else:
+            return NODE_TYPE_FUNCTION
+
     def _process_symbol(self, symbol, line, symbol_roles, enclosing_ranges):
         # Skip function arguments (symbols ending with .(xxx))
         if re.search(r"\.\([^)]+\)$", symbol):
@@ -119,10 +212,16 @@ class SCIPGraphDecoder:
         cleaned_symbol = symbol.split(" ")[-1]
         cleaned_symbol = re.sub(r"`", "", cleaned_symbol)
 
+        # Unify symbol name format
+        unified_symbol = self._unify_symbol_name(cleaned_symbol)
+
+        # Classify symbol type (pass both original and unified for context)
+        symbol_type = self._classify_symbol_type(unified_symbol, cleaned_symbol)
+
         # Handle __init__ symbols - convert to file reference
-        if "/__init__" in cleaned_symbol:
+        if "/__init__" in unified_symbol:
             # Extract the module path and use it as the target
-            module_match = re.search(r"(.+)/(?:__init__)", cleaned_symbol)
+            module_match = re.search(r"(.+)/(?:__init__)", unified_symbol)
             if module_match:
                 module_path = module_match.group(1)
                 file_path = module_path.replace(".", "/") + ".py"
@@ -141,27 +240,31 @@ class SCIPGraphDecoder:
 
             # Add symbol node with scope range
             self.code_graph.add_symbol_node(
-                cleaned_symbol, line, scope_start_line, scope_end_line
+                unified_symbol, line, scope_start_line, scope_end_line, symbol_type
             )
 
             # Add containment edge
-            self.code_graph.add_containment_edge(cleaned_symbol)
+            self.code_graph.add_containment_edge(unified_symbol)
 
             # Update current scope
-            self.code_graph.update_current_scope(cleaned_symbol)
+            self.code_graph.update_current_scope(unified_symbol)
 
         # Handle definition (symbol_roles == 1) with no enclosing range
         elif symbol_roles == 1:
-            self.code_graph.add_symbol_node(cleaned_symbol, line)
+            self.code_graph.add_symbol_node(
+                unified_symbol, line, symbol_type=symbol_type
+            )
 
             # Add 'contain' edge from current scope to symbol
             self.code_graph._add_edge(
-                self.code_graph.current_scope, cleaned_symbol, EDGE_TYPE_CONTAIN
+                self.code_graph.current_scope, unified_symbol, EDGE_TYPE_CONTAIN
             )
 
         # Handle reference (symbol_roles == 8)
         elif symbol_roles == 8:
-            self.code_graph.add_symbol_reference(cleaned_symbol, module_path)
+            self.code_graph.add_symbol_reference(
+                unified_symbol, module_path, symbol_type
+            )
 
     def save_graph(self, output_path):
         self.code_graph.save_graph(output_path)
