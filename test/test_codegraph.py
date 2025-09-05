@@ -39,8 +39,8 @@ if __name__ == "__main__":
         )
 
         # get node info
-        # node name = astropy.modeling.separable/separability_matrix().
+        # node name = astropy/modeling/separable.py:separability_matrix()
         attributes = graph.get_node_info_by_name(
-            node_name="astropy.modeling.separable/separability_matrix()."
+            node_name="astropy/modeling/separable.py:separability_matrix()"
         )
         print(f"Node attributes: {attributes}")
