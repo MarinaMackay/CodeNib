@@ -3,18 +3,11 @@
 ## CodeMiner API
 A modular FastAPI-based framework for code and query similarity services, with support for easy extension to more APIs.
 
-### 1. Start the API Server
+### 1. Query Code Similarity
 
-```python
-from codeminer.api import BaseAPI
-
-# Start the API server (registers all APIs and preloads models)
-BaseAPI.start(host="127.0.0.1", port=8000, log_level="info")
-```
-
-### 2. Query Code Similarity
-
-The `SimilarityAPI` class provides a simple interface for calculating code-to-query similarity using `jina-embeddings-v2-base-code`.
+The `SimilarityAPI` class provides a simple interface for calculating code-to-query similarity using the following embedding models:
+- jina-embeddings-v2-base-code (default)
+- CodeRankEmbed
 
 ```python
 from codeminer.api import SimilarityAPI
@@ -26,6 +19,22 @@ query = "Define a function that greets someone"
 result = SimilarityAPI.query(code, query)
 print(result)  # Example output: {'score': 0.85, 'latency_sec': 0.05}
 ```
+### 2. Model Switching
 
-For more details, see the code and docstrings in the `codeminer/api/` directory.
+You can switch between different models and devices at runtime:
+
+```python
+# Switch to CUDA device
+SimilarityAPI.configure(device="cuda")
+
+# Switch to CodeRankEmbed model
+SimilarityAPI.configure(model="CodeRankEmbed")
+
+# Switch both model and device simultaneously
+SimilarityAPI.configure(model="CodeRankEmbed", device="cuda")
+
+```
+
+
+
 
