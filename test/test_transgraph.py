@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from codeminer.log_utils import setup_detailed_logging
 from codeminer.scip_interface import SCIPIndexer
 from codeminer.transverse_graph import (
     RepoDependencySearcher,
@@ -109,18 +110,13 @@ def test_transgraph_simple():
     if file_nodes:
         print(f"\n--- Testing traverse_tree_structure ---")
 
-        # Test with main.py if it exists
-        main_file = None
-        for node in file_nodes:
-            if node["name"].endswith("main.py"):
-                main_file = node["name"]
-                break
+        # set the file to be src/utils/helpers.py
+        main_file = "src/utils/helpers.py"
 
         if not main_file and file_nodes:
             main_file = file_nodes[0]["name"]
 
         if main_file:
-            print(f"Root file: {main_file}")
 
             # Test downstream traversal
             tree_result_downstream = traverse_tree_structure(
@@ -281,6 +277,9 @@ def test_transgraph_simple():
 # Example usage
 if __name__ == "__main__":
     print("Starting simple repository traverse test...")
+    setup_detailed_logging(
+        log_dir="logs", run_name="simple_test", mode="both", level="scip_debug"
+    )
     success = test_transgraph_simple()
 
     if success:
