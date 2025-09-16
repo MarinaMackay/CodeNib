@@ -29,7 +29,7 @@ class CodeGraph:
         self.current_file = None
         self.current_scope = None
         self.project_root = project_root
-        self.scope_stack = []
+        self.scope_stack = []  # List of {symbol: [start_line, end_line]} dicts
         # Store line ranges for symbols
         self.symbol_ranges = {}
         # Map symbol names to vertex IDs
@@ -48,7 +48,8 @@ class CodeGraph:
         self._add_vertex(file_path, {"type": NODE_TYPE_FILE})
 
         self.current_scope = file_path
-        self.scope_stack = [file_path]
+        # File scope has no range (special case)
+        self.scope_stack = [{file_path: None}]
 
     def add_symbol_node(
         self, symbol, line, scope_start_line=None, scope_end_line=None, symbol_type=None
@@ -110,15 +111,55 @@ class CodeGraph:
         # Add reference edge
         self._add_edge(self.current_scope, symbol, EDGE_TYPE_REFERENCE)
 
-    def update_current_scope(self, symbol):
+    def update_current_scope(self, symbol, start_line=None, end_line=None):
         """
-        Update the current scope to the given symbol.
+        Update the current scope to the given symbol with its range.
 
         Args:
             symbol: Symbol to set as current scope
+            start_line: Start line of the symbol's scope
+            end_line: End line of the symbol's scope
         """
         self.current_scope = symbol
-        self.scope_stack.append(symbol)
+        # Add symbol with its range to scope stack
+        scope_range = (
+            [start_line, end_line]
+            if start_line is not None and end_line is not None
+            else None
+        )
+        self.scope_stack.append({symbol: scope_range})
+
+    def exit_scopes_by_line(self, current_line):
+        """
+        Exit scopes that have ended based on current line number.
+        File scope (with None range) is never popped.
+
+        Args:
+            current_line: Current line number being processed
+        """
+        # Pop scopes whose range has ended
+        while len(self.scope_stack) > 1:  # Keep at least the file scope
+            top_scope_dict = self.scope_stack[-1]
+            scope_symbol = list(top_scope_dict.keys())[0]
+            scope_range = top_scope_dict[scope_symbol]
+
+            # If scope has no range (file scope), don't pop
+            if scope_range is None:
+                break
+
+            # If current line is beyond scope's end, pop it
+            start_line, end_line = scope_range
+            if current_line > end_line:
+                self.scope_stack.pop()
+                # Update current_scope to new top of stack
+                if self.scope_stack:
+                    new_top = self.scope_stack[-1]
+                    self.current_scope = list(new_top.keys())[0]
+                else:
+                    self.current_scope = self.current_file
+            else:
+                # Scope is still active
+                break
 
     def add_containment_edge(self, target_symbol):
         """
@@ -127,9 +168,8 @@ class CodeGraph:
         Args:
             target_symbol: Symbol being contained
         """
-        parent_scope = (
-            self.scope_stack[-2] if len(self.scope_stack) > 1 else self.current_file
-        )
+        # Use the current scope directly (not parent scope)
+        parent_scope = self.current_scope
         self._add_edge(parent_scope, target_symbol, EDGE_TYPE_CONTAIN)
 
     def _add_vertex(self, name, attributes=None):
