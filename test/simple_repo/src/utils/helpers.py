@@ -34,10 +34,15 @@ def format_result(result: Union[int, float]) -> str:
     Returns:
         Formatted string representation
     """
+
+    def _remove_trailing_zeros(value_str: str) -> str:
+        """Helper function to remove trailing zeros from decimal."""
+        return value_str.rstrip("0").rstrip(".")
+
     if isinstance(result, float):
         # Round to 4 decimal places and remove trailing zeros
-        formatted = f"{result:.4f}".rstrip("0").rstrip(".")
-        return formatted
+        formatted = f"{result:.4f}"
+        return _remove_trailing_zeros(formatted)
     else:
         return str(result)
 

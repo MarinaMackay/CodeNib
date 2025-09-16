@@ -2,3 +2,4 @@
 *.jsonl
 *.npy
 *.pkl
+*.log

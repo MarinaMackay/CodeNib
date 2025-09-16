@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import logging
 import os
 import subprocess
 import time
@@ -8,12 +7,9 @@ from pathlib import Path
 from typing import Optional, Union
 
 from ..code_graph import CodeGraph
+from ..log_utils import get_logger
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("scip_indexer")
+logger = get_logger("scip_indexer")
 
 
 class SCIPIndexer:
@@ -183,7 +179,7 @@ class SCIPIndexer:
         if target_dir:
             cmd.extend(["--target-only", target_dir])
 
-        logger.info(f"Running command: {' '.join(cmd)}")
+        logger.debug(f"Running command: {' '.join(cmd)}")
 
         # Time the index generation
         start_time = time.time()
