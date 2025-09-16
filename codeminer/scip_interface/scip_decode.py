@@ -2,7 +2,15 @@ import re
 from pathlib import Path
 
 from ..code_graph import CodeGraph
-from ..types import EDGE_TYPE_CONTAIN, EDGE_TYPE_REFERENCE
+from ..log_utils import get_logger, register_scip_logger
+from ..types import (
+    EDGE_TYPE_CONTAIN,
+    EDGE_TYPE_REFERENCE,
+    NODE_TYPE_CLASS,
+    NODE_TYPE_FIELD,
+    NODE_TYPE_FUNCTION,
+    NODE_TYPE_METHOD,
+)
 
 
 class SCIPGraphDecoder:
@@ -11,10 +19,18 @@ class SCIPGraphDecoder:
         self.project_root = project_root
         self.code_graph = CodeGraph(project_root)
         self.indexed_directories = set()
+        self.logger = get_logger(__name__)
+        # Register this module for SCIP debug logging
+        register_scip_logger(__name__)
 
     def decode(self):
-        with open(self.index_file_path, "r") as f:
-            content = f.read()
+        self.logger.info(f"Starting SCIP decode from {self.index_file_path}")
+        try:
+            with open(self.index_file_path, "r") as f:
+                content = f.read()
+        except Exception as e:
+            self.logger.error(f"Error reading SCIP index file: {e}")
+            raise
 
         # Parse documents
         document_blocks = re.findall(
@@ -163,12 +179,6 @@ class SCIPGraphDecoder:
         Returns:
             Symbol type: NODE_TYPE_CLASS, NODE_TYPE_METHOD, NODE_TYPE_FIELD, or NODE_TYPE_FUNCTION
         """
-        from codeminer.types import (
-            NODE_TYPE_CLASS,
-            NODE_TYPE_FIELD,
-            NODE_TYPE_FUNCTION,
-            NODE_TYPE_METHOD,
-        )
 
         if ":" in unified_symbol:
             symbol_part = unified_symbol.split(":", 1)[1]
@@ -195,9 +205,26 @@ class SCIPGraphDecoder:
             return NODE_TYPE_FUNCTION
 
     def _process_symbol(self, symbol, line, symbol_roles, enclosing_ranges):
+        self.logger.scip_debug(
+            f"Processing symbol: {symbol} at line {line}, roles: {symbol_roles}"
+        )
+
         # Skip function arguments (symbols ending with .(xxx))
         if re.search(r"\.\([^)]+\)$", symbol):
             return
+
+        # Exit scopes that have ended based on current line
+        try:
+            self.logger.scip_debug(
+                f"Scope stack before exit: {[list(s.keys())[0] for s in self.code_graph.scope_stack]}"
+            )
+            self.code_graph.exit_scopes_by_line(line)
+            self.logger.scip_debug(
+                f"Scope stack after exit: {[list(s.keys())[0] for s in self.code_graph.scope_stack]}"
+            )
+        except Exception as e:
+            self.logger.error(f"Error exiting scopes at line {line}: {e}")
+            raise
 
         # Parse the symbol
         match = re.search(r"`?([^`]+)`?/([^.]+)(?:\.|\(|#)", symbol)
@@ -244,13 +271,30 @@ class SCIPGraphDecoder:
             )
 
             # Add containment edge
+            self.logger.scip_debug(
+                f"Adding containment edge for {unified_symbol}, current scope: {self.code_graph.current_scope}"
+            )
             self.code_graph.add_containment_edge(unified_symbol)
 
-            # Update current scope
-            self.code_graph.update_current_scope(unified_symbol)
+            # Update current scope for classes and functions with enclosing ranges
+            # Now with proper scope exit handling, functions can safely become scopes
+            if symbol_type in [NODE_TYPE_CLASS, NODE_TYPE_FUNCTION, NODE_TYPE_METHOD]:
+                try:
+                    self.logger.scip_debug(
+                        f"Updating scope to {unified_symbol} [{scope_start_line}-{scope_end_line}]"
+                    )
+                    self.code_graph.update_current_scope(
+                        unified_symbol, scope_start_line, scope_end_line
+                    )
+                except Exception as e:
+                    self.logger.error(f"Error updating scope for {unified_symbol}: {e}")
+                    raise
 
         # Handle definition (symbol_roles == 1) with no enclosing range
         elif symbol_roles == 1:
+            self.logger.scip_debug(
+                f"Adding symbol without enclosing range: {unified_symbol}, current scope: {self.code_graph.current_scope}"
+            )
             self.code_graph.add_symbol_node(
                 unified_symbol, line, symbol_type=symbol_type
             )
