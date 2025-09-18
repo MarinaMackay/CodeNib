@@ -40,7 +40,7 @@ class NodeInfo(BaseModel):
 class NodeWithContent(NodeInfo):
     """Node attributes with content."""
 
-    content: str = ""
+    content: Optional[str] = None
 
 
 class NodeWithScore(NodeInfo):

@@ -1,13 +1,14 @@
+import json
 import os
-from typing import Any, Dict, List
+from typing import List, Optional
 
 from llama_index.core import Document
 from llama_index.core.schema import TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 
 from .code_graph import CodeGraph
-from .types import is_symbol_node, NODE_TYPE_FILE, NODE_TYPE_DIRECTORY
 from .transverse_graph import wrap_code_snippet
+from .types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NodeWithContent, is_symbol_node
 
 
 class BM25CodeIndexer:
@@ -16,24 +17,25 @@ class BM25CodeIndexer:
     search functionality.
     """
 
-    def __init__(self, code_graph=None, top_k: int = 10, language: str = "english"):
+    def __init__(self, code_graph=None, max_k: int = 15, language: str = "english"):
         """
         Initialize the BM25CodeIndexer and optionally build the index immediately.
 
         Args:
             code_graph: CodeGraph instance containing nodes to index. If provided,
                        the index will be built immediately.
-            top_k: Number of results to return in searches
+            max_k: Maximum number of results to return in searches
             language: Language for stopword removal and stemming
                       Default is "english" which works well for processing code tokens
                       as it treats special characters as separators
         """
-        self.top_k = top_k
+        self.max_k = max_k
         self.language = language
         self.documents = []
         self.nodes = []
         self.retriever = None
         self.code_graph: CodeGraph = None
+        self.project_root: Optional[str] = None
 
         # Build the index immediately if a code_graph is provided
         if code_graph is not None:
@@ -50,10 +52,11 @@ class BM25CodeIndexer:
         self.documents = []
         self.nodes = []
         self.code_graph = code_graph
+        self.project_root = code_graph.project_root
 
         # Convert graph nodes to documents
         for vertex in code_graph.graph.vs:
-            doc = self._convert_vertex_to_document(vertex, code_graph)
+            doc = self._convert_vertex_to_document(vertex)
             if doc is not None:
                 self.documents.append(doc)
                 # Create TextNode from Document for BM25Retriever
@@ -62,12 +65,12 @@ class BM25CodeIndexer:
 
         # Create BM25Retriever
         self.retriever = BM25Retriever.from_defaults(
-            nodes=self.nodes, similarity_top_k=self.top_k, language=self.language
+            nodes=self.nodes, similarity_top_k=self.max_k, language=self.language
         )
 
         return self.retriever
 
-    def _convert_vertex_to_document(self, vertex, code_graph):
+    def _convert_vertex_to_document(self, vertex):
         """
         Convert a graph vertex to a Document for indexing.
 
@@ -93,7 +96,9 @@ class BM25CodeIndexer:
             metadata["file"] = node_name
             content_lines = [f"File: {node_name}"]
             # Optionally include basic identifiers from file path for tokenization
-            content_lines.append(f"PathTokens: {node_name.replace('/', ' ').replace('.', ' ')}")
+            content_lines.append(
+                f"PathTokens: {node_name.replace('/', ' ').replace('.', ' ')}"
+            )
             content = "\n".join(content_lines)
         elif node_type == NODE_TYPE_DIRECTORY:
             # Directory node
@@ -102,16 +107,23 @@ class BM25CodeIndexer:
             # Symbol-like nodes: class/function/method/field/symbol
             file_path = vertex["file"] if "file" in vertex.attributes() else None
             start_line = (
-                vertex["start_line"] if "start_line" in vertex.attributes() and vertex["start_line"] is not None else 0
+                vertex["start_line"]
+                if "start_line" in vertex.attributes()
+                and vertex["start_line"] is not None
+                else 0
             )
             end_line = (
-                vertex["end_line"] if "end_line" in vertex.attributes() and vertex["end_line"] is not None else 0
+                vertex["end_line"]
+                if "end_line" in vertex.attributes() and vertex["end_line"] is not None
+                else 0
             )
 
             if file_path:
                 metadata["file"] = file_path
             # Use simplified symbol name consistent with traverse graph utilities
-            simplified_name = node_name.split(":")[-1] if ":" in node_name else node_name
+            simplified_name = (
+                node_name.split(":")[-1] if ":" in node_name else node_name
+            )
             metadata["name"] = simplified_name
             metadata["start_line"] = start_line
             metadata["end_line"] = end_line
@@ -161,6 +173,7 @@ class BM25CodeIndexer:
             .replace("/", " ")
             .replace("_", " ")
             .replace("#", " ")
+            .replace(":", " ")
             .split()
         ):
             if part.strip():
@@ -201,15 +214,24 @@ class BM25CodeIndexer:
 
         return " ".join(enriched)
 
-    def search(self, query: str) -> List[Dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        return_code_content: bool = False,
+        wrap_with_ln: bool = True,
+    ) -> List[NodeWithContent]:
         """
         Search the index for nodes matching the query.
 
         Args:
             query: Search query
+            top_k: Number of top results to return (defaults to max_k if not specified)
+            return_code_content: Whether to include code content in the results
+            wrap_with_ln: Whether to wrap code content with line numbers
 
         Returns:
-            List of dictionaries containing matched nodes with scores
+            List of NodeWithContent objects containing matched nodes with optional content
         """
         if self.retriever is None:
             raise ValueError(
@@ -218,79 +240,97 @@ class BM25CodeIndexer:
 
         results = self.retriever.retrieve(query)
 
-        # Convert results to a more usable format
+        # Convert results to NodeWithContent objects
         processed_results = []
         for result_node in results:
             # Extract all metadata directly from the node
             metadata = result_node.node.metadata
+            node_name = metadata.get("node_id", "")
 
-            # Create result dict with the score from the retriever
-            result = {
-                "score": float(
-                    result_node.score or 0.0
-                ),  # Ensure score is included and convert to float
-                "node_id": metadata.get("node_id"),
-                "type": metadata.get("type", "unknown"),  # Fixed: use "type" instead of "node_type"
-                "name": metadata.get("name", ""),
-            }
+            # Get basic node info
+            file_path = metadata.get("file")
+            start_line = metadata.get("start_line")
+            end_line = metadata.get("end_line")
+            node_type = metadata.get("type", "unknown")
 
-            # Add all metadata
-            for key, value in metadata.items():
-                if key not in ["node_id"]:  # already included above
-                    result[key] = value
+            # Handle code content if requested
+            content = None
+            if return_code_content and file_path:
+                # Construct full file path using project_root if available
+                full_file_path = file_path
+                if self.project_root and not os.path.isabs(file_path):
+                    full_file_path = os.path.join(self.project_root, file_path)
+
+                try:
+                    with open(
+                        full_file_path, "r", encoding="utf-8", errors="replace"
+                    ) as f:
+                        if node_type == NODE_TYPE_FILE:
+                            # For file nodes, return entire file content
+                            code_content = f.read()
+                            if wrap_with_ln:
+                                lines = code_content.split("\n")
+                                content = wrap_code_snippet(code_content, 1, len(lines))
+                            else:
+                                content = code_content
+                        else:
+                            # For symbol nodes, extract specific lines
+                            if start_line is not None and end_line is not None:
+                                lines = f.readlines()
+                                # start_line and end_line are already 0-based and inclusive
+                                start_idx = max(0, start_line)
+                                end_idx = min(
+                                    len(lines), end_line + 1
+                                )  # +1 for slice end exclusivity
+
+                                extracted_lines = lines[start_idx:end_idx]
+
+                                # Remove trailing empty lines to avoid extra whitespace in output
+                                original_end_idx = len(extracted_lines)
+                                while (
+                                    extracted_lines
+                                    and extracted_lines[-1].strip() == ""
+                                ):
+                                    extracted_lines.pop()
+
+                                code_content = "".join(extracted_lines)
+
+                                if wrap_with_ln:
+                                    # Calculate the actual end line after removing empty lines
+                                    lines_removed = original_end_idx - len(
+                                        extracted_lines
+                                    )
+                                    actual_end_line = end_line - lines_removed
+                                    # Convert to 1-based for display purposes
+                                    content = wrap_code_snippet(
+                                        code_content,
+                                        start_line + 1,
+                                        actual_end_line + 1,
+                                    )
+                                else:
+                                    content = code_content
+                except (IOError, UnicodeDecodeError):
+                    # If file reading fails, content remains None
+                    pass
+
+            # Create NodeWithContent object
+            result = NodeWithContent(
+                score=float(result_node.score or 0.0),
+                node_name=node_name,
+                type=node_type,
+                file=file_path,
+                start_line=start_line,
+                end_line=end_line,
+                content=content,
+            )
 
             processed_results.append(result)
 
+        # Filter by top_k if specified
+        if top_k is not None:
+            processed_results = processed_results[:top_k]
+
         return processed_results
-
-    def search_graph_like(self, query: str, return_code_content: bool = False, wrap_with_ln: bool = True) -> List[Dict[str, Any]]:
-        """
-        Results in the exact same format as RepoEntitySearcher.get_node_data.
-        """
-
-        if self.retriever is None or self.code_graph is None:
-            raise ValueError("Index has not been built. Call build_index_from_graph first.")
-
-        results = self.retriever.retrieve(query)
-        output: List[Dict[str, Any]] = []
-
-        for result_node in results:
-            nid = result_node.node.metadata.get("node_id")
-            if nid not in self.code_graph.name_to_vertex:
-                continue
-            vertex_id = self.code_graph.name_to_vertex[nid]
-            vertex = self.code_graph.graph.vs[vertex_id]
-
-            formatted_data: Dict[str, Any] = {
-                "node_id": nid,
-                "type": vertex["type"] if "type" in vertex.attributes() else "unknown",
-            }
-
-            code_content = self.code_graph.get_node_content(vertex_id)
-            if code_content:
-                start_line = 0
-                end_line = 0
-                if (
-                    "start_line" in vertex.attributes() and vertex["start_line"] is not None
-                ):
-                    start_line = vertex["start_line"]
-                if "end_line" in vertex.attributes() and vertex["end_line"] is not None:
-                    end_line = vertex["end_line"]
-                formatted_data["start_line"] = start_line
-                formatted_data["end_line"] = end_line
-
-                if vertex["type"] == NODE_TYPE_FILE:
-                    end_line = len(code_content.split("\n"))
-                    formatted_data["end_line"] = end_line
-
-                if return_code_content and wrap_with_ln:
-                    formatted_data["code_content"] = wrap_code_snippet(code_content, start_line, end_line)
-                elif return_code_content:
-                    formatted_data["code_content"] = code_content
-
-            output.append(formatted_data)
-
-        return output
 
     def save_index(self, directory_path: str):
         """
@@ -311,6 +351,18 @@ class BM25CodeIndexer:
         # This already persists the corpus and retriever configuration
         self.retriever.persist(directory_path)
 
+        # Save additional metadata including project_root
+        metadata = {
+            "project_root": (
+                str(self.project_root) if self.project_root is not None else None
+            ),
+            "max_k": self.max_k,
+            "language": self.language,
+        }
+        metadata_file = os.path.join(directory_path, "bm25_metadata.json")
+        with open(metadata_file, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
     def load_index(self, directory_path: str):
         """
         Load the index from a directory.
@@ -324,3 +376,15 @@ class BM25CodeIndexer:
         # Load the BM25 retriever using its built-in load method
         # This already loads the corpus and configuration
         self.retriever = BM25Retriever.from_persist_dir(directory_path)
+
+        # Load additional metadata including project_root
+        metadata_file = os.path.join(directory_path, "bm25_metadata.json")
+        if os.path.exists(metadata_file):
+            with open(metadata_file, "r", encoding="utf-8") as f:
+                metadata = json.load(f)
+                self.project_root = metadata.get("project_root")
+                self.max_k = metadata.get("max_k", 10)
+                self.language = metadata.get("language", "english")
+        else:
+            # For backward compatibility with indices saved without metadata
+            self.project_root = None

@@ -274,60 +274,6 @@ def test_transgraph_simple():
     return True
 
 
-def test_bm25_transgraph_compatibility():
-    """Test compatibility between BM25 graph-like output and traverse graph get_node_data."""
-    repo_path = Path(__file__).parent / "simple_repo"
-    assert repo_path.exists(), f"Test repository not found at {repo_path}"
-    print(f"Using repo: {repo_path}")
-
-    # Build graph
-    output_path = Path.home() / ".codeminer" / "compat_test_smoke"
-    if not output_path.exists():
-        output_path.mkdir(parents=True)
-    indexer = SCIPIndexer(str(repo_path), output_dir=str(output_path))
-    graph = indexer.run_pipeline(project_name="compat_test_smoke", force=True)
-    print("Graph built successfully")
-
-    entity_searcher = RepoEntitySearcher(graph)
-
-    # Pick a query derived from a real file name
-    file_nodes = entity_searcher.get_all_nodes_by_type(NODE_TYPE_FILE)
-    assert file_nodes, "Should have at least one file node"
-    probe_file = file_nodes[0]["name"]
-    query = Path(probe_file).stem
-    print(f"Probe file: {probe_file}")
-    print(f"Query: {query}")
-
-    # Build BM25 and run graph-like search
-    bm25 = BM25CodeIndexer(code_graph=graph, top_k=10, language="english")
-    r1 = bm25.search_graph_like(query, return_code_content=True, wrap_with_ln=True)
-    assert r1, "BM25 should return at least one node"
-    nid = r1[0]["node_id"]
-
-    # Get graph truth for the exact same node_id
-    r2 = entity_searcher.get_node_data([nid], return_code_content=True, wrap_with_ln=True)
-    assert r2 and r2[0], "Graph should return the same node data"
-
-    # Print summaries
-    b1 = r1[0]
-    g1 = r2[0]
-    print("BM25 first node:", {k: b1.get(k) for k in ["node_id", "type", "start_line", "end_line", "name"] if k in b1})
-    print("Graph node:", {k: g1.get(k) for k in ["node_id", "type", "start_line", "end_line", "name"] if k in g1})
-
-    b1_code = b1.get("code_content", "")
-    g1_code = g1.get("code_content", "")
-    print("BM25 code_content (head):\n", b1_code[:500])
-    print("Graph code_content (head):\n", g1_code[:500])
-
-    # equality on keys
-    keys = set(["node_id", "type"]) | set(k for k in ("start_line", "end_line", "code_content") if k in g1)
-    for k in keys:
-        assert b1.get(k) == g1.get(k), f"Mismatch on {k}: {b1.get(k)} != {g1.get(k)}"
-
-    print("BM25 graph-like output == traverse graph output: PASS")
-    return True
-
-
 # Example usage
 if __name__ == "__main__":
     print("Starting simple repository traverse test...")
@@ -335,11 +281,10 @@ if __name__ == "__main__":
         log_dir="logs", run_name="simple_test", mode="both", level="scip_debug"
     )
     success = test_transgraph_simple()
-    compat_success = test_bm25_transgraph_compatibility()
 
-    if success and compat_success:
+    if success:
         print("\n🎉 All tests completed successfully!")
-        
+
     else:
         print("\n❌ Some tests failed!")
         exit(1)

@@ -28,6 +28,10 @@ def wrap_code_snippet(code_snippet, start_line, end_line):
     """Wrap code snippet with line numbers"""
     lines = code_snippet.split("\n")
 
+    # Remove trailing empty lines caused by trailing newlines
+    while lines and lines[-1] == "":
+        lines.pop()
+
     # Handle None values for files (use 0-based line numbering)
     if start_line is None:
         start_line = 0
@@ -36,13 +40,9 @@ def wrap_code_snippet(code_snippet, start_line, end_line):
 
     max_line_number = start_line + len(lines) - 1
     number_width = len(str(max_line_number))
-    return (
-        "```\n"
-        + "\n".join(
-            f"{str(i + start_line).rjust(number_width)} | {line}"
-            for i, line in enumerate(lines)
-        )
-        + "\n```"
+    return "\n".join(
+        f"{str(i + start_line).rjust(number_width)} | {line}"
+        for i, line in enumerate(lines)
     )
 
 

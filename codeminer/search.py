@@ -92,7 +92,7 @@ class CodeSearchEngine:
         logger.info("Building BM25 index from code graph...")
         try:
             self.bm25_indexer = BM25CodeIndexer(
-                code_graph=self.code_graph, top_k=self.top_k, language=self.language
+                code_graph=self.code_graph, max_k=self.top_k, language=self.language
             )
         except Exception as e:
             logger.error(f"Error building BM25 index: {e}")
