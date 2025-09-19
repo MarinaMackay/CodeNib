@@ -3,9 +3,9 @@ from typing import Any, Dict, List, Optional, Set
 
 import igraph as ig
 
+from ..log_utils import get_logger
+from ..types import NodeInfo, NodeWithContent
 from .code_graph import CodeGraph
-from .log_utils import get_logger
-from .types import NodeInfo, NodeWithContent
 
 logger = get_logger(__name__)
 

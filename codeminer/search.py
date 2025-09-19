@@ -3,8 +3,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .bm25_index import BM25CodeIndexer
-from .code_graph import CodeGraph
 from .extract_agent import KeywordExtraction, extract_keywords_from_statement
+from .graph.code_graph import CodeGraph
 from .log_utils import get_logger
 from .scip_interface import SCIPIndexer
 
@@ -92,7 +92,7 @@ class CodeSearchEngine:
         logger.info("Building BM25 index from code graph...")
         try:
             self.bm25_indexer = BM25CodeIndexer(
-                code_graph=self.code_graph, top_k=self.top_k, language=self.language
+                code_graph=self.code_graph, max_k=self.top_k, language=self.language
             )
         except Exception as e:
             logger.error(f"Error building BM25 index: {e}")

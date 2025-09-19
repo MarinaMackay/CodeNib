@@ -62,7 +62,7 @@ if __name__ == "__main__":
     print("\n--- BM25 Index Testing ---")
 
     # Create BM25 indexer with English stemming for method name matching
-    indexer = BM25CodeIndexer(top_k=5, language="english")
+    indexer = BM25CodeIndexer(max_k=10, language="english")
 
     # Build index from code graph
     print("Building BM25 index from code graph...")
@@ -91,21 +91,18 @@ if __name__ == "__main__":
     # Test search with the loaded index
     print("\nSearching with loaded index:")
 
-    for query in search_queries:
-        print(f"\nSearching for '{query}':")
-        results = new_indexer.search(query)
+    print("\n--- Testing search with code content ---")
+    content_query = search_queries[0]  # Use first query
+    print(f"Searching for '{content_query}' with code content:")
+    content_results = new_indexer.search(
+        content_query, top_k=3, return_code_content=True, wrap_with_ln=True
+    )
 
-        if not results:
-            print(f"  No results found for '{query}'")
-            continue
+    for i, result in enumerate(content_results, 1):
+        print(f"{i}. {result}")
+        if result.content:
+            print(f"\nContent preview:\n{result.content[:200]}...")
+        print()
 
-        print(f"  Found {len(results)} results:")
-        for i, result in enumerate(results, 1):
-            print(f"  {i}. {result['name']} (Score: {result['score']:.4f})")
-            print(f"     Type: {result['node_type']}")
-            if "file" in result:
-                print(f"     File: {result['file']}")
-            if "start_line" in result and "end_line" in result:
-                print(f"     Lines: {result['start_line']}-{result['end_line']}")
     print("\n--- BM25 Index Testing Completed ---")
     print("Test completed successfully.")

@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from ..code_graph import CodeGraph
+from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger, register_scip_logger
 from ..types import (
     EDGE_TYPE_CONTAIN,

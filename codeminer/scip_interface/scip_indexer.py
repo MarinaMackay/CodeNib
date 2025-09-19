@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Optional, Union
 
-from ..code_graph import CodeGraph
+from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger
 
 logger = get_logger("scip_indexer")

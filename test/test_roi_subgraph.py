@@ -6,8 +6,8 @@ from codeminer.env.process_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
+from codeminer.graph.roi_subgraph import ROISubgraph
 from codeminer.rerank_agent import RerankAgent
-from codeminer.roi_subgraph import ROISubgraph
 from codeminer.scip_interface import SCIPIndexer
 
 args_dict = {
