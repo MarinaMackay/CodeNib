@@ -3,8 +3,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .bm25_index import BM25CodeIndexer
-from .code_graph import CodeGraph
 from .extract_agent import KeywordExtraction, extract_keywords_from_statement
+from .graph.code_graph import CodeGraph
 from .log_utils import get_logger
 from .scip_interface import SCIPIndexer
 

@@ -2,13 +2,13 @@
 
 from pathlib import Path
 
-from codeminer.log_utils import setup_detailed_logging
-from codeminer.scip_interface import SCIPIndexer
-from codeminer.transverse_graph import (
+from codeminer.graph.transverse_graph import (
     RepoDependencySearcher,
     RepoEntitySearcher,
     traverse_tree_structure,
 )
+from codeminer.log_utils import setup_detailed_logging
+from codeminer.scip_interface import SCIPIndexer
 from codeminer.types import (
     EDGE_TYPE_CONTAIN,
     NODE_TYPE_CLASS,

@@ -4,14 +4,14 @@ import re
 from collections import defaultdict
 from typing import List, Optional
 
-from .code_graph import CodeGraph
-from .types import (
+from ..types import (
     NODE_TYPE_DIRECTORY,
     NODE_TYPE_FILE,
     NODE_TYPE_SYMBOL,
     SYMBOL_TYPES,
     is_symbol_node,
 )
+from .code_graph import CodeGraph
 
 
 def is_test_file(nid):

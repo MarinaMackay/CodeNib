@@ -6,8 +6,8 @@ from llama_index.core import Document
 from llama_index.core.schema import TextNode
 from llama_index.retrievers.bm25 import BM25Retriever
 
-from .code_graph import CodeGraph
-from .transverse_graph import wrap_code_snippet
+from .graph.code_graph import CodeGraph
+from .graph.transverse_graph import wrap_code_snippet
 from .types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NodeWithContent, is_symbol_node
 
 

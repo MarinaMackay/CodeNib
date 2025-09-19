@@ -6,8 +6,8 @@ from codeminer.env.process_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
+from codeminer.graph.transverse_graph import RepoEntitySearcher, traverse_tree_structure
 from codeminer.scip_interface import SCIPIndexer
-from codeminer.transverse_graph import RepoEntitySearcher, traverse_tree_structure
 from codeminer.types import (
     NODE_TYPE_CLASS,
     NODE_TYPE_FILE,
