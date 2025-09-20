@@ -3,14 +3,13 @@ Keyword extraction agent for problem statements.
 This module extracts key terms from problem statements using llama_index.
 """
 
-import os
 from pathlib import Path
 from typing import List, Union
 
 from llama_index.core.llms import ChatMessage
 from pydantic import BaseModel, Field
 
-from .gen_config import Config, get_llm
+from .llm.llm_config import Config, get_llm
 from .log_utils import get_logger
 
 logger = get_logger(__name__)
@@ -45,7 +44,7 @@ class KeywordExtractor:
         # Convert Path object to string if needed, but preserve relative paths
         if isinstance(config_path, Path):
             config_path = str(config_path)
-            
+
         # Load configuration
         codeminer_config = Config(config_path)
 
