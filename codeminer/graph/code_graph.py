@@ -3,7 +3,7 @@ import json
 import igraph as ig
 import matplotlib.pyplot as plt
 
-from .types import (
+from ..types import (
     EDGE_TYPE_CONTAIN,
     EDGE_TYPE_REFERENCE,
     NODE_TYPE_CLASS,
