@@ -4,7 +4,7 @@ from codeminer.env.process_data import load_filter_swebench_dataset
 from codeminer.extract_agent import KeywordExtractor
 
 args_dict = {
-    "model": "gpt-4o",
+    "model": "gemini-2.0-flash",
     "dataset": "princeton-nlp/SWE-bench_Lite",
     "split": "test",
     "filter_instance": "^(astropy__astropy-12907)$",
@@ -25,7 +25,6 @@ if __name__ == "__main__":
         # use the KeywordExtractor to extract keywords
         extractor = KeywordExtractor(
             model_name=args_dict["model"],
-            config_path="../key.cfg",
             temperature=0.0,
         )
         result = extractor.extract_keywords(instance["problem_statement"])

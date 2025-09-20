@@ -9,7 +9,7 @@ from typing import List, Optional, Union
 from llama_index.core.llms import ChatMessage
 from pydantic import BaseModel, Field
 
-from .gen_config import Config, get_llm
+from .llm.llm_config import Config, get_llm
 from .log_utils import get_logger
 from .types import NodeWithContent, NodeWithScore
 
