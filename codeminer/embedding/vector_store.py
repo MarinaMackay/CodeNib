@@ -66,6 +66,9 @@ class CodeVectorStore:
         # Initialize embedding model
         self.embedding = self._initialize_embedding_model(**embedding_kwargs)
         Settings.embed_model = self.embedding
+        # Disable LLM when not using OpenAI to avoid API key requirement
+        if self.embedding_provider.lower() != "openai":
+            Settings.llm = None
 
         # Initialize FAISS index
         self.faiss_index = self._create_faiss_index()

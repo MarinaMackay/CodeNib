@@ -8,11 +8,10 @@ version = "0.1.0"
 description = "A code analysis agent with graph-enhancement"
 readme = "README.md"
 requires-python = ">=3.7"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Zhongming Yu", email = "zhy025@ucsd.edu" }]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -44,6 +43,9 @@ test = ["pytest>=6.0.0", "pytest-cov>=3.0.0"]
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["codeminer*"]
 
 [tool.setuptools.package-data]
 "codeminer.scip_interface" = ["*.proto", "*.yml", "*.sh", "README.md"]
