@@ -2,9 +2,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from .agent.extract_agent import KeywordExtraction, extract_keywords_from_statement
 from .bm25_index import BM25CodeIndexer
-from .extract_agent import KeywordExtraction, extract_keywords_from_statement
 from .graph.code_graph import CodeGraph
+from .llm.llm_config import LLMConfig, LLMProvider
 from .log_utils import get_logger
 from .scip_interface import SCIPIndexer
 
@@ -21,7 +22,10 @@ class CodeSearchEngine:
         self,
         repo_path: str,
         llm_model: str = "gpt-4o",
-        config_path: Union[Path, str] = "key.cfg",
+        llm_provider: Optional[Union[str, LLMProvider]] = None,
+        llm_config: Optional[LLMConfig] = None,
+        llm_temperature: Optional[float] = None,
+        llm_kwargs: Optional[Dict[str, Any]] = None,
         top_k: int = 10,
         language: str = "english",
         instance_id: Optional[str] = None,
@@ -32,7 +36,10 @@ class CodeSearchEngine:
         Args:
             repo_path: Path to the repository to index and search
             llm_model: LLM model to use for keyword extraction
-            config_path: Path to the LLM configuration file
+            llm_provider: Desired LLM provider. If None, inferred from the model name.
+            llm_config: Optional pre-built LLM configuration to reuse.
+            llm_temperature: Optional temperature override for LLM requests (passed through to agents)
+            llm_kwargs: Additional keyword arguments forwarded to the agent constructors
             top_k: Number of top results to return
             language: Language for BM25 indexer (default is "english")
             instance_id: Optional instance ID for the dataset
@@ -41,13 +48,12 @@ class CodeSearchEngine:
         self.repo_name = os.path.basename(self.repo_path)
 
         # Convert Path object to string if needed, but preserve relative paths
-        if isinstance(config_path, Path):
-            config_path = str(config_path)
-
-        self.config_path = config_path
-
         # Configuration
-        self.llm_model = llm_model
+        self.llm_model = llm_config.model_name if llm_config else llm_model
+        self.llm_provider = llm_provider
+        self.llm_config = llm_config
+        self.llm_temperature = llm_temperature
+        self.llm_kwargs = dict(llm_kwargs) if llm_kwargs else {}
         self.top_k = top_k
         self.language = language
 
@@ -112,11 +118,19 @@ class CodeSearchEngine:
         """
         logger.info("Extracting keywords from problem statement...")
         try:
+            extractor_kwargs = {
+                "provider": self.llm_provider,
+                "llm_config": self.llm_config,
+                **self.llm_kwargs,
+            }
+            if self.llm_temperature is not None:
+                extractor_kwargs["temperature"] = self.llm_temperature
+            if self.llm_config is None:
+                extractor_kwargs["model_name"] = self.llm_model
+
             keywords = extract_keywords_from_statement(
                 problem_statement,
-                model_name=self.llm_model,
-                config_path=self.config_path,
-                temperature=0.0,
+                **extractor_kwargs,
             )
             logger.info(
                 f"Extracted {len(keywords.keywords)} keywords: {', '.join(keywords.keywords)}"
