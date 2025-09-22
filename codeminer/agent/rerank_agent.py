@@ -3,15 +3,14 @@ Rerank agent for ranking code nodes based on relevance to a query.
 This module uses LLM APIs to rank NodeWithContent objects and return NodeWithScore objects.
 """
 
-from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional
 
-from llama_index.core.llms import ChatMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from .llm.llm_config import Config, get_llm
-from .log_utils import get_logger
-from .types import NodeWithContent, NodeWithScore
+from ..llm.llm_config import LLMConfig, get_llm
+from ..log_utils import get_logger
+from ..types import NodeWithContent, NodeWithScore
 
 logger = get_logger(__name__)
 
@@ -33,38 +32,27 @@ class RerankAgent:
 
     def __init__(
         self,
-        model_name: str = "gpt-4o",
-        config_path: Union[Path, str] = "key.cfg",
-        temperature: float = 0.0,
+        llm_config: LLMConfig,
         **kwargs,
     ):
-        """
-        Initialize the rerank agent.
+        """Initialize the rerank agent.
 
         Args:
-            model_name (str): Name of the LLM model to use
-            config_path (Union[Path, str]): Path to the configuration file
-            temperature (float): Temperature for the LLM, lower is more deterministic
-            **kwargs: Additional arguments to pass to the LLM
+            llm_config: LLM configuration containing model, provider, and other settings.
+            **kwargs: Additional keyword arguments forwarded to the LLM factory.
         """
-        # Convert Path object to string if needed, but preserve relative paths
-        if isinstance(config_path, Path):
-            config_path = str(config_path)
+        self.llm_config = llm_config
+        self.model_name = self.llm_config.model_name
+        self.temperature = self.llm_config.temperature
 
-        # Load configuration
-        codeminer_config = Config(config_path)
-
-        # Get the LLM using the gen_config helper
         self.llm = get_llm(
-            model=model_name,
-            codeminer_config=codeminer_config,
-            temperature=temperature,
+            model=self.model_name,
             **kwargs,
         )
 
         # Convert the LLM to a structured output LLM
-        self.structured_llm = self.llm.as_structured_llm(output_cls=RerankResult)
-        logger.info(f"Initialized rerank agent with model: {model_name}")
+        self.structured_llm = self.llm.with_structured_output(RerankResult)
+        logger.info(f"Initialized rerank agent with model: {self.model_name}")
 
     def rerank_nodes(
         self, query: str, nodes: List[NodeWithContent], top_k: Optional[int] = None
@@ -138,11 +126,11 @@ class RerankAgent:
             )
 
             # Use structured LLM to get ranking
-            system_msg = ChatMessage.from_str(role="system", content=system_prompt)
-            user_msg = ChatMessage.from_str(role="user", content=user_prompt)
-            result = self.structured_llm.chat([system_msg, user_msg])
+            system_msg = SystemMessage(content=system_prompt)
+            user_msg = HumanMessage(content=user_prompt)
+            result = self.structured_llm.invoke([system_msg, user_msg])
 
-            rerank_result = result.raw
+            rerank_result = result
             logger.debug(f"Rerank result: {rerank_result}")
 
             # Create ranked results with node information
@@ -236,9 +224,7 @@ class RerankAgent:
 def rerank_nodes_with_query(
     query: str,
     nodes: List[NodeWithContent],
-    model_name: str = "gpt-4o",
-    config_path: Union[Path, str] = "key.cfg",
-    temperature: float = 0.0,
+    llm_config: LLMConfig,
     top_k: Optional[int] = None,
     **kwargs,
 ) -> List[NodeWithScore]:
@@ -248,9 +234,7 @@ def rerank_nodes_with_query(
     Args:
         query (str): The query to rank nodes against
         nodes (List[NodeWithContent]): List of nodes with content to rank
-        model_name (str): Name of the LLM model to use
-        config_path (Union[Path, str]): Path to the configuration file
-        temperature (float): Temperature for the LLM, lower is more deterministic
+        llm_config (LLMConfig): LLM configuration containing model, provider, and other settings.
         top_k (Optional[int]): Maximum number of results to return (None for all)
         **kwargs: Additional arguments to pass to the LLM
 
@@ -258,9 +242,7 @@ def rerank_nodes_with_query(
         List[NodeWithScore]: Ranked nodes with relevance scores
     """
     agent = RerankAgent(
-        model_name=model_name,
-        config_path=config_path,
-        temperature=temperature,
+        llm_config=llm_config,
         **kwargs,
     )
     return agent.rerank_nodes(query, nodes, top_k)

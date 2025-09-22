@@ -2,9 +2,8 @@ import json
 import os
 from typing import List, Optional
 
-from llama_index.core import Document
-from llama_index.core.schema import TextNode
-from llama_index.retrievers.bm25 import BM25Retriever
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.documents import Document
 
 from .graph.code_graph import CodeGraph
 from .graph.transverse_graph import wrap_code_snippet
@@ -32,7 +31,6 @@ class BM25CodeIndexer:
         self.max_k = max_k
         self.language = language
         self.documents = []
-        self.nodes = []
         self.retriever = None
         self.code_graph: CodeGraph = None
         self.project_root: Optional[str] = None
@@ -50,7 +48,6 @@ class BM25CodeIndexer:
         """
         # Reset the index
         self.documents = []
-        self.nodes = []
         self.code_graph = code_graph
         self.project_root = code_graph.project_root
 
@@ -59,14 +56,9 @@ class BM25CodeIndexer:
             doc = self._convert_vertex_to_document(vertex)
             if doc is not None:
                 self.documents.append(doc)
-                # Create TextNode from Document for BM25Retriever
-                text_node = TextNode(text=doc.text, id_=doc.id_, metadata=doc.metadata)
-                self.nodes.append(text_node)
 
-        # Create BM25Retriever
-        self.retriever = BM25Retriever.from_defaults(
-            nodes=self.nodes, similarity_top_k=self.max_k, language=self.language
-        )
+        # Create BM25Retriever with LangChain format
+        self.retriever = BM25Retriever.from_documents(self.documents, k=self.max_k)
 
         return self.retriever
 
@@ -152,7 +144,8 @@ class BM25CodeIndexer:
 
         # Create a unique ID for the document
         doc_id = f"node_{node_id}"
-        return Document(text=content, metadata=metadata, id_=doc_id)
+        metadata["doc_id"] = doc_id
+        return Document(page_content=content, metadata=metadata)
 
     def _enrich_symbol_name(self, name: str) -> str:
         """
@@ -238,13 +231,20 @@ class BM25CodeIndexer:
                 "Index has not been built. Call build_index_from_graph first."
             )
 
-        results = self.retriever.retrieve(query)
+        # Use LangChain's invoke method with top_k parameter
+        if top_k is None:
+            top_k = self.max_k
+
+        results = self.retriever.invoke(query)
+
+        # Limit results to top_k
+        results = results[:top_k]
 
         # Convert results to NodeWithContent objects
         processed_results = []
-        for result_node in results:
-            # Extract all metadata directly from the node
-            metadata = result_node.node.metadata
+        for doc in results:
+            # Extract all metadata directly from the document
+            metadata = doc.metadata
             node_name = metadata.get("node_id", "")
 
             # Get basic node info
@@ -313,9 +313,9 @@ class BM25CodeIndexer:
                     # If file reading fails, content remains None
                     pass
 
-            # Create NodeWithContent object
+            # Create NodeWithContent object (LangChain BM25 doesn't provide scores)
             result = NodeWithContent(
-                score=float(result_node.score or 0.0),
+                score=0.0,  # LangChain BM25Retriever doesn't provide scores
                 node_name=node_name,
                 type=node_type,
                 file=file_path,
@@ -325,10 +325,6 @@ class BM25CodeIndexer:
             )
 
             processed_results.append(result)
-
-        # Filter by top_k if specified
-        if top_k is not None:
-            processed_results = processed_results[:top_k]
 
         return processed_results
 
@@ -347,9 +343,16 @@ class BM25CodeIndexer:
         # Create directory if it doesn't exist
         os.makedirs(directory_path, exist_ok=True)
 
-        # Save the BM25 retriever using its built-in persist method
-        # This already persists the corpus and retriever configuration
-        self.retriever.persist(directory_path)
+        # Save documents as JSON since LangChain BM25Retriever doesn't have persist method
+        documents_data = []
+        for doc in self.documents:
+            documents_data.append(
+                {"page_content": doc.page_content, "metadata": doc.metadata}
+            )
+
+        documents_file = os.path.join(directory_path, "documents.json")
+        with open(documents_file, "w", encoding="utf-8") as f:
+            json.dump(documents_data, f, indent=2)
 
         # Save additional metadata including project_root
         metadata = {
@@ -373,9 +376,24 @@ class BM25CodeIndexer:
         if not os.path.exists(directory_path):
             raise ValueError(f"Directory {directory_path} does not exist.")
 
-        # Load the BM25 retriever using its built-in load method
-        # This already loads the corpus and configuration
-        self.retriever = BM25Retriever.from_persist_dir(directory_path)
+        # Load documents from JSON
+        documents_file = os.path.join(directory_path, "documents.json")
+        if not os.path.exists(documents_file):
+            raise ValueError(f"Documents file not found: {documents_file}")
+
+        with open(documents_file, "r", encoding="utf-8") as f:
+            documents_data = json.load(f)
+
+        # Reconstruct Document objects
+        self.documents = []
+        for doc_data in documents_data:
+            doc = Document(
+                page_content=doc_data["page_content"], metadata=doc_data["metadata"]
+            )
+            self.documents.append(doc)
+
+        # Recreate BM25Retriever
+        self.retriever = BM25Retriever.from_documents(self.documents, k=self.max_k)
 
         # Load additional metadata including project_root
         metadata_file = os.path.join(directory_path, "bm25_metadata.json")

@@ -12,21 +12,20 @@ license = { text = "MIT" }
 authors = [{ name = "Zhongming Yu", email = "zhy025@ucsd.edu" }]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
     "igraph>=0.11.6",                     # For graph data structure and algorithms
     "matplotlib>=3.4.0",                  # For visualization of graphs
     "pytest>=6.0.0",                      # For testing
-    "llama-index-retrievers-bm25>=0.5.0", # For BM25 retrieval (legacy support)
-    "llama-index-core>=0.12.28",          # For core functionalities
-    "llama-index-llms-anthropic>=0.6.10", # For Anthropic LLMs
-    "llama-index-llms-openai>=0.3.22",    # For OpenAI LLMs
-    "llama-index-llms-vertex>=0.4.3",     # For Vertex LLMs
-    "llama-index-embeddings-openai>=0.3.0", # For OpenAI embeddings
-    "llama-index-embeddings-huggingface>=0.3.0", # For HuggingFace embeddings
-    "llama-index-vector-stores-faiss>=0.3.0", # For FAISS vector store
+    "rank_bm25>=0.2.2",                    # For best match
+    "langchain>=0.3.26",                   # Core langchain functionality
+    "langchain-core>=0.3.75",              # Core langchain types and interfaces
+    "langchain-community>=0.3.28",        # Community integrations (BM25, FAISS)
+    "langchain-anthropic>=0.3.19",         # For Anthropic LLMs
+    "langchain-openai>=0.3.32",            # For OpenAI LLMs
+    "langchain-google-vertexai>=2.1.1",   # For Vertex AI LLMs (better support)
+    "langchain-huggingface>=0.3.1",       # For HuggingFace embeddings
     "pymilvus>=2.6.0",                    # For Milvus vector database with BM25 support
     "faiss-cpu>=1.7.0",                   # For FAISS similarity search
     "sentence-transformers>=2.2.0",       # For code-text similarity
@@ -44,6 +43,11 @@ test = ["pytest>=6.0.0", "pytest-cov>=3.0.0"]
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]  # list of folders that contain the packages (["."] by default)
+include = ["codeminer*"]  # package names should match these glob patterns (["*"] by default)
+exclude = ["eval*"]  # exclude packages matching these glob patterns
 
 [tool.setuptools.package-data]
 "codeminer.scip_interface" = ["*.proto", "*.yml", "*.sh", "README.md"]

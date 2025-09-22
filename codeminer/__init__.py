@@ -1,8 +1,7 @@
+from .agent import KeywordExtractor, RerankAgent
 from .bm25_index import BM25CodeIndexer
 from .code_chunker import CodeChunker, RepoChunkingConfig
-from .extract_agent import KeywordExtractor
 from .graph.code_graph import CodeGraph
-from .rerank_agent import RerankAgent
 from .scip_interface import SCIPIndexer
 from .search import CodeSearchEngine
 
