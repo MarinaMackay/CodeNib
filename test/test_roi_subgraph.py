@@ -1,13 +1,14 @@
 import argparse
 from pathlib import Path
 
+from codeminer.agent.rerank_agent import RerankAgent
 from codeminer.bm25_index import BM25CodeIndexer
 from codeminer.env.process_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
 from codeminer.graph.roi_subgraph import ROISubgraph
-from codeminer.rerank_agent import RerankAgent
+from codeminer.llm.llm_config import LLMConfig, LLMProvider
 from codeminer.scip_interface import SCIPIndexer
 
 args_dict = {
@@ -78,7 +79,11 @@ if __name__ == "__main__":
         print(
             f"\nReranking {len(filtered_nodes)} nodes by relevance to problem statement..."
         )
-        rerank_agent = RerankAgent(model_name="gpt-4o")
+        llm_config = LLMConfig(
+            model_name="gpt-4o",
+            provider=LLMProvider.OPENAI,
+        )
+        rerank_agent = RerankAgent(llm_config=llm_config)
         ranked_nodes = rerank_agent.rerank_nodes(
             query=instance["problem_statement"], nodes=filtered_nodes, top_k=10
         )
