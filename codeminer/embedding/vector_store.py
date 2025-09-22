@@ -9,21 +9,11 @@ import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from llama_index.core import Settings, StorageContext, VectorStoreIndex
-from llama_index.core.embeddings import BaseEmbedding
-from llama_index.core.query_engine import RetrieverQueryEngine
-from llama_index.core.retrievers import VectorIndexRetriever
-from llama_index.core.schema import TextNode
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.vector_stores.faiss import FaissVectorStore
-
-try:
-    import faiss
-except ImportError:
-    raise ImportError(
-        "FAISS is required but not installed. Install with: pip install faiss-cpu"
-    )
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
+from langchain_core.embeddings import Embeddings
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_openai import OpenAIEmbeddings
 
 from ..log_utils import get_logger
 from ..types import NodeWithContent, NodeWithScore
@@ -33,7 +23,7 @@ logger = get_logger(__name__)
 
 class CodeVectorStore:
     """
-    Vector store for code embeddings using FAISS and LlamaIndex.
+    Vector store for code embeddings using FAISS and LangChain.
     Provides semantic search capabilities over code chunks.
     """
 
@@ -65,57 +55,30 @@ class CodeVectorStore:
 
         # Initialize embedding model
         self.embedding = self._initialize_embedding_model(**embedding_kwargs)
-        Settings.embed_model = self.embedding
 
-        # Initialize FAISS index
-        self.faiss_index = self._create_faiss_index()
-        self.vector_store = FaissVectorStore(faiss_index=self.faiss_index)
-
-        # Initialize storage context and index
-        self.storage_context = StorageContext.from_defaults(
-            vector_store=self.vector_store
-        )
-        self.index = None
-        self.retriever = None
-        self.query_engine = None
-
-        # Metadata storage
-        self.node_metadata = {}
-        self.nodes = []
+        # Initialize vector store (will be created when documents are added)
+        self.vector_store = None
+        self.documents = []
 
         logger.info(
             f"Initialized CodeVectorStore with {embedding_provider}:{embedding_model}"
         )
 
-    def _initialize_embedding_model(self, **kwargs) -> BaseEmbedding:
+    def _initialize_embedding_model(self, **kwargs) -> Embeddings:
         """Initialize the embedding model based on provider."""
         if self.embedding_provider.lower() == "openai":
-            return OpenAIEmbedding(model=self.embedding_model, **kwargs)
+            return OpenAIEmbeddings(model=self.embedding_model, **kwargs)
         elif self.embedding_provider.lower() == "huggingface":
             # Default to a good code embedding model if not specified
             model_name = self.embedding_model
             if model_name == "text-embedding-ada-002":  # Default OpenAI model
                 model_name = "microsoft/codebert-base"
 
-            return HuggingFaceEmbedding(model_name=model_name, **kwargs)
+            return HuggingFaceEmbeddings(model_name=model_name, **kwargs)
         else:
             raise ValueError(
                 f"Unsupported embedding provider: {self.embedding_provider}"
             )
-
-    def _create_faiss_index(self):
-        """Create FAISS index based on type and dimension."""
-        if self.index_type.lower() == "flat":
-            return faiss.IndexFlatL2(self.dimension)
-        elif self.index_type.lower() == "ivf":
-            # IVF index with 100 clusters
-            quantizer = faiss.IndexFlatL2(self.dimension)
-            return faiss.IndexIVFFlat(quantizer, self.dimension, 100)
-        elif self.index_type.lower() == "hnsw":
-            # HNSW index for fast approximate search
-            return faiss.IndexHNSWFlat(self.dimension, 32)
-        else:
-            raise ValueError(f"Unsupported index type: {self.index_type}")
 
     def add_code_chunks(self, code_chunks: List[Dict[str, Any]]) -> None:
         """
@@ -130,13 +93,13 @@ class CodeVectorStore:
 
         logger.info(f"Adding {len(code_chunks)} code chunks to vector store")
 
-        # Convert chunks to TextNode objects
-        nodes = []
+        # Convert chunks to Document objects
+        documents = []
         for i, chunk in enumerate(code_chunks):
             # Extract content and metadata
             content = chunk.get("content", "")
             metadata = {
-                "chunk_id": i,
+                "chunk_id": len(self.documents) + i,
                 "chunk_type": chunk.get("chunk_type", "unknown"),
                 "name": chunk.get("name", f"chunk_{i}"),
                 "file": chunk.get("file", ""),
@@ -149,28 +112,21 @@ class CodeVectorStore:
                 if key not in ["content"] and key not in metadata:
                     metadata[key] = value
 
-            # Create TextNode
-            node = TextNode(text=content, id_=f"chunk_{i}", metadata=metadata)
-            nodes.append(node)
+            # Create Document
+            document = Document(page_content=content, metadata=metadata)
+            documents.append(document)
 
-            # Store metadata for quick access
-            self.node_metadata[node.id_] = metadata
+        # Store documents
+        self.documents.extend(documents)
 
-        # Store nodes
-        self.nodes.extend(nodes)
-
-        # Create or update index
-        if self.index is None:
-            self.index = VectorStoreIndex(nodes, storage_context=self.storage_context)
+        # Create or update vector store
+        if self.vector_store is None:
+            self.vector_store = FAISS.from_documents(documents, self.embedding)
         else:
-            # Add nodes to existing index
-            for node in nodes:
-                self.index.insert(node)
+            # Add documents to existing vector store
+            self.vector_store.add_documents(documents)
 
-        # Update retriever and query engine
-        self._update_retriever()
-
-        logger.info(f"Successfully added {len(nodes)} nodes to vector store")
+        logger.info(f"Successfully added {len(documents)} documents to vector store")
 
     def add_nodes_with_content(self, nodes: List[NodeWithContent]) -> None:
         """
@@ -193,12 +149,6 @@ class CodeVectorStore:
 
         self.add_code_chunks(chunks)
 
-    def _update_retriever(self):
-        """Update the retriever and query engine after adding nodes."""
-        if self.index is not None:
-            self.retriever = VectorIndexRetriever(index=self.index, similarity_top_k=10)
-            self.query_engine = RetrieverQueryEngine(retriever=self.retriever)
-
     def search(
         self, query: str, top_k: int = 10, score_threshold: Optional[float] = None
     ) -> List[NodeWithScore]:
@@ -213,26 +163,24 @@ class CodeVectorStore:
         Returns:
             List of NodeWithScore objects
         """
-        if self.retriever is None:
-            logger.warning("No retriever available. Add code chunks first.")
+        if self.vector_store is None:
+            logger.warning("No vector store available. Add code chunks first.")
             return []
 
         logger.debug(f"Searching for: {query[:100]}...")
 
-        # Update retriever top_k
-        self.retriever.similarity_top_k = top_k
-
-        # Perform search
-        retrieved_nodes = self.retriever.retrieve(query)
+        # Perform similarity search with scores
+        docs_with_scores = self.vector_store.similarity_search_with_score(
+            query, k=top_k
+        )
 
         # Convert to NodeWithScore objects
         results = []
-        for node in retrieved_nodes:
-            metadata = node.node.metadata
-            score = float(node.score) if node.score is not None else 0.0
+        for doc, score in docs_with_scores:
+            metadata = doc.metadata
 
-            # Apply score threshold if specified
-            if score_threshold is not None and score < score_threshold:
+            # Apply score threshold if specified (note: FAISS returns distance, lower is better)
+            if score_threshold is not None and score > score_threshold:
                 continue
 
             node_with_score = NodeWithScore(
@@ -241,7 +189,7 @@ class CodeVectorStore:
                 file=metadata.get("file", ""),
                 start_line=metadata.get("start_line", 0),
                 end_line=metadata.get("end_line", 0),
-                score=score,
+                score=float(score),
             )
             results.append(node_with_score)
 
@@ -262,29 +210,27 @@ class CodeVectorStore:
         Returns:
             List of dictionaries with node information and content
         """
-        if self.retriever is None:
-            logger.warning("No retriever available. Add code chunks first.")
+        if self.vector_store is None:
+            logger.warning("No vector store available. Add code chunks first.")
             return []
 
-        # Update retriever top_k
-        self.retriever.similarity_top_k = top_k
-
-        # Perform search
-        retrieved_nodes = self.retriever.retrieve(query)
+        # Perform similarity search with scores
+        docs_with_scores = self.vector_store.similarity_search_with_score(
+            query, k=top_k
+        )
 
         # Convert to detailed results
         results = []
-        for node in retrieved_nodes:
-            metadata = node.node.metadata
-            score = float(node.score) if node.score is not None else 0.0
+        for doc, score in docs_with_scores:
+            metadata = doc.metadata
 
-            # Apply score threshold if specified
-            if score_threshold is not None and score < score_threshold:
+            # Apply score threshold if specified (note: FAISS returns distance, lower is better)
+            if score_threshold is not None and score > score_threshold:
                 continue
 
             result = {
-                "score": score,
-                "content": node.node.text,
+                "score": float(score),
+                "content": doc.page_content,
                 "name": metadata.get("name", "unknown"),
                 "chunk_type": metadata.get("chunk_type", "unknown"),
                 "file": metadata.get("file", ""),
@@ -295,22 +241,6 @@ class CodeVectorStore:
             results.append(result)
 
         return results
-
-    def query_with_context(self, query: str) -> str:
-        """
-        Query with context using the query engine.
-
-        Args:
-            query: Natural language query
-
-        Returns:
-            Generated response with context
-        """
-        if self.query_engine is None:
-            return "No query engine available. Add code chunks first."
-
-        response = self.query_engine.query(query)
-        return str(response)
 
     def save(self, path: Optional[str] = None) -> None:
         """
@@ -328,19 +258,14 @@ class CodeVectorStore:
 
         logger.info(f"Saving vector store to {save_path}")
 
-        # Save FAISS index
-        faiss_path = save_path / "faiss_index.bin"
-        faiss.write_index(self.faiss_index, str(faiss_path))
+        # Save FAISS vector store (LangChain format)
+        if self.vector_store is not None:
+            self.vector_store.save_local(str(save_path))
 
-        # Save metadata
-        metadata_path = save_path / "metadata.json"
-        with open(metadata_path, "w") as f:
-            json.dump(self.node_metadata, f, indent=2)
-
-        # Save nodes
-        nodes_path = save_path / "nodes.pkl"
-        with open(nodes_path, "wb") as f:
-            pickle.dump(self.nodes, f)
+        # Save documents
+        docs_path = save_path / "documents.pkl"
+        with open(docs_path, "wb") as f:
+            pickle.dump(self.documents, f)
 
         # Save configuration
         config_path = save_path / "config.json"
@@ -385,35 +310,24 @@ class CodeVectorStore:
                     f"got {config.get('dimension')}"
                 )
 
-        # Load FAISS index
-        faiss_path = load_path / "faiss_index.bin"
-        if faiss_path.exists():
-            self.faiss_index = faiss.read_index(str(faiss_path))
-            self.vector_store = FaissVectorStore(faiss_index=self.faiss_index)
-            self.storage_context = StorageContext.from_defaults(
-                vector_store=self.vector_store
+        # Load FAISS vector store (LangChain format)
+        try:
+            self.vector_store = FAISS.load_local(
+                str(load_path), self.embedding, allow_dangerous_deserialization=True
             )
+        except Exception as e:
+            logger.warning(f"Could not load FAISS vector store: {e}")
+            self.vector_store = None
 
-        # Load metadata
-        metadata_path = load_path / "metadata.json"
-        if metadata_path.exists():
-            with open(metadata_path, "r") as f:
-                self.node_metadata = json.load(f)
+        # Load documents
+        docs_path = load_path / "documents.pkl"
+        if docs_path.exists():
+            with open(docs_path, "rb") as f:
+                self.documents = pickle.load(f)
 
-        # Load nodes
-        nodes_path = load_path / "nodes.pkl"
-        if nodes_path.exists():
-            with open(nodes_path, "rb") as f:
-                self.nodes = pickle.load(f)
-
-        # Recreate index if we have nodes
-        if self.nodes:
-            self.index = VectorStoreIndex(
-                self.nodes, storage_context=self.storage_context
-            )
-            self._update_retriever()
-
-        logger.info(f"Vector store loaded successfully with {len(self.nodes)} nodes")
+        logger.info(
+            f"Vector store loaded successfully with {len(self.documents)} documents"
+        )
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -423,19 +337,19 @@ class CodeVectorStore:
             Dictionary with store statistics
         """
         stats = {
-            "total_nodes": len(self.nodes),
+            "total_documents": len(self.documents),
             "embedding_model": self.embedding_model,
             "embedding_provider": self.embedding_provider,
             "dimension": self.dimension,
             "index_type": self.index_type,
-            "faiss_index_size": self.faiss_index.ntotal if self.faiss_index else 0,
+            "vector_store_size": len(self.documents),
         }
 
-        if self.nodes:
+        if self.documents:
             # Analyze chunk types
             chunk_types = {}
-            for node in self.nodes:
-                chunk_type = node.metadata.get("chunk_type", "unknown")
+            for doc in self.documents:
+                chunk_type = doc.metadata.get("chunk_type", "unknown")
                 chunk_types[chunk_type] = chunk_types.get(chunk_type, 0) + 1
             stats["chunk_types"] = chunk_types
 
@@ -445,19 +359,9 @@ class CodeVectorStore:
         """Clear all data from the vector store."""
         logger.info("Clearing vector store")
 
-        # Reset FAISS index
-        self.faiss_index = self._create_faiss_index()
-        self.vector_store = FaissVectorStore(faiss_index=self.faiss_index)
-        self.storage_context = StorageContext.from_defaults(
-            vector_store=self.vector_store
-        )
-
         # Clear data
-        self.index = None
-        self.retriever = None
-        self.query_engine = None
-        self.node_metadata = {}
-        self.nodes = []
+        self.vector_store = None
+        self.documents = []
 
         logger.info("Vector store cleared")
 
