@@ -15,7 +15,7 @@ from tree_sitter_language_pack import get_language, get_parser
 
 # Define structures for code chunks
 CodeChunk = namedtuple(
-    "CodeChunk", ["content", "start_line", "end_line", "chunk_type", "name", "file"]
+    "CodeChunk", ["content", "start_line", "end_line", "chunk_type", "name", "file", "node_id"]
 )
 
 
@@ -40,12 +40,13 @@ class BaseCodeChunker(ABC):
             print(f"Error loading {language} parser: {e}")
             sys.exit(1)
 
-    def chunk_file(self, file_path: str) -> List[CodeChunk]:
+    def chunk_file(self, file_path: str, relative_path: Optional[str] = None) -> List[CodeChunk]:
         """
         Chunk a code file into function/class level pieces.
 
         Args:
-            file_path: Path to the code file to chunk
+            file_path: Absolute path to the code file to chunk
+            relative_path: Relative path for node_id generation
 
         Returns:
             List of CodeChunk objects representing the chunks
@@ -71,14 +72,17 @@ class BaseCodeChunker(ABC):
         # Find all top-level functions and classes
         top_level_nodes = self._find_top_level_definitions(root_node)
 
+        # Use relative_path for node_id generation, fallback to file_path
+        path_for_node_id = relative_path if relative_path else file_path
+        
         # Generate chunks
-        chunks = self._generate_chunks(lines, top_level_nodes, file_path)
+        chunks = self._generate_chunks(lines, top_level_nodes, file_path, path_for_node_id)
 
         print(f"Generated {len(chunks)} chunks from {file_path}")
         return chunks
 
     def _generate_chunks(
-        self, lines: List[str], definitions: List[Tuple], file_path: str
+        self, lines: List[str], definitions: List[Tuple], file_path: str, path_for_node_id: str
     ) -> List[CodeChunk]:
         """
         Generate code chunks from the file content and AST definitions.
@@ -87,6 +91,7 @@ class BaseCodeChunker(ABC):
             lines: List of code lines
             definitions: List of (node, name, type) tuples
             file_path: Path to the source file
+            path_for_node_id: Path to use for node_id generation
 
         Returns:
             List of CodeChunk objects
@@ -111,11 +116,14 @@ class BaseCodeChunker(ABC):
                             chunk_type="header",
                             name=chunk_name,
                             file=file_path,
+                            node_id=path_for_node_id,
                         )
                     )
 
             # Create chunk for the function/class definition
             def_content = "\n".join(lines[start_line : end_line + 1])
+            # Generate node_id in graph format: file_path:symbol_name
+            node_id = self._generate_node_id(path_for_node_id, name, def_type)
             chunks.append(
                 CodeChunk(
                     content=def_content,
@@ -124,6 +132,7 @@ class BaseCodeChunker(ABC):
                     chunk_type=def_type,
                     name=name,
                     file=file_path,
+                    node_id=node_id,
                 )
             )
 
@@ -141,10 +150,31 @@ class BaseCodeChunker(ABC):
                         chunk_type="epilogue",
                         name="epilogue",
                         file=file_path,
+                        node_id=path_for_node_id,
                     )
                 )
 
         return chunks
+
+    def _generate_node_id(self, file_path: str, symbol_name: str, symbol_type: str) -> str:
+        """
+        Generate node_id in the same format as code graph.
+        
+        Args:
+            file_path: Path to the file (should be relative path)
+            symbol_name: Name of the symbol (function/class name)
+            symbol_type: Type of the symbol ("function" or "class")
+            
+        Returns:
+            Node ID in format: file_path:symbol_name
+        """
+        # For functions, add parentheses to match graph format
+        if symbol_type == "function":
+            formatted_name = f"{symbol_name}()"
+        else:
+            formatted_name = symbol_name
+            
+        return f"{file_path}:{formatted_name}"
 
     @abstractmethod
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:
@@ -215,6 +245,7 @@ class BaseCodeChunker(ABC):
                 "chunk_type": chunk.chunk_type,
                 "name": chunk.name,
                 "file": chunk.file,
+                "node_id": chunk.node_id,
             }
             for chunk in chunks
         ]
