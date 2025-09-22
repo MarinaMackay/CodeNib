@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A code analysis agent with graph-enhancement"
 readme = "README.md"
 requires-python = ">=3.7"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "Zhongming Yu", email = "zhy025@ucsd.edu" }]
 classifiers = [
     "Programming Language :: Python :: 3",

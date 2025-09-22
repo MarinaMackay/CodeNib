@@ -8,3 +8,4 @@ build/
 *.scip
 *.decoded
 key.cfg
+logs/

@@ -105,6 +105,7 @@ class CodeVectorStore:
                 "file": chunk.get("file", ""),
                 "start_line": chunk.get("start_line", 0),
                 "end_line": chunk.get("end_line", 0),
+                "node_id": chunk.get("node_id", ""),
             }
 
             # Add any additional metadata

@@ -147,7 +147,7 @@ class CodeChunker:
 
         for file_path, language in files_to_process:
             try:
-                chunks = self._chunk_file_with_language(file_path, language)
+                chunks = self._chunk_file_with_language(file_path, language, repo_path)
                 all_chunks.extend(chunks)
                 processed_count += 1
 
@@ -335,7 +335,7 @@ class CodeChunker:
         return True
 
     def _chunk_file_with_language(
-        self, file_path: Path, language: str
+        self, file_path: Path, language: str, repo_path: Optional[Path] = None
     ) -> List[CodeChunk]:
         """
         Chunk a single file using the appropriate language chunker.
@@ -343,6 +343,7 @@ class CodeChunker:
         Args:
             file_path: Path to the file to chunk
             language: Programming language of the file
+            repo_path: Repository root path (for relative path calculation)
 
         Returns:
             List of CodeChunk objects
@@ -352,7 +353,14 @@ class CodeChunker:
             self._chunkers[language] = create_chunker(language)
 
         chunker = self._chunkers[language]
-        return chunker.chunk_file(str(file_path))
+        
+        # Calculate relative path if repo_path is provided
+        if repo_path:
+            relative_path = str(file_path.relative_to(repo_path))
+            # Pass relative path to chunker for proper node_id generation
+            return chunker.chunk_file(str(file_path), relative_path)
+        else:
+            return chunker.chunk_file(str(file_path))
 
     def chunk_swebench_instance(
         self,

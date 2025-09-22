@@ -183,6 +183,7 @@ def test_with_real_code_chunks():
                 "file": chunk.file,
                 "start_line": chunk.start_line,
                 "end_line": chunk.end_line,
+                "node_id": chunk.node_id,
             }
             chunk_dicts.append(chunk_dict)
 
