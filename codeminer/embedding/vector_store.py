@@ -66,6 +66,9 @@ class CodeVectorStore:
         # Initialize embedding model
         self.embedding = self._initialize_embedding_model(**embedding_kwargs)
         Settings.embed_model = self.embedding
+        # Disable LLM when not using OpenAI to avoid API key requirement
+        if self.embedding_provider.lower() != "openai":
+            Settings.llm = None
 
         # Initialize FAISS index
         self.faiss_index = self._create_faiss_index()
@@ -142,6 +145,7 @@ class CodeVectorStore:
                 "file": chunk.get("file", ""),
                 "start_line": chunk.get("start_line", 0),
                 "end_line": chunk.get("end_line", 0),
+                "node_id": chunk.get("node_id", ""),
             }
 
             # Add any additional metadata
