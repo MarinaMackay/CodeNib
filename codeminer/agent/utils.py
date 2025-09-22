@@ -1,6 +1,9 @@
 import fnmatch
-from typing import List, Tuple
 from pathlib import Path
+from typing import List, Optional, Tuple, Union
+
+from ..llm.llm_config import LLMProvider
+
 
 def find_matching_files_from_list(file_list: List[str], file_pattern: str) -> List[str]:
     """
@@ -12,7 +15,7 @@ def find_matching_files_from_list(file_list: List[str], file_pattern: str) -> Li
     :return: A list of matching file paths
     """
     # If the pattern contains any of these glob-like characters, treat it as a glob pattern.
-    if '*' in file_pattern or '?' in file_pattern or '[' in file_pattern:
+    if "*" in file_pattern or "?" in file_pattern or "[" in file_pattern:
         matching_files = fnmatch.filter(file_list, file_pattern)
     else:
         # Otherwise, treat it as a keyword search
@@ -21,10 +24,34 @@ def find_matching_files_from_list(file_list: List[str], file_pattern: str) -> Li
     return matching_files
 
 
+def resolve_llm_provider(
+    model_name: str, provider: Optional[Union[str, LLMProvider]] = None
+) -> LLMProvider:
+    """Resolve the LLM provider from an explicit hint or the model name."""
+
+    if isinstance(provider, LLMProvider):
+        return provider
+    if isinstance(provider, str):
+        normalized = provider.replace("-", "").replace("_", "").lower()
+        for candidate in LLMProvider:
+            if normalized in {candidate.value.lower(), candidate.name.lower()}:
+                return candidate
+        raise ValueError(f"Unsupported LLM provider: {provider}")
+
+    lowered = model_name.lower()
+    if "vertex" in lowered and "anthropic" in lowered:
+        return LLMProvider.VERTEX_ANTHROPIC
+    if "gemini" in lowered:
+        return LLMProvider.VERTEX_GEMINI
+    if "claude" in lowered or "anthropic" in lowered:
+        return LLMProvider.ANTHROPIC
+    return LLMProvider.OPENAI
+
+
 def merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
     """
     Merge overlapping intervals (inclusive).
-    
+
     :param intervals: List of (start, end) tuples representing intervals
     :return: List of merged intervals
     """
@@ -49,6 +76,7 @@ def merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
 
     return merged_intervals
 
+
 def get_all_python_files(repo_path: str) -> List[str]:
     # TODO: expand to C++
     all_file_paths = []
@@ -62,59 +90,66 @@ def get_all_python_files(repo_path: str) -> List[str]:
 def is_entity_definition(line: str, entity_name: str) -> bool:
     """
     Check if line contains the definition of the given entity.
-    
+
     Args:
         line (str): The line to check.
         entity_name (str): The name of the entity to search for.
-        
+
     Returns:
         bool: True if the line contains the definition of the given entity, False otherwise.
     """
     line_stripped = line.strip()
-    return (line_stripped.startswith(f'class {entity_name}') or 
-            line_stripped.startswith(f'def {entity_name}') or
-            f'class {entity_name}(' in line_stripped or
-            f'def {entity_name}(' in line_stripped or
-            entity_name in line_stripped)
+    return (
+        line_stripped.startswith(f"class {entity_name}")
+        or line_stripped.startswith(f"def {entity_name}")
+        or f"class {entity_name}(" in line_stripped
+        or f"def {entity_name}(" in line_stripped
+        or entity_name in line_stripped
+    )
 
 
 def extract_entity_content(lines: List[str], start_index: int) -> str:
     """
     Extract the content of an entity (class/function) from the given start index.
-    
+
     Args:
         lines (List[str]): The list of lines to search in.
         start_index (int): The index of the line to start searching from.
-        
+
     Returns:
         str: The content of the entity.
     """
     start_line = start_index
     end_line = len(lines) - 1
     base_indent = len(lines[start_line]) - len(lines[start_line].lstrip())
-    
+
     # Find the end of this entity by looking for next item at same or lower indentation
     for j in range(start_line + 1, len(lines)):
         next_line = lines[j]
-        if next_line.strip() and len(next_line) - len(next_line.lstrip()) <= base_indent:
-            if (next_line.strip().startswith('class ') or 
-                next_line.strip().startswith('def ') or
-                next_line.strip().startswith('@')):
+        if (
+            next_line.strip()
+            and len(next_line) - len(next_line.lstrip()) <= base_indent
+        ):
+            if (
+                next_line.strip().startswith("class ")
+                or next_line.strip().startswith("def ")
+                or next_line.strip().startswith("@")
+            ):
                 end_line = j - 1
                 break
-    
-    return '\n'.join(lines[start_line:end_line + 1])
+
+    return "\n".join(lines[start_line : end_line + 1])
 
 
 def search_entity_occurrence(lines: List[str], entity_name: str, file_name: str) -> str:
     """
     Search for any occurrence of the entity name in the file.
-    
+
     Args:
         lines (List[str]): The list of lines to search in.
         entity_name (str): The name of the entity to search for.
         file_name (str): The name of the file to search in.
-        
+
     Returns:
         str: The search results.
     """
@@ -123,8 +158,14 @@ def search_entity_occurrence(lines: List[str], entity_name: str, file_name: str)
             start = max(0, i - 3)
             end = min(len(lines), i + 4)
             context_lines = lines[start:end]
-            matching_lines = [f'Line {start + j + 1}: {context_lines[j]}' for j in range(len(context_lines))]
-            return f'**Found "{entity_name}" in {file_name}:**\n```python\n' + '\n'.join(matching_lines) + '\n```\n\n'
-    
-    return f'Entity "{entity_name}" not found in {file_name}\n\n'
+            matching_lines = [
+                f"Line {start + j + 1}: {context_lines[j]}"
+                for j in range(len(context_lines))
+            ]
+            return (
+                f'**Found "{entity_name}" in {file_name}:**\n```python\n'
+                + "\n".join(matching_lines)
+                + "\n```\n\n"
+            )
 
+    return f'Entity "{entity_name}" not found in {file_name}\n\n'

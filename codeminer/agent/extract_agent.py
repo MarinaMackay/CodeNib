@@ -3,14 +3,13 @@ Keyword extraction agent for problem statements.
 This module extracts key terms from problem statements using llama_index.
 """
 
-from pathlib import Path
-from typing import List, Union
+from typing import List
 
-from llama_index.core.llms import ChatMessage
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
-from .llm.llm_config import Config, get_llm
-from .log_utils import get_logger
+from ..llm.llm_config import LLMConfig, get_llm
+from ..log_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -27,37 +26,27 @@ class KeywordExtractor:
 
     def __init__(
         self,
-        model_name: str = "gpt-4o",
-        config_path: Union[Path, str] = "key.cfg",
-        temperature: float = 0.0,
+        llm_config: LLMConfig,
         **kwargs,
     ):
-        """
-        Initialize the keyword extractor.
+        """Initialize the keyword extractor.
 
         Args:
-            model_name (str): Name of the LLM model to use
-            config_path (Union[Path, str]): Path to the configuration file
-            temperature (float): Temperature for the LLM, lower is more deterministic
-            **kwargs: Additional arguments to pass to the LLM
+            llm_config: LLM configuration containing model, provider, and other settings.
+            **kwargs: Additional keyword arguments forwarded to the LLM factory.
         """
-        # Convert Path object to string if needed, but preserve relative paths
-        if isinstance(config_path, Path):
-            config_path = str(config_path)
+        self.llm_config = llm_config
+        self.model_name = self.llm_config.model_name
+        self.temperature = self.llm_config.temperature
 
-        # Load configuration
-        codeminer_config = Config(config_path)
-
-        # Get the LLM using the gen_config helper
+        # Build the LLM instance using the configuration
         self.llm = get_llm(
-            model=model_name,
-            codeminer_config=codeminer_config,
-            temperature=temperature,
+            model=self.model_name,
             **kwargs,
         )
 
-        # Convert the LLM to a structured output LLM
-        self.structured_llm = self.llm.as_structured_llm(output_cls=KeywordExtraction)
+        # Convert the LLM to a structured output LLM using LangChain style
+        self.structured_llm = self.llm.with_structured_output(KeywordExtraction)
 
     def extract_keywords(self, problem_statement: str) -> KeywordExtraction:
         """
@@ -90,17 +79,15 @@ class KeywordExtractor:
         )
 
         # Use structured LLM to get output directly as a KeywordExtraction object
-        input_msg = ChatMessage.from_str(role="user", content=prompt)
-        result = self.structured_llm.chat([input_msg])
-        logger.debug(f"Extracted keywords: {result.raw}")
-        return result.raw
+        input_msg = HumanMessage(content=prompt)
+        result = self.structured_llm.invoke([input_msg])
+        logger.debug(f"Extracted keywords: {result}")
+        return result
 
 
 def extract_keywords_from_statement(
     problem_statement: str,
-    model_name: str = "gpt-4o",
-    config_path: Union[Path, str] = "key.cfg",
-    temperature: float = 0.0,
+    llm_config: LLMConfig,
     **kwargs,
 ) -> KeywordExtraction:
     """
@@ -108,18 +95,14 @@ def extract_keywords_from_statement(
 
     Args:
         problem_statement (str): The problem statement to extract keywords from
-        model_name (str): Name of the LLM model to use
-        config_path (Union[Path, str]): Path to the configuration file
-        temperature (float): Temperature for the LLM, lower is more deterministic
-        **kwargs: Additional arguments to pass to the LLM
+        llm_config (LLMConfig): LLM configuration containing model, provider, and other settings.
+        **kwargs: Additional arguments forwarded to the LLM factory
 
     Returns:
         KeywordExtraction: Structured output with extracted keywords
     """
     extractor = KeywordExtractor(
-        model_name=model_name,
-        config_path=config_path,
-        temperature=temperature,
+        llm_config=llm_config,
         **kwargs,
     )
     return extractor.extract_keywords(problem_statement)

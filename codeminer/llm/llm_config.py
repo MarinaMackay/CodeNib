@@ -12,13 +12,12 @@ from enum import Enum
 from typing import Any, Dict, Optional
 
 from google.oauth2 import service_account
-from llama_index.core.llms.llm import LLM
-from llama_index.llms.anthropic import Anthropic
-from llama_index.llms.openai import OpenAI
-from llama_index.llms.vertex import Vertex
+from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models import BaseLLM
+from langchain_google_vertexai import ChatVertexAI
+from langchain_openai import ChatOpenAI
 
 from ..log_utils import get_logger
-from .utils import VertexAnthropicWithCredentials
 
 logger = get_logger(__name__)
 
@@ -44,10 +43,11 @@ class LLMConfig:
 
     model_name: str
     provider: LLMProvider
-    max_tokens: Optional[int] = None
-    temperature: Optional[float] = None
+    max_tokens: Optional[int] = 8192
+    temperature: Optional[float] = 0.0
     timeout: Optional[float] = None
     max_retries: Optional[int] = None
+    thinking_budget: Optional[int] = None
     config_data: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
@@ -78,6 +78,25 @@ class LLMConfig:
         raise LLMConfigurationError(
             f"Configuration key '{key}' not found in config data or environment variables"
         )
+
+    def get_config_value_optional(self, key: str) -> Optional[str]:
+        """
+        Get configuration value with priority: config_data > env vars.
+        Returns None if not found instead of raising an exception.
+
+        Args:
+            key: Configuration key to retrieve
+
+        Returns:
+            Configuration value or None if not found
+        """
+        # Priority: config_data > environment variables
+        if self.config_data.get(key):
+            logger.debug(f"Found '{key}' in config data: {self.config_data.get(key)}")
+            return self.config_data.get(key)
+        if key in os.environ:
+            return os.environ[key]
+        return None
 
     def _get_vertex_credentials(self) -> tuple:
         """Get Google Cloud service account credentials and project ID."""
@@ -111,7 +130,7 @@ class LLMConfig:
             ) from e
 
 
-def create_llm(config: LLMConfig, **kwargs) -> LLM:
+def create_llm(config: LLMConfig, **kwargs) -> BaseLLM:
     """
     Factory function to create LLM instances.
 
@@ -130,12 +149,15 @@ def create_llm(config: LLMConfig, **kwargs) -> LLM:
         # error if config is None
         raise LLMConfigurationError("LLMConfig instance is required")
 
+    # Filter out codeminer-specific kwargs that shouldn't be passed to LLM constructors
+    filtered_kwargs = {k: v for k, v in kwargs.items() if k != "codeminer_config"}
+
     # Prepare common kwargs
     llm_kwargs = {
         "model": config.model_name,
         "temperature": config.temperature,
         "max_tokens": config.max_tokens,
-        **kwargs,  # Allow override of any parameters
+        **filtered_kwargs,  # Allow override of any parameters
     }
 
     # Add model-specific defaults if not provided
@@ -151,31 +173,30 @@ def create_llm(config: LLMConfig, **kwargs) -> LLM:
     try:
         if config.provider == LLMProvider.OPENAI:
             llm_kwargs["api_key"] = config.get_config_value("OPENAI_API_KEY")
-            base_url = config.get_config_value("OPENAI_API_BASE_URL")
+            base_url = config.get_config_value_optional("OPENAI_API_BASE_URL")
             if base_url:
-                llm_kwargs["api_base"] = base_url
-            llm_class = OpenAI
+                llm_kwargs["base_url"] = base_url
+            llm_class = ChatOpenAI
 
         elif config.provider == LLMProvider.ANTHROPIC:
             llm_kwargs["api_key"] = config.get_config_value("ANTHROPIC_API_KEY")
-            llm_class = Anthropic
+            llm_class = ChatAnthropic
 
         elif config.provider == LLMProvider.VERTEX_ANTHROPIC:
             credentials, project_id = config._get_vertex_credentials()
-            # Get region, default to us-east5 if not specified
             region = os.environ.get("VERTEX_REGION", "us-east5")
             llm_kwargs.update(
                 {
+                    "project": project_id,
+                    "location": region,
                     "credentials": credentials,
-                    "project_id": project_id,
-                    "region": region,
                 }
             )
-            llm_class = VertexAnthropicWithCredentials
+            # Use Claude models on Vertex AI
+            llm_class = ChatVertexAI
 
         elif config.provider == LLMProvider.VERTEX_GEMINI:
             credentials, project_id = config._get_vertex_credentials()
-            # Get location, default to us-central1 if not specified
             location = os.environ.get("VERTEX_REGION", "us-central1")
             llm_kwargs.update(
                 {
@@ -184,7 +205,10 @@ def create_llm(config: LLMConfig, **kwargs) -> LLM:
                     "credentials": credentials,
                 }
             )
-            llm_class = Vertex
+            # Add thinking budget for Gemini models > 2.5
+            if config.thinking_budget:
+                llm_kwargs["thinking_budget"] = config.thinking_budget
+            llm_class = ChatVertexAI
 
         else:
             raise LLMConfigurationError(f"Unsupported provider: {config.provider}")
@@ -192,11 +216,13 @@ def create_llm(config: LLMConfig, **kwargs) -> LLM:
         # Create and test the LLM
         llm = llm_class(**llm_kwargs)
 
-        # Test the LLM with a simple completion
+        # Test the LLM with a simple invocation
         try:
-            _ = llm.complete("Say 'Hi'")
+            from langchain_core.messages import HumanMessage
+
+            _ = llm.invoke([HumanMessage(content="Say 'Hi'")])
         except Exception as e:
-            raise LLMConfigurationError(f"LLM test completion failed: {e}") from e
+            raise LLMConfigurationError(f"LLM test invocation failed: {e}") from e
 
         return llm
 
@@ -217,13 +243,13 @@ class Config(LLMConfig):
         return self.get_config_value(key)
 
 
-def get_llm(model: str, codeminer_config: Optional[LLMConfig] = None, **kwargs) -> LLM:
+def get_llm(model: str, llm_config: Optional[LLMConfig] = None, **kwargs) -> BaseLLM:
     """
     Legacy function for backward compatibility.
 
     Args:
         model: Model name (e.g., 'gpt-4', 'claude-3-opus-20240229')
-        codeminer_config: LLMConfig instance. If None, creates a default one.
+        llm_config: LLMConfig instance. If None, creates a default one.
         **kwargs: Additional parameters to pass to the LLM constructor
 
     Returns:
@@ -232,8 +258,8 @@ def get_llm(model: str, codeminer_config: Optional[LLMConfig] = None, **kwargs) 
     if not model:
         raise LLMConfigurationError("Model name is required")
 
-    if codeminer_config:
-        config = codeminer_config
+    if llm_config:
+        config = llm_config
     else:
         # Try to infer provider from model name
         if "gpt" in model.lower() or "davinci" in model.lower():
