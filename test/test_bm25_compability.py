@@ -1,12 +1,12 @@
 import argparse
 from pathlib import Path
 
-from codeminer.bm25_index import BM25CodeIndexer
 from codeminer.env.process_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
 from codeminer.scip_interface import SCIPIndexer
+from codeminer.sparse_idx.bm25_index import BM25CodeIndexer
 
 args_dict = {
     "model": "gpt-4o",
@@ -43,6 +43,8 @@ def test_bm25_transgraph_compatibility():
         bm25_indexer.build_index_from_graph(graph)
 
         query = "separability matrix"
+        # query_test = "separability_matrix()."
+        # query = query_test
         results = bm25_indexer.search(query, top_k=5)
         print(f"BM25 query results for '{query}':")
         for result in results:
