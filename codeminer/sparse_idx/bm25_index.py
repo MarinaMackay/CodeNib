@@ -8,9 +8,9 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
 from ..graph.code_graph import CodeGraph
-from ..graph.transverse_graph import wrap_code_snippet
 from ..log_utils import get_logger
 from ..types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NodeWithContent, is_symbol_node
+from ..utils import wrap_code_snippet
 
 logger = get_logger(__name__)
 

@@ -35,6 +35,7 @@ dependencies = [
     "uvicorn>=0.20.0",                    # ASGI server for FastAPI
     "rich>=14.0.0",                       # For enhanced terminal output
     "datasets>=3.5.0",                    # For dataset handling and loading
+    "PyStemmer>=3.0.0",                 # For stemmer (faster than NLTK)
 ]
 
 [project.optional-dependencies]

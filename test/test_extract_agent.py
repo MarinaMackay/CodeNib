@@ -18,7 +18,7 @@ if __name__ == "__main__":
     dataset = load_filter_swebench_dataset(args=args)
     llm_config = LLMConfig(
         model_name=args_dict["model"],
-        provider=LLMProvider.ANTHROPIC,
+        provider=LLMProvider.VERTEX_GEMINI,
         thinking_budget=2048,
     )
     for _, instance in enumerate(dataset):

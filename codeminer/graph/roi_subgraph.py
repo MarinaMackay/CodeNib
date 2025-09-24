@@ -1,10 +1,11 @@
 from collections import deque
-from typing import Any, Dict, List, Optional, Set
+from typing import List, Optional, Set
 
 import igraph as ig
 
 from ..log_utils import get_logger
 from ..types import NodeInfo, NodeWithContent
+from ..utils import is_test_file
 from .code_graph import CodeGraph
 
 logger = get_logger(__name__)
@@ -30,17 +31,19 @@ class ROISubgraph:
 
     def extract_subgraph(
         self,
-        node_ids: List[int],
+        node_names: List[str],
         k_hop: int = 2,
         edge_types: Optional[List[str]] = None,
+        direction: str = "both",
     ) -> ig.Graph:
         """
-        Extract a subgraph around specified node IDs.
+        Extract a subgraph around specified node names.
 
         Args:
-            node_ids: List of node IDs to use as seeds for the subgraph
+            node_names: List of node names to use as seeds for the subgraph
             k_hop: Number of hops to expand from each seed node
             edge_types: Optional list of edge types to consider (None for all types)
+            direction: Direction to traverse - "forward", "backward", or "both"
 
         Returns:
             An igraph Graph object representing the extracted subgraph
@@ -51,8 +54,15 @@ class ROISubgraph:
         subgraph_nodes = set()
 
         # BFS for each seed node
-        for node_id in node_ids:
+        for node_name in node_names:
             try:
+                # Convert node name to node ID
+                if node_name not in self.code_graph.name_to_vertex:
+                    logger.warning(f"Node name '{node_name}' not found in graph")
+                    continue
+
+                node_id = self.code_graph.name_to_vertex[node_name]
+
                 # Skip if we've already processed this node
                 if node_id in visited_nodes:
                     continue
@@ -73,7 +83,7 @@ class ROISubgraph:
                         continue
 
                     # Get neighbors
-                    neighbors = self._get_neighbors(current_node, edge_types)
+                    neighbors = self._get_neighbors(current_node, edge_types, direction)
 
                     # Process neighbors
                     for neighbor in neighbors:
@@ -83,50 +93,17 @@ class ROISubgraph:
                             queue.append((neighbor, depth + 1))
 
             except Exception as e:
-                logger.error(f"Error processing node {node_id}: {e}")
+                logger.error(f"Error processing node {node_name}: {e}")
                 continue
 
         # Create subgraph from the collected nodes
         return self._create_subgraph(subgraph_nodes)
 
-    def extract_roi_from_search_results(
-        self,
-        search_results: List[Dict[str, Any]],
-        k_hop: int = 2,
-        max_nodes: int = 20,
-        edge_types: Optional[List[str]] = None,
-    ) -> ig.Graph:
-        """
-        Extract a region of interest subgraph from search results.
-
-        Args:
-            search_results: Search results from BM25CodeIndexer.search()
-            k_hop: Number of hops to explore from each seed node
-            max_nodes: Maximum number of seed nodes to use (to limit subgraph size)
-            edge_types: Optional list of edge types to include (None for all types)
-
-        Returns:
-            An igraph Graph object representing the ROI subgraph
-        """
-        # Extract node_ids from search results
-        node_ids = []
-        for result in search_results[:max_nodes]:  # Limit the number of seed nodes
-            if "node_id" in result:
-                node_ids.append(result["node_id"])
-
-        # If no valid node IDs found, return an empty graph
-        if not node_ids:
-            logger.warning("No valid node IDs found in search results.")
-            return ig.Graph()
-
-        logger.info(
-            f"Extracting ROI subgraph with {len(node_ids)} seed nodes and {k_hop} hops"
-        )
-        return self.extract_subgraph(node_ids, k_hop, edge_types)
-
     def get_filtered_subgraph_nodes(
         self,
         subgraph: ig.Graph,
+        exclude_nodes: Optional[List[str]] = None,
+        filter_tests: bool = True,
         node_types: Optional[List[str]] = None,
     ) -> List[NodeWithContent]:
         """
@@ -147,6 +124,10 @@ class ROISubgraph:
                 # Get original node ID and attributes
                 original_id = node["original_id"]
                 node_attrs = self.get_node_info_by_id(original_id)
+
+                # Filter out test files if specified
+                if filter_tests and node_attrs.file and is_test_file(node_attrs.file):
+                    continue
 
                 # Filter by node type if specified
                 if node_types and node_attrs.type not in node_types:
@@ -179,24 +160,39 @@ class ROISubgraph:
                 logger.error(f"Error processing node {node.index}: {e}")
                 continue
 
+        # remove exclude_nodex in filtered_nodes
+        if exclude_nodes:
+            filtered_nodes = [
+                node for node in filtered_nodes if node.node_name not in exclude_nodes
+            ]
+
         logger.info(f"Extracted {len(filtered_nodes)} useful nodes from subgraph")
         return filtered_nodes
 
     def _get_neighbors(
-        self, node_id: int, edge_types: Optional[List[str]] = None
+        self,
+        node_id: int,
+        edge_types: Optional[List[str]] = None,
+        direction: str = "both",
     ) -> List[int]:
         """
-        Get neighbors of a node, optionally filtered by edge type.
+        Get neighbors of a node, optionally filtered by edge type and direction.
 
         Args:
             node_id: ID of the node
             edge_types: Optional list of edge types to filter by
+            direction: Direction to traverse - "forward", "backward", or "both"
 
         Returns:
             List of neighbor node IDs
         """
-        # Get all neighbor IDs
-        neighbors = self.full_graph.neighbors(node_id)
+        # Get neighbors based on direction
+        if direction == "forward":
+            neighbors = self.full_graph.successors(node_id)
+        elif direction == "backward":
+            neighbors = self.full_graph.predecessors(node_id)
+        else:  # direction == "both"
+            neighbors = self.full_graph.neighbors(node_id)
 
         # If no edge type filter, return all neighbors
         if not edge_types:
@@ -205,12 +201,20 @@ class ROISubgraph:
         # Filter neighbors by edge type
         filtered_neighbors = []
         for neighbor in neighbors:
-            # Get edge between node and neighbor
+            # Get edge between node and neighbor based on direction
             try:
-                edge_id = self.full_graph.get_eid(node_id, neighbor, error=False)
-                if edge_id is None:
-                    # Try the reverse direction
+                edge_id = None
+                if direction == "forward":
+                    edge_id = self.full_graph.get_eid(node_id, neighbor, error=False)
+                elif direction == "backward":
                     edge_id = self.full_graph.get_eid(neighbor, node_id, error=False)
+                else:  # direction == "both"
+                    edge_id = self.full_graph.get_eid(node_id, neighbor, error=False)
+                    if edge_id is None:
+                        # Try the reverse direction
+                        edge_id = self.full_graph.get_eid(
+                            neighbor, node_id, error=False
+                        )
 
                 if (
                     edge_id is not None
