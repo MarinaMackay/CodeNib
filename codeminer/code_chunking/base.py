@@ -22,14 +22,19 @@ CodeChunk = namedtuple(
 class BaseCodeChunker(ABC):
     """Base class for language-specific code chunkers."""
 
-    def __init__(self, language: str):
+    def __init__(self, language: str, max_lines_per_chunk: Optional[int] = None):
         """
         Initialize the code chunker for a specific language.
 
         Args:
             language: Programming language to parse ('python', 'cpp', 'java', etc.)
+            max_lines_per_chunk: Optional maximum number of lines per emitted chunk. When set,
+                large logical chunks (header/function/class/epilogue) will be split into
+                multiple sequential chunks of at most this many lines. node_id and name remain
+                the same across the split pieces.
         """
         self.language = language
+        self.max_lines_per_chunk = max_lines_per_chunk
         try:
             self.parser = get_parser(language)
             self.tree_sitter_language = get_language(language)
@@ -81,6 +86,62 @@ class BaseCodeChunker(ABC):
         print(f"Generated {len(chunks)} chunks from {file_path}")
         return chunks
 
+    def _split_by_max_lines(self, lines: List[str], start_line: int, end_line: int, chunk_type: str, name: str, file_path: str, node_id: str) -> List[CodeChunk]:
+        """
+        Split a logical chunk into multiple CodeChunk pieces if it exceeds max_lines_per_chunk.
+        Keeps node_id and name unchanged across pieces.
+        """
+        # If no max specified or chunk already within limit, return single piece
+        if not self.max_lines_per_chunk or self.max_lines_per_chunk <= 0:
+            content = "\n".join(lines[start_line : end_line + 1])
+            return [
+                CodeChunk(
+                    content=content,
+                    start_line=start_line,
+                    end_line=end_line,
+                    chunk_type=chunk_type,
+                    name=name,
+                    file=file_path,
+                    node_id=node_id,
+                )
+            ]
+
+        total_lines = end_line - start_line + 1
+        if total_lines <= self.max_lines_per_chunk:
+            content = "\n".join(lines[start_line : end_line + 1])
+            return [
+                CodeChunk(
+                    content=content,
+                    start_line=start_line,
+                    end_line=end_line,
+                    chunk_type=chunk_type,
+                    name=name,
+                    file=file_path,
+                    node_id=node_id,
+                )
+            ]
+
+        # Perform splitting
+        pieces: List[CodeChunk] = []
+        current_start = start_line
+        while current_start <= end_line:
+            current_end = min(current_start + self.max_lines_per_chunk - 1, end_line)
+            piece_content = "\n".join(lines[current_start : current_end + 1])
+            pieces.append(
+                CodeChunk(
+                    content=piece_content,
+                    start_line=current_start,
+                    end_line=current_end,
+                    chunk_type=chunk_type,
+                    name=name,
+                    file=file_path,
+                    node_id=node_id,
+                )
+            )
+            current_start = current_end + 1
+
+        return pieces
+
     def _generate_chunks(
         self, lines: List[str], definitions: List[Tuple], file_path: str, path_for_node_id: str
     ) -> List[CodeChunk]:
@@ -96,7 +157,7 @@ class BaseCodeChunker(ABC):
         Returns:
             List of CodeChunk objects
         """
-        chunks = []
+        chunks: List[CodeChunk] = []
         current_line = 0
 
         for i, (node, name, def_type) in enumerate(definitions):
@@ -105,33 +166,33 @@ class BaseCodeChunker(ABC):
 
             # Create chunk for code before this definition (imports, globals, etc.)
             if start_line > current_line:
-                header_content = "\n".join(lines[current_line:start_line])
-                if header_content.strip():  # Only add if not empty
+                header_content_lines = lines[current_line:start_line]
+                if "\n".join(header_content_lines).strip():  # Only add if not empty
                     chunk_name = f"header_{i}" if i > 0 else "header"
-                    chunks.append(
-                        CodeChunk(
-                            content=header_content,
-                            start_line=current_line,  # Keep 0-based
-                            end_line=start_line - 1,  # Keep 0-based
+                    # node_id for headers is file path (no symbol)
+                    chunks.extend(
+                        self._split_by_max_lines(
+                            lines=lines,
+                            start_line=current_line,
+                            end_line=start_line - 1,
                             chunk_type="header",
                             name=chunk_name,
-                            file=file_path,
+                            file_path=file_path,
                             node_id=path_for_node_id,
                         )
                     )
 
             # Create chunk for the function/class definition
-            def_content = "\n".join(lines[start_line : end_line + 1])
             # Generate node_id in graph format: file_path:symbol_name
             node_id = self._generate_node_id(path_for_node_id, name, def_type)
-            chunks.append(
-                CodeChunk(
-                    content=def_content,
-                    start_line=start_line,  # Keep 0-based
-                    end_line=end_line,  # Keep 0-based
+            chunks.extend(
+                self._split_by_max_lines(
+                    lines=lines,
+                    start_line=start_line,
+                    end_line=end_line,
                     chunk_type=def_type,
                     name=name,
-                    file=file_path,
+                    file_path=file_path,
                     node_id=node_id,
                 )
             )
@@ -140,16 +201,16 @@ class BaseCodeChunker(ABC):
 
         # Handle any remaining code after the last definition
         if current_line < len(lines):
-            remaining_content = "\n".join(lines[current_line:])
-            if remaining_content.strip():  # Only add if not empty
-                chunks.append(
-                    CodeChunk(
-                        content=remaining_content,
-                        start_line=current_line,  # Keep 0-based
-                        end_line=len(lines) - 1,  # Keep 0-based
+            remaining_content_lines = lines[current_line:]
+            if "\n".join(remaining_content_lines).strip():  # Only add if not empty
+                chunks.extend(
+                    self._split_by_max_lines(
+                        lines=lines,
+                        start_line=current_line,
+                        end_line=len(lines) - 1,
                         chunk_type="epilogue",
                         name="epilogue",
-                        file=file_path,
+                        file_path=file_path,
                         node_id=path_for_node_id,
                     )
                 )

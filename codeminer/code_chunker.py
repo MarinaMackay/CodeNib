@@ -81,7 +81,7 @@ class CodeChunker:
     """
 
     def __init__(
-        self, language: str = "python", repo_config: Optional[RepoChunkingConfig] = None
+        self, language: str = "python", repo_config: Optional[RepoChunkingConfig] = None, max_lines_per_chunk: Optional[int] = None
     ):
         """
         Initialize the code chunker for a specific language.
@@ -89,9 +89,11 @@ class CodeChunker:
         Args:
             language: Programming language to parse ('python', 'cpp', 'java', etc.)
             repo_config: Configuration for repository-level chunking. Uses defaults if None.
+            max_lines_per_chunk: Optional maximum number of lines per emitted chunk
         """
         self.language = language
-        self._chunker = create_chunker(language)
+        self.max_lines_per_chunk = max_lines_per_chunk
+        self._chunker = create_chunker(language, max_lines_per_chunk=self.max_lines_per_chunk)
         self.repo_config = repo_config or RepoChunkingConfig()
         self._chunkers = {language: self._chunker}  # Cache chunkers by language
 
@@ -350,7 +352,7 @@ class CodeChunker:
         """
         # Get or create chunker for this language
         if language not in self._chunkers:
-            self._chunkers[language] = create_chunker(language)
+            self._chunkers[language] = create_chunker(language, max_lines_per_chunk=self.max_lines_per_chunk)
 
         chunker = self._chunkers[language]
         

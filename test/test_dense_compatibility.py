@@ -55,7 +55,7 @@ class TestDenseCompatibility(unittest.TestCase):
         # === Create Dense chunks ===
         print("\n2. Creating Dense chunks...")
         try:
-            code_chunker = CodeChunker(language="python")
+            code_chunker = CodeChunker(language="python", max_lines_per_chunk=50)
             chunks = code_chunker.chunk_repository(str(self.repo_path), languages=["python"])
             
             # Extract all Dense chunk node IDs
