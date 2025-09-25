@@ -90,6 +90,7 @@ class BaseCodeChunker(ABC):
         """
         Split a logical chunk into multiple CodeChunk pieces if it exceeds max_lines_per_chunk.
         Keeps node_id and name unchanged across pieces.
+        Uses balanced splitting to distribute lines evenly across chunks.
         """
         # If no max specified or chunk already within limit, return single piece
         if not self.max_lines_per_chunk or self.max_lines_per_chunk <= 0:
@@ -121,11 +122,19 @@ class BaseCodeChunker(ABC):
                 )
             ]
 
-        # Perform splitting
+        # Calculate number of chunks needed and balanced chunk sizes
+        num_chunks = (total_lines + self.max_lines_per_chunk - 1) // self.max_lines_per_chunk
+        base_chunk_size = total_lines // num_chunks
+        extra_lines = total_lines % num_chunks
+        
+        # Create balanced chunks
         pieces: List[CodeChunk] = []
         current_start = start_line
-        while current_start <= end_line:
-            current_end = min(current_start + self.max_lines_per_chunk - 1, end_line)
+        
+        for i in range(num_chunks):
+            chunk_size = base_chunk_size + (1 if i < extra_lines else 0)
+            current_end = current_start + chunk_size - 1
+            
             piece_content = "\n".join(lines[current_start : current_end + 1])
             pieces.append(
                 CodeChunk(
