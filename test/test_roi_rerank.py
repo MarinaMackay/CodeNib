@@ -2,7 +2,6 @@ import argparse
 from pathlib import Path
 
 from codeminer.agent.rerank_agent import RerankAgent
-from codeminer.bm25_index import BM25CodeIndexer
 from codeminer.env.process_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
@@ -10,6 +9,7 @@ from codeminer.env.process_data import (
 from codeminer.graph.roi_subgraph import ROISubgraph
 from codeminer.llm.llm_config import LLMConfig, LLMProvider
 from codeminer.scip_interface import SCIPIndexer
+from codeminer.sparse_idx.bm25_index import BM25CodeIndexer
 
 args_dict = {
     "model": "gpt-4o",
@@ -46,22 +46,22 @@ if __name__ == "__main__":
         node_name = "astropy.modeling.separable/separability_matrix()."
 
         # Create BM25 indexer with English stemming for method name matching
-        indexer = BM25CodeIndexer(top_k=5, language="english")
+        indexer = BM25CodeIndexer(max_k=10, language="english")
 
         # Build the index from the code graph
         indexer.build_index_from_graph(graph)
         # Search for the node name
         print(f"Searching for node name: {node_name}")
-        results = indexer.search(node_name)
+        results = indexer.search(node_name, top_k=5)
         print(f"Search results: {results}")
-        # Extract node IDs from search results
-        node_ids = [result["node_id"] for result in results]
-        print(f"Node IDs: {node_ids}")
+        # Extract node names from search results
+        node_names = [result.node_name for result in results]
+        print(f"Node names: {node_names}")
         # Create ROISubgraph object
         roi_subgraph = ROISubgraph(graph)
         # Extract subgraph with k-hop neighbors
         k_hop = 2
-        subgraph = roi_subgraph.extract_subgraph(node_ids, k_hop)
+        subgraph = roi_subgraph.extract_subgraph(node_names, k_hop)
         # get filtered subgraph nodes
         filtered_nodes = roi_subgraph.get_filtered_subgraph_nodes(subgraph)
 

@@ -2,8 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 
-from codeminer.bm25_index import BM25CodeIndexer
 from codeminer.scip_interface import SCIPIndexer
+from codeminer.sparse_idx.bm25_index import BM25CodeIndexer
 
 
 def setup_samplemod_repo():
@@ -70,7 +70,7 @@ if __name__ == "__main__":
 
     # Test search queries with more comprehensive examples including variations and typos
     search_queries = [
-        "hmm",  # Exact match
+        "hmm()",  # Exact match
         "get_hmm",  # Partial match for "get_hmm_data"
         "gethmm",  # No underscore
         "get hmm",  # Different word segmentation

@@ -1,22 +1,33 @@
 import json
 import os
+import re
 from typing import List, Optional
 
+import Stemmer
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
-from .graph.code_graph import CodeGraph
-from .graph.transverse_graph import wrap_code_snippet
-from .types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NodeWithContent, is_symbol_node
+from ..graph.code_graph import CodeGraph
+from ..log_utils import get_logger
+from ..types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NodeWithContent, is_symbol_node
+from ..utils import wrap_code_snippet
+
+logger = get_logger(__name__)
 
 
 class BM25CodeIndexer:
     """
     A class that builds a BM25 index from CodeGraph nodes and provides
-    search functionality.
+    search functionality with stemming support.
     """
 
-    def __init__(self, code_graph=None, max_k: int = 15, language: str = "english"):
+    def __init__(
+        self,
+        code_graph=None,
+        max_k: int = 15,
+        language: str = "english",
+        use_stemmer: bool = True,
+    ):
         """
         Initialize the BM25CodeIndexer and optionally build the index immediately.
 
@@ -27,13 +38,28 @@ class BM25CodeIndexer:
             language: Language for stopword removal and stemming
                       Default is "english" which works well for processing code tokens
                       as it treats special characters as separators
+            use_stemmer: Whether to use stemming for text preprocessing
         """
         self.max_k = max_k
         self.language = language
+        self.use_stemmer = use_stemmer
         self.documents = []
         self.retriever = None
         self.code_graph: CodeGraph = None
         self.project_root: Optional[str] = None
+
+        # Initialize stemmer if requested
+        if self.use_stemmer:
+            try:
+                self.stemmer = Stemmer.Stemmer("english")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to initialize PyStemmer: {e}. Proceeding without stemming."
+                )
+                self.stemmer = None
+                self.use_stemmer = False
+        else:
+            self.stemmer = None
 
         # Build the index immediately if a code_graph is provided
         if code_graph is not None:
@@ -86,15 +112,10 @@ class BM25CodeIndexer:
         if node_type == NODE_TYPE_FILE:
             # File node: add file path under "file" to align with graph/search consumers
             metadata["file"] = node_name
-            content_lines = [f"File: {node_name}"]
-            # Optionally include basic identifiers from file path for tokenization
-            content_lines.append(
-                f"PathTokens: {node_name.replace('/', ' ').replace('.', ' ')}"
-            )
-            content = "\n".join(content_lines)
+            content = node_name
         elif node_type == NODE_TYPE_DIRECTORY:
             # Directory node
-            content = f"Directory: {node_name}"
+            content = node_name
         elif is_symbol_node(node_type):
             # Symbol-like nodes: class/function/method/field/symbol
             file_path = vertex["file"] if "file" in vertex.attributes() else None
@@ -112,24 +133,15 @@ class BM25CodeIndexer:
 
             if file_path:
                 metadata["file"] = file_path
-            # Use simplified symbol name consistent with traverse graph utilities
-            simplified_name = (
-                node_name.split(":")[-1] if ":" in node_name else node_name
-            )
-            metadata["name"] = simplified_name
+            # remove () if present at the end of function/method names for better matching
+            metadata["name"] = node_name
             metadata["start_line"] = start_line
             metadata["end_line"] = end_line
 
-            # Enrich text with name variants to improve BM25 matching
-            enriched_name = self._enrich_symbol_name(simplified_name)
-            parts = [f"Symbol: {simplified_name}", f"Variants: {enriched_name}"]
-            if file_path:
-                parts.append(f"File: {file_path}")
-            parts.append(f"Lines: {start_line}-{end_line}")
-            content = "\n".join(parts)
+            content = node_name
         else:
             # Unknown or root-like node types: index minimally
-            content = f"Node: {node_name} Type: {node_type}"
+            content = node_name
 
         # Include additional attributes (except ones we already standardized)
         for key in vertex.attributes():
@@ -142,70 +154,51 @@ class BM25CodeIndexer:
             ]:
                 metadata[key] = vertex[key]
 
+        # Apply stemming to content if enabled
+        if self.use_stemmer and self.stemmer:
+            content = self._apply_stemming(content)
+
         # Create a unique ID for the document
         doc_id = f"node_{node_id}"
         metadata["doc_id"] = doc_id
         return Document(page_content=content, metadata=metadata)
 
-    def _enrich_symbol_name(self, name: str) -> str:
+    def _apply_stemming(self, text: str) -> str:
         """
-        Create variants of a symbol name to improve fuzzy matching.
+        Apply stemming to text using the configured stemmer.
+        Handles code-specific patterns like file paths, function calls, etc.
 
         Args:
-            name: Original symbol name
+            text: Input text to stem
 
         Returns:
-            String with multiple variations of the name for improved matching
+            Stemmed text with code-aware tokenization
         """
-        enriched = [name]  # Start with the original name
+        if not self.stemmer or not text:
+            return text
 
-        # Split by common code separators
-        parts = []
-        for part in (
-            name.replace(".", " ")
-            .replace("/", " ")
-            .replace("_", " ")
-            .replace("#", " ")
-            .replace(":", " ")
-            .split()
-        ):
-            if part.strip():
-                parts.append(part.strip())
+        try:
+            # Remove parentheses from function calls first (e.g., "get_hmm()" -> "get_hmm")
+            text = re.sub(r"\(\)", "", text)
 
-                # Add common prefix-related variants for each part
-                if len(part) > 3:  # Only for substantial parts
-                    # Add substrings to help with partial matches
-                    for i in range(3, len(part) + 1):  # Start with at least 3 chars
-                        substring = part[:i]
-                        if substring not in parts:
-                            parts.append(substring)
+            # Split on code-specific delimiters: '/', ':', '.', '_'
+            # This handles paths like "test/test_bas.py" and method calls like "sample/core.py:get_hmm"
+            tokens = re.split(r"[/:._ ]+", text)
 
-        # Add parts to enriched names if not already there
-        for part in parts:
-            if part not in enriched and len(part) > 1:  # Ignore single characters
-                enriched.append(part)
+            stemmed_tokens = []
+            for token in tokens:
+                if token and re.match(r"^[a-zA-Z]+$", token):
+                    # Only stem pure alphabetic tokens
+                    stemmed_tokens.append(self.stemmer.stemWord(token.lower()))
+                elif token:
+                    # Keep non-alphabetic tokens as-is (numbers, mixed alphanumeric, etc.)
+                    stemmed_tokens.append(token.lower())
 
-        # For method names, handle common prefix/suffix patterns
-        lowercase_name = name.lower()
-        if "_" in name:
-            # Add versions without underscores
-            enriched.append(name.replace("_", ""))
-
-        # Handle common method name prefixes
-        prefixes = ["get_", "set_", "is_", "has_"]
-        for prefix in prefixes:
-            if lowercase_name.startswith(prefix):
-                # Add version without the prefix
-                without_prefix = name[len(prefix) :]
-                if without_prefix not in enriched:
-                    enriched.append(without_prefix)
-            else:
-                # Also try adding prefixes to help match method variants
-                with_prefix = prefix + name
-                if with_prefix not in enriched:
-                    enriched.append(with_prefix)
-
-        return " ".join(enriched)
+            # Join with spaces to create searchable terms
+            return " ".join(filter(None, stemmed_tokens))
+        except Exception as e:
+            logger.warning(f"Error during stemming: {e}. Returning original text.")
+            return text
 
     def search(
         self,
@@ -230,6 +223,10 @@ class BM25CodeIndexer:
             raise ValueError(
                 "Index has not been built. Call build_index_from_graph first."
             )
+
+        # Apply stemming to query if enabled
+        if self.use_stemmer and self.stemmer:
+            query = self._apply_stemming(query)
 
         # Use LangChain's invoke method with top_k parameter
         if top_k is None:
@@ -361,6 +358,7 @@ class BM25CodeIndexer:
             ),
             "max_k": self.max_k,
             "language": self.language,
+            "use_stemmer": self.use_stemmer,
         }
         metadata_file = os.path.join(directory_path, "bm25_metadata.json")
         with open(metadata_file, "w", encoding="utf-8") as f:
@@ -403,6 +401,29 @@ class BM25CodeIndexer:
                 self.project_root = metadata.get("project_root")
                 self.max_k = metadata.get("max_k", 10)
                 self.language = metadata.get("language", "english")
+                self.use_stemmer = metadata.get("use_stemmer", True)
+
+                # Reinitialize stemmer if needed
+                if self.use_stemmer:
+                    try:
+                        self.stemmer = Stemmer.Stemmer("english")
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to initialize PyStemmer: {e}. Proceeding without stemming."
+                        )
+                        self.stemmer = None
+                        self.use_stemmer = False
+                else:
+                    self.stemmer = None
         else:
             # For backward compatibility with indices saved without metadata
             self.project_root = None
+            self.use_stemmer = True
+            try:
+                self.stemmer = Stemmer.Stemmer("english")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to initialize PyStemmer: {e}. Proceeding without stemming."
+                )
+                self.stemmer = None
+                self.use_stemmer = False
