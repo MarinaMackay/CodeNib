@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from google.oauth2 import service_account
 from langchain_anthropic import ChatAnthropic
+from langchain_community.llms import VLLM
 from langchain_core.language_models import BaseLLM
 from langchain_google_vertexai import ChatVertexAI
 from langchain_openai import ChatOpenAI
@@ -35,6 +36,8 @@ class LLMProvider(Enum):
     ANTHROPIC = "anthropic"
     VERTEX_ANTHROPIC = "vertexanthropic"
     VERTEX_GEMINI = "vertexgemini"
+    VLLM = "vllm"
+    VLLM_OPENAI = "vllm_openai"  # vLLM with OpenAI-compatible API
 
 
 @dataclass
@@ -44,6 +47,8 @@ class LLMConfig:
     model_name: str
     provider: LLMProvider
     max_tokens: Optional[int] = 8192
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
     temperature: Optional[float] = 0.0
     timeout: Optional[float] = None
     max_retries: Optional[int] = None
@@ -210,6 +215,59 @@ def create_llm(config: LLMConfig, **kwargs) -> BaseLLM:
                 llm_kwargs["thinking_budget"] = config.thinking_budget
             llm_class = ChatVertexAI
 
+        elif config.provider == LLMProvider.VLLM:
+            # VLLM specific configuration
+            vllm_kwargs = {
+                "model": config.model_name,
+                "temperature": (
+                    config.temperature if config.temperature is not None else 0.8
+                ),
+            }
+
+            # Add VLLM-specific parameters from config or use defaults
+            trust_remote_code = config.get_config_value_optional(
+                "VLLM_TRUST_REMOTE_CODE"
+            )
+            if trust_remote_code is not None:
+                vllm_kwargs["trust_remote_code"] = trust_remote_code.lower() == "true"
+            else:
+                vllm_kwargs["trust_remote_code"] = True  # Default for HF models
+
+            # Map max_tokens to max_new_tokens for VLLM
+            if config.max_tokens:
+                vllm_kwargs["max_new_tokens"] = config.max_tokens
+
+            # VLLM-specific sampling parameters
+            top_k = config.get_config_value_optional("VLLM_TOP_K")
+            if top_k:
+                vllm_kwargs["top_k"] = int(top_k)
+
+            top_p = config.get_config_value_optional("VLLM_TOP_P")
+            if top_p:
+                vllm_kwargs["top_p"] = float(top_p)
+            # logger.debug(f"VLLM top_p: {top_p}")
+            llm_kwargs = vllm_kwargs
+            llm_class = VLLM
+
+        elif config.provider == LLMProvider.VLLM_OPENAI:
+            # vLLM with OpenAI-compatible API server
+            # Use OpenAI client but with vLLM server endpoint
+            base_url = config.get_config_value_optional("VLLM_API_BASE_URL")
+            if not base_url:
+                base_url = "http://localhost:8000/v1"  # Default vLLM server endpoint
+
+            api_key = config.get_config_value_optional("VLLM_API_KEY")
+            if not api_key:
+                api_key = "token-abc123"  # Default dummy key for vLLM server
+
+            llm_kwargs.update(
+                {
+                    "api_key": api_key,
+                    "base_url": base_url,
+                }
+            )
+            llm_class = ChatOpenAI
+
         else:
             raise LLMConfigurationError(f"Unsupported provider: {config.provider}")
 
@@ -241,36 +299,3 @@ class Config(LLMConfig):
     def __getitem__(self, key: str) -> str:
         """Legacy method for accessing config values."""
         return self.get_config_value(key)
-
-
-def get_llm(model: str, llm_config: Optional[LLMConfig] = None, **kwargs) -> BaseLLM:
-    """
-    Legacy function for backward compatibility.
-
-    Args:
-        model: Model name (e.g., 'gpt-4', 'claude-3-opus-20240229')
-        llm_config: LLMConfig instance. If None, creates a default one.
-        **kwargs: Additional parameters to pass to the LLM constructor
-
-    Returns:
-        Configured LLM instance
-    """
-    if not model:
-        raise LLMConfigurationError("Model name is required")
-
-    if llm_config:
-        config = llm_config
-    else:
-        # Try to infer provider from model name
-        if "gpt" in model.lower() or "davinci" in model.lower():
-            provider = LLMProvider.OPENAI
-        elif "claude" in model.lower():
-            provider = LLMProvider.ANTHROPIC
-        elif "gemini" in model.lower():
-            provider = LLMProvider.VERTEX_GEMINI
-        else:
-            provider = LLMProvider.OPENAI  # Default to OpenAI
-
-        config = LLMConfig(model_name=model, provider=provider)
-
-    return create_llm(config, **kwargs)

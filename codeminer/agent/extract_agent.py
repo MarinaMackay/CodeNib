@@ -8,7 +8,7 @@ from typing import List
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
-from ..llm.llm_config import LLMConfig, get_llm
+from ..llm.llm_config import LLMConfig, create_llm
 from ..log_utils import get_logger
 
 logger = get_logger(__name__)
@@ -36,12 +36,10 @@ class KeywordExtractor:
             **kwargs: Additional keyword arguments forwarded to the LLM factory.
         """
         self.llm_config = llm_config
-        self.model_name = self.llm_config.model_name
-        self.temperature = self.llm_config.temperature
 
         # Build the LLM instance using the configuration
-        self.llm = get_llm(
-            model=self.model_name,
+        self.llm = create_llm(
+            config=llm_config,
             **kwargs,
         )
 

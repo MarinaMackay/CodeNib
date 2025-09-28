@@ -47,6 +47,7 @@ class BM25CodeIndexer:
         self.retriever = None
         self.code_graph: CodeGraph = None
         self.project_root: Optional[str] = None
+        self.nodes: List[str] = []
 
         # Initialize stemmer if requested
         if self.use_stemmer:
@@ -74,6 +75,7 @@ class BM25CodeIndexer:
         """
         # Reset the index
         self.documents = []
+        self.nodes = []
         self.code_graph = code_graph
         self.project_root = code_graph.project_root
 
@@ -82,6 +84,9 @@ class BM25CodeIndexer:
             doc = self._convert_vertex_to_document(vertex)
             if doc is not None:
                 self.documents.append(doc)
+                node_name = doc.metadata.get("node_id") or doc.metadata.get("name")
+                if node_name:
+                    self.nodes.append(node_name)
 
         # Create BM25Retriever with LangChain format
         self.retriever = BM25Retriever.from_documents(self.documents, k=self.max_k)
@@ -384,11 +389,15 @@ class BM25CodeIndexer:
 
         # Reconstruct Document objects
         self.documents = []
+        self.nodes = []
         for doc_data in documents_data:
             doc = Document(
                 page_content=doc_data["page_content"], metadata=doc_data["metadata"]
             )
             self.documents.append(doc)
+            node_name = doc.metadata.get("node_id") or doc.metadata.get("name")
+            if node_name:
+                self.nodes.append(node_name)
 
         # Recreate BM25Retriever
         self.retriever = BM25Retriever.from_documents(self.documents, k=self.max_k)
