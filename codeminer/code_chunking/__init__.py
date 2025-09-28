@@ -8,12 +8,13 @@ from .python_chunker import PythonCodeChunker
 
 
 # Factory function to create appropriate chunker
-def create_chunker(language: str) -> BaseCodeChunker:
+def create_chunker(language: str, max_lines_per_chunk: int | None = None) -> BaseCodeChunker:
     """
     Create a code chunker for the specified language.
 
     Args:
         language: Programming language ('python', 'cpp', 'java', etc.)
+        max_lines_per_chunk: Optional maximum number of lines per emitted chunk
 
     Returns:
         Language-specific code chunker instance
@@ -24,9 +25,9 @@ def create_chunker(language: str) -> BaseCodeChunker:
     language = language.lower()
 
     if language == "python":
-        return PythonCodeChunker()
+        return PythonCodeChunker(max_lines_per_chunk=max_lines_per_chunk)
     elif language in ("cpp", "c++", "cxx"):
-        return CppCodeChunker()
+        return CppCodeChunker(max_lines_per_chunk=max_lines_per_chunk)
     else:
         raise ValueError(f"Unsupported language: {language}")
 

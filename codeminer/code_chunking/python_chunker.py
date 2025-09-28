@@ -11,9 +11,9 @@ from .base import BaseCodeChunker
 class PythonCodeChunker(BaseCodeChunker):
     """Code chunker specifically for Python files."""
 
-    def __init__(self):
+    def __init__(self, max_lines_per_chunk: Optional[int] = None):
         """Initialize the Python code chunker."""
-        super().__init__("python")
+        super().__init__("python", max_lines_per_chunk=max_lines_per_chunk)
 
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:
         """
