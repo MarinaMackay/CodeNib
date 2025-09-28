@@ -11,9 +11,9 @@ from .base import BaseCodeChunker
 class CppCodeChunker(BaseCodeChunker):
     """Code chunker specifically for C++ files."""
 
-    def __init__(self):
+    def __init__(self, max_lines_per_chunk: Optional[int] = None):
         """Initialize the C++ code chunker."""
-        super().__init__("cpp")
+        super().__init__("cpp", max_lines_per_chunk=max_lines_per_chunk)
 
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:
         """

@@ -39,13 +39,14 @@ class TestDenseCompatibility(unittest.TestCase):
                 self.fail("Failed to create BM25 graph")
 
             bm25_indexer = BM25CodeIndexer(code_graph=graph)
-            bm25_nodes = getattr(bm25_indexer, "nodes", [])
-
-            # Extract all BM25 node IDs
+            
+            # Extract all BM25 node IDs from documents
             bm25_node_ids = set()
-            for node in bm25_nodes:
-                bm25_node_ids.add(node.metadata.get("node_id", ""))
-
+            for doc in bm25_indexer.documents:
+                node_id = doc.metadata.get('node_id', '')
+                if node_id:  # Skip empty node_ids
+                    bm25_node_ids.add(node_id)
+            
             print(f"   Found {len(bm25_node_ids)} BM25 node IDs")
             print(f"   BM25 node IDs: {sorted(bm25_node_ids)}")
 
@@ -55,11 +56,9 @@ class TestDenseCompatibility(unittest.TestCase):
         # === Create Dense chunks ===
         print("\n2. Creating Dense chunks...")
         try:
-            code_chunker = CodeChunker(language="python")
-            chunks = code_chunker.chunk_repository(
-                str(self.repo_path), languages=["python"]
-            )
-
+            code_chunker = CodeChunker(language="python", max_lines_per_chunk=50)
+            chunks = code_chunker.chunk_repository(str(self.repo_path), languages=["python"])
+            
             # Extract all Dense chunk node IDs
             dense_node_ids = set()
             for chunk in chunks:
