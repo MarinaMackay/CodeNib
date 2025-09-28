@@ -8,7 +8,7 @@ from typing import List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from ..llm.llm_config import LLMConfig, get_llm
+from ..llm.llm_config import LLMConfig, create_llm
 from ..log_utils import get_logger
 from ..types import NodeWithContent, NodeWithScore
 
@@ -42,17 +42,16 @@ class RerankAgent:
             **kwargs: Additional keyword arguments forwarded to the LLM factory.
         """
         self.llm_config = llm_config
-        self.model_name = self.llm_config.model_name
-        self.temperature = self.llm_config.temperature
-
-        self.llm = get_llm(
-            model=self.model_name,
+        self.llm = create_llm(
+            config=llm_config,
             **kwargs,
         )
 
         # Convert the LLM to a structured output LLM
         self.structured_llm = self.llm.with_structured_output(RerankResult)
-        logger.info(f"Initialized rerank agent with model: {self.model_name}")
+        logger.info(
+            f"Initialized rerank agent with model: {self.llm_config.model_name}"
+        )
 
     def rerank_nodes(
         self, query: str, nodes: List[NodeWithContent], top_k: Optional[int] = None
