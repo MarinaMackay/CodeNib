@@ -81,7 +81,10 @@ class CodeChunker:
     """
 
     def __init__(
-        self, language: str = "python", repo_config: Optional[RepoChunkingConfig] = None, max_lines_per_chunk: Optional[int] = None
+        self,
+        language: str = "python",
+        repo_config: Optional[RepoChunkingConfig] = None,
+        max_lines_per_chunk: Optional[int] = None,
     ):
         """
         Initialize the code chunker for a specific language.
@@ -93,13 +96,21 @@ class CodeChunker:
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
-        self._chunker = create_chunker(language, max_lines_per_chunk=self.max_lines_per_chunk)
+        self._chunker = create_chunker(
+            language, max_lines_per_chunk=self.max_lines_per_chunk
+        )
         self.repo_config = repo_config or RepoChunkingConfig()
         self._chunkers = {language: self._chunker}  # Cache chunkers by language
+        self.nodes = (
+            []
+        )  # List of node IDs in code graph format (dir/file.py:A.b(), dir/file.py:A)
 
     def chunk_file(self, file_path: str):
         """Chunk a code file into function/class level pieces."""
-        return self._chunker.chunk_file(file_path)
+        chunks = self._chunker.chunk_file(file_path)
+        # Collect unique node IDs from chunks
+        self._update_nodes_from_chunks(chunks)
+        return chunks
 
     def save_chunks_to_json(self, chunks, output_path: str):
         """Save chunks to a JSON file."""
@@ -164,6 +175,10 @@ class CodeChunker:
 
         print(f"Successfully processed {processed_count}/{len(files_to_process)} files")
         print(f"Generated {len(all_chunks)} total chunks")
+
+        # Collect unique node IDs from all chunks
+        self._update_nodes_from_chunks(all_chunks)
+        print(f"Collected {len(self.nodes)} unique nodes")
 
         return all_chunks
 
@@ -352,10 +367,12 @@ class CodeChunker:
         """
         # Get or create chunker for this language
         if language not in self._chunkers:
-            self._chunkers[language] = create_chunker(language, max_lines_per_chunk=self.max_lines_per_chunk)
+            self._chunkers[language] = create_chunker(
+                language, max_lines_per_chunk=self.max_lines_per_chunk
+            )
 
         chunker = self._chunkers[language]
-        
+
         # Calculate relative path if repo_path is provided
         if repo_path:
             relative_path = str(file_path.relative_to(repo_path))
@@ -412,6 +429,7 @@ class CodeChunker:
             "languages": languages,
             "total_chunks": len(chunks),
             "chunk_summary": self._get_chunk_summary_dict(chunks),
+            "nodes": self.nodes.copy(),  # Include collected nodes
         }
 
         return result
@@ -520,3 +538,28 @@ class CodeChunker:
             print(f"SWE-bench chunking result saved to {output_path}")
         except Exception as e:
             print(f"Error saving SWE-bench result: {e}")
+
+    def _update_nodes_from_chunks(self, chunks: List[CodeChunk]):
+        """
+        Update the nodes list with unique node IDs from chunks.
+
+        Args:
+            chunks: List of CodeChunk objects to extract node IDs from
+        """
+        # Extract node_ids from chunks, filtering for symbolic nodes (not just file paths)
+        new_node_ids = set()
+        for chunk in chunks:
+            if chunk.node_id and ":" in chunk.node_id:
+                # Only include nodes that have symbols (contain ':')
+                # This excludes header/epilogue chunks which just use file paths
+                new_node_ids.add(chunk.node_id)
+
+        # Add new unique node IDs to the nodes list
+        existing_nodes = set(self.nodes)
+        for node_id in new_node_ids:
+            if node_id not in existing_nodes:
+                self.nodes.append(node_id)
+
+    def clear_nodes(self):
+        """Clear the collected nodes list."""
+        self.nodes.clear()
