@@ -13,9 +13,14 @@ from typing import List, Optional, Tuple
 # Import the tree-sitter-language-pack
 from tree_sitter_language_pack import get_language, get_parser
 
+from ..log_utils import get_logger
+
+logger = get_logger(__name__)
+
 # Define structures for code chunks
 CodeChunk = namedtuple(
-    "CodeChunk", ["content", "start_line", "end_line", "chunk_type", "name", "file", "node_id"]
+    "CodeChunk",
+    ["content", "start_line", "end_line", "chunk_type", "name", "file", "node_id"],
 )
 
 
@@ -38,14 +43,16 @@ class BaseCodeChunker(ABC):
         try:
             self.parser = get_parser(language)
             self.tree_sitter_language = get_language(language)
-            print(
+            logger.info(
                 f"Successfully loaded {language} language parser from tree-sitter-language-pack"
             )
         except Exception as e:
-            print(f"Error loading {language} parser: {e}")
+            logger.error(f"Error loading {language} parser: {e}")
             sys.exit(1)
 
-    def chunk_file(self, file_path: str, relative_path: Optional[str] = None) -> List[CodeChunk]:
+    def chunk_file(
+        self, file_path: str, relative_path: Optional[str] = None
+    ) -> List[CodeChunk]:
         """
         Chunk a code file into function/class level pieces.
 
@@ -57,10 +64,10 @@ class BaseCodeChunker(ABC):
             List of CodeChunk objects representing the chunks
         """
         if not os.path.exists(file_path):
-            print(f"Error: File {file_path} not found")
+            logger.error(f"Error: File {file_path} not found")
             return []
 
-        print(f"Chunking file: {file_path}")
+        # logger.debug(f"Chunking file: {file_path}")
 
         # Read the file
         with open(file_path, "r", encoding="utf-8") as f:
@@ -79,14 +86,25 @@ class BaseCodeChunker(ABC):
 
         # Use relative_path for node_id generation, fallback to file_path
         path_for_node_id = relative_path if relative_path else file_path
-        
-        # Generate chunks
-        chunks = self._generate_chunks(lines, top_level_nodes, file_path, path_for_node_id)
 
-        print(f"Generated {len(chunks)} chunks from {file_path}")
+        # Generate chunks
+        chunks = self._generate_chunks(
+            lines, top_level_nodes, file_path, path_for_node_id
+        )
+
+        # logger.debug(f"Generated {len(chunks)} chunks from {file_path}")
         return chunks
 
-    def _split_by_max_lines(self, lines: List[str], start_line: int, end_line: int, chunk_type: str, name: str, file_path: str, node_id: str) -> List[CodeChunk]:
+    def _split_by_max_lines(
+        self,
+        lines: List[str],
+        start_line: int,
+        end_line: int,
+        chunk_type: str,
+        name: str,
+        file_path: str,
+        node_id: str,
+    ) -> List[CodeChunk]:
         """
         Split a logical chunk into multiple CodeChunk pieces if it exceeds max_lines_per_chunk.
         Keeps node_id and name unchanged across pieces.
@@ -123,18 +141,20 @@ class BaseCodeChunker(ABC):
             ]
 
         # Calculate number of chunks needed and balanced chunk sizes
-        num_chunks = (total_lines + self.max_lines_per_chunk - 1) // self.max_lines_per_chunk
+        num_chunks = (
+            total_lines + self.max_lines_per_chunk - 1
+        ) // self.max_lines_per_chunk
         base_chunk_size = total_lines // num_chunks
         extra_lines = total_lines % num_chunks
-        
+
         # Create balanced chunks
         pieces: List[CodeChunk] = []
         current_start = start_line
-        
+
         for i in range(num_chunks):
             chunk_size = base_chunk_size + (1 if i < extra_lines else 0)
             current_end = current_start + chunk_size - 1
-            
+
             piece_content = "\n".join(lines[current_start : current_end + 1])
             pieces.append(
                 CodeChunk(
@@ -152,7 +172,11 @@ class BaseCodeChunker(ABC):
         return pieces
 
     def _generate_chunks(
-        self, lines: List[str], definitions: List[Tuple], file_path: str, path_for_node_id: str
+        self,
+        lines: List[str],
+        definitions: List[Tuple],
+        file_path: str,
+        path_for_node_id: str,
     ) -> List[CodeChunk]:
         """
         Generate code chunks from the file content and AST definitions.
@@ -173,11 +197,10 @@ class BaseCodeChunker(ABC):
             start_line = node.start_point[0]  # 0-based
             end_line = node.end_point[0]  # 0-based
 
-            # Create chunk for code before this definition (imports, globals, etc.)
-            if start_line > current_line:
+            # Create chunk for code before this definition (only for the first one)
+            if i == 0 and start_line > current_line:
                 header_content_lines = lines[current_line:start_line]
                 if "\n".join(header_content_lines).strip():  # Only add if not empty
-                    chunk_name = f"header_{i}" if i > 0 else "header"
                     # node_id for headers is file path (no symbol)
                     chunks.extend(
                         self._split_by_max_lines(
@@ -185,7 +208,7 @@ class BaseCodeChunker(ABC):
                             start_line=current_line,
                             end_line=start_line - 1,
                             chunk_type="header",
-                            name=chunk_name,
+                            name="header",
                             file_path=file_path,
                             node_id=path_for_node_id,
                         )
@@ -226,15 +249,17 @@ class BaseCodeChunker(ABC):
 
         return chunks
 
-    def _generate_node_id(self, file_path: str, symbol_name: str, symbol_type: str) -> str:
+    def _generate_node_id(
+        self, file_path: str, symbol_name: str, symbol_type: str
+    ) -> str:
         """
         Generate node_id in the same format as code graph.
-        
+
         Args:
             file_path: Path to the file (should be relative path)
             symbol_name: Name of the symbol (function/class name)
             symbol_type: Type of the symbol ("function" or "class")
-            
+
         Returns:
             Node ID in format: file_path:symbol_name
         """
@@ -243,7 +268,7 @@ class BaseCodeChunker(ABC):
             formatted_name = f"{symbol_name}()"
         else:
             formatted_name = symbol_name
-            
+
         return f"{file_path}:{formatted_name}"
 
     @abstractmethod
@@ -323,17 +348,17 @@ class BaseCodeChunker(ABC):
         try:
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(chunk_dicts, f, indent=2, ensure_ascii=False)
-            print(f"Chunks saved to {output_path}")
+            logger.info(f"Chunks saved to {output_path}")
         except Exception as e:
-            print(f"Error saving chunks to file: {e}")
+            logger.error(f"Error saving chunks to file: {e}")
 
     def print_chunk_summary(self, chunks: List[CodeChunk]):
         """Print a summary of the generated chunks."""
-        print(f"\n=== Chunk Summary ===")
-        print(f"Total chunks: {len(chunks)}")
+        logger.info(f"\n=== Chunk Summary ===")
+        logger.info(f"Total chunks: {len(chunks)}")
 
         for i, chunk in enumerate(chunks, 1):
-            print(
+            logger.info(
                 f"Chunk {i}: {chunk.chunk_type} '{chunk.name}' "
                 f"(lines {chunk.start_line}-{chunk.end_line}, "
                 f"{len(chunk.content.split(chr(10)))} lines)"
