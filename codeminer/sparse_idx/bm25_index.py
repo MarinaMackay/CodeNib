@@ -3,10 +3,10 @@ import os
 import re
 from typing import List, Optional
 
-import Stemmer
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
+from ..code_chunker import CodeChunk
 from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger
 from ..types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NodeWithContent, is_symbol_node
@@ -24,9 +24,10 @@ class BM25CodeIndexer:
     def __init__(
         self,
         code_graph=None,
+        code_chunker=None,
+        chunks=None,
         max_k: int = 15,
         language: str = "english",
-        use_stemmer: bool = True,
     ):
         """
         Initialize the BM25CodeIndexer and optionally build the index immediately.
@@ -34,37 +35,30 @@ class BM25CodeIndexer:
         Args:
             code_graph: CodeGraph instance containing nodes to index. If provided,
                        the index will be built immediately.
+            code_chunker: CodeChunker instance containing chunks to index. If provided,
+                         the index will be built immediately.
+            chunks: List of CodeChunk objects to index. If provided, the index will
+                   be built immediately.
             max_k: Maximum number of results to return in searches
-            language: Language for stopword removal and stemming
+            language: Language for stopword removal
                       Default is "english" which works well for processing code tokens
                       as it treats special characters as separators
-            use_stemmer: Whether to use stemming for text preprocessing
         """
         self.max_k = max_k
         self.language = language
-        self.use_stemmer = use_stemmer
         self.documents = []
         self.retriever = None
         self.code_graph: CodeGraph = None
         self.project_root: Optional[str] = None
         self.nodes: List[str] = []
 
-        # Initialize stemmer if requested
-        if self.use_stemmer:
-            try:
-                self.stemmer = Stemmer.Stemmer("english")
-            except Exception as e:
-                logger.warning(
-                    f"Failed to initialize PyStemmer: {e}. Proceeding without stemming."
-                )
-                self.stemmer = None
-                self.use_stemmer = False
-        else:
-            self.stemmer = None
-
         # Build the index immediately if a code_graph is provided
         if code_graph is not None:
             self.build_index_from_graph(code_graph)
+        elif code_chunker is not None:
+            self.build_index_from_chunker(code_chunker)
+        elif chunks is not None:
+            self.build_index_from_chunks(chunks)
 
     def build_index_from_graph(self, code_graph: CodeGraph) -> BM25Retriever:
         """
@@ -92,6 +86,80 @@ class BM25CodeIndexer:
         self.retriever = BM25Retriever.from_documents(self.documents, k=self.max_k)
 
         return self.retriever
+
+    def build_index_from_chunks(self, chunks: List[CodeChunk]) -> BM25Retriever:
+        """
+        Build a BM25 index from a list of CodeChunk objects.
+
+        Args:
+            chunks: List of CodeChunk objects (with node_id, chunk_type, name, file, etc.)
+
+        Returns:
+            BM25Retriever instance
+        """
+        # Reset the index
+        self.documents = []
+        self.nodes = []
+        self.code_graph = None
+        self.project_root = None
+
+        # Extract unique node IDs from chunks
+        unique_node_ids = set()
+        for chunk in chunks:
+            if hasattr(chunk, "node_id") and chunk.node_id:
+                unique_node_ids.add(chunk.node_id)
+
+        # Convert unique node IDs to documents
+        for node_id in unique_node_ids:
+            doc = self._convert_node_id_to_document(node_id)
+            if doc is not None:
+                self.documents.append(doc)
+                self.nodes.append(node_id)
+
+        # Create BM25Retriever with LangChain format
+        self.retriever = BM25Retriever.from_documents(self.documents, k=self.max_k)
+
+        return self.retriever
+
+    def _convert_node_id_to_document(self, node_id: str):
+        """
+        Convert a node ID from CodeChunker format to a Document for indexing.
+
+        Args:
+            node_id: Node ID in format "file.py:SymbolName" or "dir/file.py:SymbolName()"
+
+        Returns:
+            Document object or None if the node couldn't be converted
+        """
+        if ":" not in node_id:
+            return None
+
+        file_path, symbol_name = node_id.split(":", 1)
+
+        # Determine node type based on symbol name
+        if "()" in symbol_name:
+            node_type = "function"
+        else:
+            node_type = "class"
+
+        metadata = {
+            "node_id": node_id,
+            "type": node_type,
+            "name": symbol_name,
+            "file": file_path,
+        }
+
+        # Use node_id as content for searching
+        content = node_id
+
+        # Apply custom text processing for code-specific tokenization
+        content = self._apply_stemming(content)
+
+        # Create a unique ID for the document
+        doc_id = f"node_{node_id}"
+        metadata["doc_id"] = doc_id
+
+        return Document(page_content=content, metadata=metadata)
 
     def _convert_vertex_to_document(self, vertex):
         """
@@ -159,9 +227,8 @@ class BM25CodeIndexer:
             ]:
                 metadata[key] = vertex[key]
 
-        # Apply stemming to content if enabled
-        if self.use_stemmer and self.stemmer:
-            content = self._apply_stemming(content)
+        # Apply custom text processing for code-specific tokenization
+        content = self._apply_stemming(content)
 
         # Create a unique ID for the document
         doc_id = f"node_{node_id}"
@@ -170,16 +237,16 @@ class BM25CodeIndexer:
 
     def _apply_stemming(self, text: str) -> str:
         """
-        Apply stemming to text using the configured stemmer.
+        Apply custom text processing for code-specific tokenization.
         Handles code-specific patterns like file paths, function calls, etc.
 
         Args:
-            text: Input text to stem
+            text: Input text to process
 
         Returns:
-            Stemmed text with code-aware tokenization
+            Processed text with code-aware tokenization
         """
-        if not self.stemmer or not text:
+        if not text:
             return text
 
         try:
@@ -190,19 +257,18 @@ class BM25CodeIndexer:
             # This handles paths like "test/test_bas.py" and method calls like "sample/core.py:get_hmm"
             tokens = re.split(r"[/:._ ]+", text)
 
-            stemmed_tokens = []
+            processed_tokens = []
             for token in tokens:
-                if token and re.match(r"^[a-zA-Z]+$", token):
-                    # Only stem pure alphabetic tokens
-                    stemmed_tokens.append(self.stemmer.stemWord(token.lower()))
-                elif token:
-                    # Keep non-alphabetic tokens as-is (numbers, mixed alphanumeric, etc.)
-                    stemmed_tokens.append(token.lower())
+                if token:
+                    # Lowercase all tokens for better matching
+                    processed_tokens.append(token.lower())
 
             # Join with spaces to create searchable terms
-            return " ".join(filter(None, stemmed_tokens))
+            return " ".join(filter(None, processed_tokens))
         except Exception as e:
-            logger.warning(f"Error during stemming: {e}. Returning original text.")
+            logger.warning(
+                f"Error during text processing: {e}. Returning original text."
+            )
             return text
 
     def search(
@@ -229,9 +295,8 @@ class BM25CodeIndexer:
                 "Index has not been built. Call build_index_from_graph first."
             )
 
-        # Apply stemming to query if enabled
-        if self.use_stemmer and self.stemmer:
-            query = self._apply_stemming(query)
+        # Apply custom text processing to query
+        query = self._apply_stemming(query)
 
         # Use LangChain's invoke method with top_k parameter
         if top_k is None:
@@ -363,7 +428,6 @@ class BM25CodeIndexer:
             ),
             "max_k": self.max_k,
             "language": self.language,
-            "use_stemmer": self.use_stemmer,
         }
         metadata_file = os.path.join(directory_path, "bm25_metadata.json")
         with open(metadata_file, "w", encoding="utf-8") as f:
@@ -410,29 +474,6 @@ class BM25CodeIndexer:
                 self.project_root = metadata.get("project_root")
                 self.max_k = metadata.get("max_k", 10)
                 self.language = metadata.get("language", "english")
-                self.use_stemmer = metadata.get("use_stemmer", True)
-
-                # Reinitialize stemmer if needed
-                if self.use_stemmer:
-                    try:
-                        self.stemmer = Stemmer.Stemmer("english")
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to initialize PyStemmer: {e}. Proceeding without stemming."
-                        )
-                        self.stemmer = None
-                        self.use_stemmer = False
-                else:
-                    self.stemmer = None
         else:
             # For backward compatibility with indices saved without metadata
             self.project_root = None
-            self.use_stemmer = True
-            try:
-                self.stemmer = Stemmer.Stemmer("english")
-            except Exception as e:
-                logger.warning(
-                    f"Failed to initialize PyStemmer: {e}. Proceeding without stemming."
-                )
-                self.stemmer = None
-                self.use_stemmer = False
