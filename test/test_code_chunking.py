@@ -44,26 +44,55 @@ def test_python_chunking():
     output_file = Path(__file__).parent / "test_chunks_output.json"
     chunker.save_chunks_to_json(chunks, str(output_file))
 
-    # Verify expected chunks
+    # Verify expected chunks - now includes methods within classes
     expected_types = [
-        "header",
-        "function",
-        "class",
-        "function",
-        "class",
-        "function",
-        "epilogue",
+        "header",  # imports and globals
+        "function",  # hello_world
+        "class",  # Calculator class
+        "method",  # Calculator.__init__
+        "method",  # Calculator.add
+        "method",  # Calculator.subtract
+        "function",  # fibonacci
+        "class",  # DataProcessor class
+        "method",  # DataProcessor.__init__
+        "method",  # DataProcessor.process
+        "function",  # async_function
+        "epilogue",  # if __name__ == "__main__" block
     ]
     actual_types = [chunk.chunk_type for chunk in chunks]
 
     print(f"\nExpected chunk types: {expected_types}")
     print(f"Actual chunk types: {actual_types}")
 
-    if actual_types == expected_types:
-        print("=== Chunk types match expected pattern! ===")
+    # Also show chunk names for better debugging
+    expected_names = [
+        "header",
+        "hello_world",
+        "Calculator",
+        "__init__",
+        "add",
+        "subtract",
+        "fibonacci",
+        "DataProcessor",
+        "__init__",
+        "process",
+        "async_function",
+        "epilogue",
+    ]
+    actual_names = [chunk.name for chunk in chunks]
+
+    print(f"\nExpected chunk names: {expected_names}")
+    print(f"Actual chunk names: {actual_names}")
+
+    if actual_types == expected_types and actual_names == expected_names:
+        print("=== Chunk types and names match expected pattern! ===")
         return True
     else:
-        print("=== Chunk types don't match expected pattern! ===")
+        print("=== Chunk types or names don't match expected pattern! ===")
+        if actual_types != expected_types:
+            print("Type mismatch!")
+        if actual_names != expected_names:
+            print("Name mismatch!")
         return False
 
 

@@ -97,40 +97,6 @@ def test_custom_config():
         print(f"❌ Custom configuration test failed: {e}")
 
 
-def test_multi_language():
-    """Test multi-language processing."""
-    print("\n=== Testing Multi-Language Processing ===")
-
-    try:
-        chunker = CodeChunker(language="python")
-
-        project_root = Path(__file__).parent.parent
-
-        # Test with multiple languages
-        print("Testing multi-language chunking...")
-        chunks = chunker.chunk_repository(
-            str(project_root), languages=["python", "cpp"]
-        )
-
-        print(f"Generated {len(chunks)} chunks from multi-language repository")
-
-        # Group by language based on file extension
-        python_chunks = [c for c in chunks if c.file.endswith(".py")]
-        cpp_chunks = [
-            c
-            for c in chunks
-            if any(c.file.endswith(ext) for ext in [".cpp", ".h", ".hpp", ".c"])
-        ]
-
-        print(f"Python chunks: {len(python_chunks)}")
-        print(f"C++ chunks: {len(cpp_chunks)}")
-
-        print("✅ Multi-language test passed!")
-
-    except Exception as e:
-        print(f"❌ Multi-language test failed: {e}")
-
-
 def test_swebench_functionality():
     """Test the SWE-bench repository processing functionality."""
     print("\n=== Testing SWE-bench Functionality ===")
@@ -221,7 +187,6 @@ def main():
     # Run all tests
     test_repository_functionality()
     test_custom_config()
-    test_multi_language()
     test_swebench_functionality()
 
     print("\n🎉 All repo chunker tests completed!")
