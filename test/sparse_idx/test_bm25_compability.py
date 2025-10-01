@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 
+from codeminer.code_chunker import CodeChunker
 from codeminer.env.process_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
@@ -53,3 +54,36 @@ def test_bm25_transgraph_compatibility():
             # get original attributes from graph for comparison
             attributes = graph.get_node_info_by_name(node_name=result.node_name)
             print(f"  Graph attributes: {attributes}")
+
+
+def test_bm25_indexer_from_chunks():
+    """Test building BM25 index from CodeChunker output."""
+    # Path to repo
+    args = argparse.Namespace(**args_dict)
+    dataset = load_filter_swebench_dataset(args=args)
+    instance = dataset[0]  # Just take the first instance for testing
+    print(f"Loaded instance: {instance['instance_id']} from repo {instance['repo']}")
+    repo_path = process_swebench_instance(instance)
+    # chunk repository
+    chunker = CodeChunker(language="python")
+    chunks = chunker.chunk_repository(str(repo_path))
+    bm25_indexer = BM25CodeIndexer()
+    bm25_indexer.build_index_from_chunks(chunks)
+
+    # Verify index was built
+    assert bm25_indexer.retriever is not None
+    assert len(bm25_indexer.documents) > 0
+    assert len(bm25_indexer.nodes) > 0
+
+    # Test search queries
+    search_queries = [
+        "separability matrix",  # Partial match
+    ]
+
+    for query in search_queries:
+        results = bm25_indexer.search(query, top_k=3, return_code_content=False)
+        assert isinstance(results, list)
+        print(f"Search results for query '{query}':")
+        for result in results:
+            print(f"Node: {result.node_name}")
+            print(f"  {result}")  # Uses the __repr__ method
