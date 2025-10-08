@@ -86,6 +86,10 @@ class PythonCodeChunker(BaseCodeChunker):
             List of tuples (node, name, type) for each method definition
         """
         methods = []
+        
+        class_name = self._extract_class_name(class_node)
+        if not class_name:
+            return methods
 
         # Look for the class body
         for child in class_node.children:
@@ -95,7 +99,9 @@ class PythonCodeChunker(BaseCodeChunker):
                     if stmt.type == "function_definition":
                         method_name = self._extract_method_name(stmt)
                         if method_name:
-                            methods.append((stmt, method_name, "method"))
+                            # Include class name prefix for node_id
+                            full_method_name = f"{class_name}.{method_name}"
+                            methods.append((stmt, full_method_name, "method"))
 
         return methods
 
