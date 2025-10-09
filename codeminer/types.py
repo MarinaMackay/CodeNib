@@ -11,6 +11,7 @@ NODE_TYPE_METHOD = "method"
 NODE_TYPE_FIELD = "field"
 EDGE_TYPE_CONTAIN = "contain"
 EDGE_TYPE_REFERENCE = "reference"
+ROOT_NODE = "."
 
 # Symbol types - for compatibility, keep NODE_TYPE_SYMBOL but add specific types
 SYMBOL_TYPES = {

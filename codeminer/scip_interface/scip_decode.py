@@ -10,6 +10,7 @@ from ..types import (
     NODE_TYPE_FIELD,
     NODE_TYPE_FUNCTION,
     NODE_TYPE_METHOD,
+    ROOT_NODE,
 )
 
 
@@ -38,7 +39,7 @@ class SCIPGraphDecoder:
         )
 
         # Add the root node to the graph
-        self.code_graph.add_root_node(".")
+        self.code_graph.add_root_node(ROOT_NODE)
 
         # Process all documents
         for document in document_blocks:
