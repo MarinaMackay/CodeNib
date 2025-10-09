@@ -257,14 +257,14 @@ class BaseCodeChunker(ABC):
 
         Args:
             file_path: Path to the file (should be relative path)
-            symbol_name: Name of the symbol (function/class name)
-            symbol_type: Type of the symbol ("function" or "class")
+            symbol_name: Name of the symbol (function/class/method name)
+            symbol_type: Type of the symbol ("function", "method", or "class")
 
         Returns:
             Node ID in format: file_path:symbol_name
         """
-        # For functions, add parentheses to match graph format
-        if symbol_type == "function":
+        # For functions and methods, add parentheses to match graph format
+        if symbol_type in ("function", "method"):
             formatted_name = f"{symbol_name}()"
         else:
             formatted_name = symbol_name
