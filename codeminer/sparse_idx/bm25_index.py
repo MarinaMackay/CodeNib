@@ -24,7 +24,6 @@ class BM25CodeIndexer:
     def __init__(
         self,
         code_graph=None,
-        code_chunker=None,
         chunks=None,
         max_k: int = 15,
         language: str = "english",
@@ -55,8 +54,6 @@ class BM25CodeIndexer:
         # Build the index immediately if a code_graph is provided
         if code_graph is not None:
             self.build_index_from_graph(code_graph)
-        elif code_chunker is not None:
-            self.build_index_from_chunker(code_chunker)
         elif chunks is not None:
             self.build_index_from_chunks(chunks)
 
