@@ -398,7 +398,7 @@ class CodeChunker:
         Returns:
             Dictionary containing instance info, repo path, and chunks
         """
-        from .env.process_data import process_swebench_instance
+        from .env.process_swebench_data import process_swebench_instance
 
         if cache_dir is None:
             cache_dir = "~/.codeminer"

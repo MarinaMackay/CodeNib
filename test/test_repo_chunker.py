@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
-from codeminer.env.process_data import load_filter_swebench_dataset
+from codeminer.env.process_swebench_data import load_filter_swebench_dataset
 
 # Add the parent directory to the path to import codeminer modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
