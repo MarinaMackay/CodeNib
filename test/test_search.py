@@ -1,6 +1,6 @@
 import argparse
 
-from codeminer.env.process_data import (
+from codeminer.env.process_swebench_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
@@ -12,6 +12,7 @@ args_dict = {
     "split": "test",
     "filter_instance": "^(astropy__astropy-12907)$",
 }
+
 
 # Example usage
 if __name__ == "__main__":

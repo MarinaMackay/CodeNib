@@ -1,7 +1,7 @@
 import argparse
 from pathlib import Path
 
-from codeminer.env.process_data import (
+from codeminer.env.process_swebench_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
