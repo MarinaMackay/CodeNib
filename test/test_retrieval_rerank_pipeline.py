@@ -22,8 +22,15 @@ def test_search_rerank_pipeline():
         rerank_provider="vllm",
     )
     
+    # Check pipeline vector store stats
     assert pipeline is not None
     print(pipeline.vector_store.get_stats())
+
+    # Check pipeline search with content
+    query = "Calculator multiply two numbers"
+    results = pipeline.vector_store.search_with_content(query=query, top_k=5)
+    assert isinstance(results, list)
+    print(results[0])
 
 
 if __name__ == "__main__":

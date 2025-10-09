@@ -199,7 +199,7 @@ class CodeVectorStore:
 
     def search_with_content(
         self, query: str, top_k: int = 10, score_threshold: Optional[float] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> List[NodeWithContent]:
         """
         Search and return results with content included.
 
@@ -209,7 +209,7 @@ class CodeVectorStore:
             score_threshold: Minimum similarity score threshold
 
         Returns:
-            List of dictionaries with node information and content
+            List of NodeWithContent objects
         """
         if self.vector_store is None:
             logger.warning("No vector store available. Add code chunks first.")
@@ -220,7 +220,7 @@ class CodeVectorStore:
             query, k=top_k
         )
 
-        # Convert to detailed results
+        # Convert to NodeWithContent objects
         results = []
         for doc, score in docs_with_scores:
             metadata = doc.metadata
@@ -229,17 +229,15 @@ class CodeVectorStore:
             if score_threshold is not None and score > score_threshold:
                 continue
 
-            result = {
-                "score": float(score),
-                "content": doc.page_content,
-                "name": metadata.get("name", "unknown"),
-                "chunk_type": metadata.get("chunk_type", "unknown"),
-                "file": metadata.get("file", ""),
-                "start_line": metadata.get("start_line", 0),
-                "end_line": metadata.get("end_line", 0),
-                "metadata": metadata,
-            }
-            results.append(result)
+            node_with_content = NodeWithContent(
+                node_name=metadata.get("name", "unknown"),
+                type=metadata.get("chunk_type", "unknown"),
+                file=metadata.get("file", ""),
+                start_line=metadata.get("start_line", 0),
+                end_line=metadata.get("end_line", 0),
+                content=doc.page_content,
+            )
+            results.append(node_with_content)
 
         return results
 

@@ -73,7 +73,7 @@ class SearchRerankPipeline:
         )
         logger.info(f"Generated {len(chunks)} chunks")
         if not chunks:
-            raise ValueError("No code chunks generated from repository")\
+            raise ValueError("No code chunks generated from repository")
 
         self.vector_store = CodeVectorStore(
             embedding_model=embedding_model,
