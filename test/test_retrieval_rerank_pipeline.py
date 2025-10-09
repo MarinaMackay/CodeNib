@@ -18,8 +18,7 @@ def test_search_rerank_pipeline():
         embedding_model="microsoft/unixcoder-base",
         embedding_provider="huggingface",
         embedding_dimension=768,
-        rerank_model="Salesforce/SweRankLLM-Small",
-        rerank_provider="vllm",
+        rerank_model="nomic-ai/CodeRankLLM",
     )
     
     # Check pipeline vector store stats
