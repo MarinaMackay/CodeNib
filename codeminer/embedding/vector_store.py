@@ -73,8 +73,16 @@ class CodeVectorStore:
             model_name = self.embedding_model
             if model_name == "text-embedding-ada-002":  # Default OpenAI model
                 model_name = "microsoft/codebert-base"
-
-            return HuggingFaceEmbeddings(model_name=model_name, **kwargs)
+                
+            model_kwargs = kwargs.pop("model_kwargs", {})
+            encode_kwargs = kwargs.pop("encode_kwargs", {})
+            
+            return HuggingFaceEmbeddings(
+                model_name=model_name, 
+                model_kwargs=model_kwargs,
+                encode_kwargs=encode_kwargs,
+                **kwargs
+            )
         else:
             raise ValueError(
                 f"Unsupported embedding provider: {self.embedding_provider}"
