@@ -14,7 +14,7 @@ args_dict = {
 
 def test_scip_exclude():
     exclude_file = "sympy/polys/numberfields/resolvent_lookup.py"
-    exclude_patter = "test_*"
+    exclude_pattern = "test_*"
     args = argparse.Namespace(**args_dict)
     dataset = load_filter_locbench_dataset(args=args)
 
@@ -26,7 +26,7 @@ def test_scip_exclude():
     repo_indexer = SCIPIndexer(
         repo_path,
         output_dir=output_path,
-        exclude_patterns=[exclude_file, exclude_patter],
+        exclude_patterns=[exclude_file, exclude_pattern],
     )
 
     # Run the indexing pipeline, allowing skip_index and skip_decode for faster tests
