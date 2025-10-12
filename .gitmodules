@@ -1,0 +1,4 @@
+[submodule "third_party/scip-python"]
+	path = third_party/scip-python
+	url = https://github.com/fishmingyu/scip-python.git
+	branch = exclude-config
