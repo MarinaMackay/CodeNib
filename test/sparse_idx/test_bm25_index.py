@@ -269,6 +269,50 @@ def test_search_with_code_content(code_graph, samplemod_repo):
             assert isinstance(result.content, str), "Content should be a string"
 
 
+def test_search_with_filter_test(code_graph):
+    """Test searching with test file filtering."""
+    # Create indexer from graph
+    indexer = BM25CodeIndexer(code_graph=code_graph, max_k=20, language="english")
+
+    # Search without filter
+    query = "test"
+    results_unfiltered = indexer.search(query, top_k=20, filter_test=False)
+
+    # Search with filter_test=True
+    results_filtered = indexer.search(query, top_k=20, filter_test=True)
+
+    print(f"\nUnfiltered results for '{query}': {len(results_unfiltered)}")
+    for result in results_unfiltered:
+        print(f"  {result.node_name}")
+
+    print(
+        f"\nFiltered results for '{query}' (filter_test=True): {len(results_filtered)}"
+    )
+    for result in results_filtered:
+        print(f"  {result.node_name}")
+
+    # Verify that filtered results don't contain test files
+    import re
+
+    for result in results_filtered:
+        node_words = re.split(r" |_|\/", result.node_name.lower())
+        assert not any(
+            word.startswith("test") for word in node_words
+        ), f"Test file found in filtered results: {result.node_name}"
+
+    # Verify that filtering actually removed some results if test files exist
+    has_test_files = any(
+        any(
+            word.startswith("test") for word in re.split(r" |_|\/", r.node_name.lower())
+        )
+        for r in results_unfiltered
+    )
+    if has_test_files:
+        assert len(results_filtered) < len(
+            results_unfiltered
+        ), "filter_test should have removed some results"
+
+
 # For backward compatibility with direct script execution
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
