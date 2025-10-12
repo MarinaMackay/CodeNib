@@ -4,7 +4,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger
@@ -19,6 +19,7 @@ class SCIPIndexer:
         self,
         project_root: Union[str, Path],
         output_dir: Optional[Union[str, Path]] = None,
+        exclude_patterns: Optional[List] = None,
     ):
         self.project_root = Path(project_root).absolute()
 
@@ -34,6 +35,7 @@ class SCIPIndexer:
         # Set paths for index files in the output directory
         self.index_file = self.output_dir / "index.scip"
         self.decoded_file = self.output_dir / "index.decoded"
+        self.exclude_patterns = exclude_patterns if exclude_patterns else []
 
         # Path to the conda environment file
         self.module_dir = Path(__file__).parent
@@ -178,6 +180,10 @@ class SCIPIndexer:
 
         if target_dir:
             cmd.extend(["--target-only", target_dir])
+
+        # Add exclude patterns if any
+        for pattern in self.exclude_patterns:
+            cmd.extend(["--exclude", pattern])
 
         logger.debug(f"Running command: {' '.join(cmd)}")
 
