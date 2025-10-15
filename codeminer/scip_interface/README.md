@@ -3,12 +3,41 @@
 [SCIP](https://github.com/sourcegraph/scip/tree/main) is a code intelligence protocol for index, which has powerful support for multiple languages, e.g. python, C++, etc.
 We copy the scip.proto to the local directory for convenience.
 
-Related links are listed as below:
-[scip-python](https://github.com/sourcegraph/scip-python)
-Usage:
-``` bash
+### Setup scip-python (Custom Fork)
+
+We use a custom fork of scip-python with exclude-config support, located in `third_party/scip-python`.
+
+#### Installation Steps
+
+1. **Initialize the submodule** (if not already done):
+   ```bash
+   git submodule update --init --recursive
+   ```
+
+2. **Install dependencies and build**:
+   ```bash
+   cd third_party/scip-python
+   npm install
+   cd packages/pyright-scip
+   npm install
+   npm run build
+   npm link
+   ```
+
+3. **Link the package globally** (so you can use `scip-python` command):
+   ```bash
+   npm link scip-python
+   ```
+
+#### Usage
+
+```bash
 scip-python index . --project-name=$MY_PROJECT --target-only=src/subdir
 ```
+
+Related links:
+- [Our scip-python fork](https://github.com/fishmingyu/scip-python/tree/exclude-config)
+- [Original scip-python](https://github.com/sourcegraph/scip-python)
 
 ### Convert index.scip to index.decoded
 
@@ -41,19 +70,3 @@ result = indexer.run_pipeline(
     output_file="output.json"
 )
 ```
-
-### Command Line Usage
-
-The indexer can also be used from the command line:
-
-```bash
-python -m codeminer.scip_interface.scip_indexer --project-dir /path/to/project --project-name "MyProject"
-```
-
-Options:
-- `--project-dir` - Path to the project root directory
-- `--project-name` - Project name for the index
-- `--target-dir` - Subdirectory to target for indexing
-- `--output` - Path to output processed index file
-- `--skip-index` - Skip index generation, use existing index.scip
-- `--skip-decode` - Skip decoding, use existing index.decoded

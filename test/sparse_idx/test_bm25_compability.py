@@ -87,3 +87,18 @@ def test_bm25_indexer_from_chunks():
         for result in results:
             print(f"Node: {result.node_name}")
             print(f"  {result}")  # Uses the __repr__ method
+
+        # Test with filter_test=True
+        results_filtered = bm25_indexer.search(
+            query, top_k=3, return_code_content=False, filter_test=True
+        )
+        assert isinstance(results_filtered, list)
+        print(f"\nSearch results for query '{query}' (filter_test=True):")
+        for result in results_filtered:
+            print(f"Node: {result.node_name}")
+            print(f"  {result}")
+            # Verify no test files in results
+            import re
+
+            node_words = re.split(r" |_|\/", result.node_name.lower())
+            assert not any(word.startswith("test") for word in node_words)

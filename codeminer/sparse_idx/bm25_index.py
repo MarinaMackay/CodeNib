@@ -10,7 +10,7 @@ from ..code_chunker import CodeChunk
 from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger
 from ..types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NodeWithContent, is_symbol_node
-from ..utils import wrap_code_snippet
+from ..utils import is_test_file, wrap_code_snippet
 
 logger = get_logger(__name__)
 
@@ -274,6 +274,7 @@ class BM25CodeIndexer:
         top_k: Optional[int] = None,
         return_code_content: bool = False,
         wrap_with_ln: bool = True,
+        filter_test: bool = False,
     ) -> List[NodeWithContent]:
         """
         Search the index for nodes matching the query.
@@ -283,6 +284,7 @@ class BM25CodeIndexer:
             top_k: Number of top results to return (defaults to max_k if not specified)
             return_code_content: Whether to include code content in the results
             wrap_with_ln: Whether to wrap code content with line numbers
+            filter_test: Whether to filter out test files from the results
 
         Returns:
             List of NodeWithContent objects containing matched nodes with optional content
@@ -301,15 +303,16 @@ class BM25CodeIndexer:
 
         results = self.retriever.invoke(query)
 
-        # Limit results to top_k
-        results = results[:top_k]
-
-        # Convert results to NodeWithContent objects
+        # Convert results to NodeWithContent objects and apply filtering
         processed_results = []
         for doc in results:
             # Extract all metadata directly from the document
             metadata = doc.metadata
             node_name = metadata.get("node_id", "")
+
+            # Filter out test files if requested
+            if filter_test and is_test_file(node_name):
+                continue
 
             # Get basic node info
             file_path = metadata.get("file")
@@ -389,6 +392,10 @@ class BM25CodeIndexer:
             )
 
             processed_results.append(result)
+
+            # Stop once we have enough results
+            if len(processed_results) >= top_k:
+                break
 
         return processed_results
 
