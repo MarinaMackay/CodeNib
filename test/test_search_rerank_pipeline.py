@@ -69,6 +69,7 @@ def _run_pipeline_test(dataset_name, loader, processor, args_kwargs, pipeline_ov
 
         pipeline = SearchRerankPipeline(
             repo_path=repo_path,
+            repo_commit=instance["base_commit"],
             **pipeline_kwargs,
         )
 
@@ -125,9 +126,9 @@ def test_locbench_search_rerank_pipeline():
     Test search + rerank pipeline on a LocBench instance.
     """
     args_kwargs = {
-        "dataset": "czlll/Loc-Bench_V0.2",
+        "dataset": "czlll/Loc-Bench_V1",
         "split": "test",
-        "filter_instance": "^(joselc__life-sim-first-try-2)$",
+        "filter_instance": "^(UXARRAY__uxarray-1117)$",
     }
     _run_pipeline_test(
         dataset_name="locbench",

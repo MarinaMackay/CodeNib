@@ -24,6 +24,7 @@ class SearchRerankPipeline:
         self,
         # Repo config
         repo_path: str,
+        repo_commit: str,
         # Embedding config
         embedding_model: str = "text-embedding-ada-002",
         embedding_provider: str = "openai",
@@ -45,15 +46,20 @@ class SearchRerankPipeline:
         """
         # Attributes
         self.repo_path = None
+        self.repo_commit = None
         self.vector_store = None
         self.rerank_agent = None
         
-        # Validate repo_path
+        # Validate repo_path and repo_commit
         self.repo_path = os.path.abspath(repo_path)
+        self.repo_commit = repo_commit.strip()
         if not os.path.exists(self.repo_path):
             raise ValueError(f"Repository path does not exist: {self.repo_path}")
         if not os.path.isdir(self.repo_path):
             raise ValueError(f"Repository path is not a directory: {self.repo_path}")
+        if not self.repo_commit or not isinstance(self.repo_commit, str):
+            raise ValueError("repo_commit must be provided as a non-empty string")
+        
         
         # Initialize index directory
         cache_dir = Path(cache_dir or Path.home() / ".codeminer")
@@ -61,7 +67,8 @@ class SearchRerankPipeline:
         
         # Create the index path based on repo and embedding model
         repo_name = os.path.basename(self.repo_path)
-        index_path = cache_dir / f"index_{repo_name}_{embedding_model.replace('/', '_')}"
+        commit_identifier = self.repo_commit[:12]
+        index_path = cache_dir / f"index_{repo_name}@{commit_identifier}_{embedding_model.replace('/', '_')}"
         
         # Prepare embedding kwargs
         embedding_kwargs = {}
@@ -131,7 +138,7 @@ class SearchRerankPipeline:
         logger.info(
             f"Pipeline initialized: "
             f"embed={embedding_provider}:{embedding_model}, "
-            f"repo={self.repo_path}, "
+            f"repo={self.repo_path}@{self.repo_commit}, "
             f"index_dir={index_path} with {len(self.vector_store.documents)} chunks, "
             f"rerank={rerank_provider.value}:{rerank_model}"
         )
