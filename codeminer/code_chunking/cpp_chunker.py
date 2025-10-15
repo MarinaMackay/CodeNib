@@ -11,9 +11,19 @@ from .base import BaseCodeChunker
 class CppCodeChunker(BaseCodeChunker):
     """Code chunker specifically for C++ files."""
 
-    def __init__(self, max_lines_per_chunk: Optional[int] = None):
+    def __init__(
+        self,
+        max_lines_per_chunk: Optional[int] = 200,
+        chunk_depth: int = 2,
+        enable_max_split: bool = True,
+    ):
         """Initialize the C++ code chunker."""
-        super().__init__("cpp", max_lines_per_chunk=max_lines_per_chunk)
+        super().__init__(
+            "cpp",
+            max_lines_per_chunk=max_lines_per_chunk,
+            chunk_depth=chunk_depth,
+            enable_max_split=enable_max_split,
+        )
 
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:
         """
@@ -37,9 +47,10 @@ class CppCodeChunker(BaseCodeChunker):
             name = self._extract_class_name(node)
             if name:
                 definitions.append((node, name, "class"))
-                # Also extract methods within this class
-                methods = self._find_class_methods(node)
-                definitions.extend(methods)
+                # Extract methods only if chunk_depth >= 2
+                if self.chunk_depth >= 2:
+                    methods = self._find_class_methods(node)
+                    definitions.extend(methods)
 
         # Sort by start line
         definitions.sort(key=lambda x: x[0].start_point[0])

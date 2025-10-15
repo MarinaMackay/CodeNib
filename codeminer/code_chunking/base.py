@@ -27,19 +27,32 @@ CodeChunk = namedtuple(
 class BaseCodeChunker(ABC):
     """Base class for language-specific code chunkers."""
 
-    def __init__(self, language: str, max_lines_per_chunk: Optional[int] = None):
+    def __init__(
+        self,
+        language: str,
+        max_lines_per_chunk: Optional[int] = 200,
+        chunk_depth: int = 2,
+        enable_max_split: bool = True,
+    ):
         """
         Initialize the code chunker for a specific language.
 
         Args:
             language: Programming language to parse ('python', 'cpp', 'java', etc.)
-            max_lines_per_chunk: Optional maximum number of lines per emitted chunk. When set,
+            max_lines_per_chunk: Maximum number of lines per emitted chunk. When set,
                 large logical chunks (header/function/class/epilogue) will be split into
                 multiple sequential chunks of at most this many lines. node_id and name remain
-                the same across the split pieces.
+                the same across the split pieces. Default: 200. Set to None to disable.
+            chunk_depth: Depth of AST traversal for chunking:
+                1 = Top-level only (classes and top-level functions, no methods)
+                2 = Method-level (classes, functions, and methods) [default]
+            enable_max_split: Whether to apply max_lines_per_chunk splitting. When False,
+                keeps logical units (functions/classes/methods) intact regardless of size.
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
+        self.chunk_depth = chunk_depth
+        self.enable_max_split = enable_max_split
         try:
             self.parser = get_parser(language)
             self.tree_sitter_language = get_language(language)
@@ -110,8 +123,12 @@ class BaseCodeChunker(ABC):
         Keeps node_id and name unchanged across pieces.
         Uses balanced splitting to distribute lines evenly across chunks.
         """
-        # If no max specified or chunk already within limit, return single piece
-        if not self.max_lines_per_chunk or self.max_lines_per_chunk <= 0:
+        # If max split is disabled, or no max specified, or chunk already within limit, return single piece
+        if (
+            not self.enable_max_split
+            or not self.max_lines_per_chunk
+            or self.max_lines_per_chunk <= 0
+        ):
             content = "\n".join(lines[start_line : end_line + 1])
             return [
                 CodeChunk(
