@@ -19,6 +19,9 @@ from codeminer.env.process_swebench_data import (
     process_swebench_instance,
 )
 
+# start the vLLM server in a separate terminal before running this script
+# python scripts/start_vllm_server.py --model Qwen/Qwen2.5-Coder-7B
+
 PIPELINE_DEFAULTS = {
     "embedding_model": "nomic-ai/CodeRankEmbed",
     "embedding_provider": "huggingface",

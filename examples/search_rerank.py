@@ -33,7 +33,7 @@ class SearchRerankPipeline:
         rerank_model: str = "nomic-ai/CodeRankLLM",
         rerank_provider: LLMProvider = LLMProvider.VLLM_OPENAI,
         rerank_temperature: float = 0.0,
-        rerank_max_tokens: int = 4096,
+        rerank_max_tokens: int = 2048,
         # Repo processing config
         languages: Optional[List[str]] = ['python'],
         max_lines_per_chunk: int = 100,
@@ -119,7 +119,9 @@ class SearchRerankPipeline:
             max_tokens=rerank_max_tokens,
             temperature=rerank_temperature,
             config_data={
-                "VLLM_TRUST_REMOTE_CODE": "true"
+                "VLLM_TRUST_REMOTE_CODE": "true",
+                "VLLM_API_BASE_URL": "http://localhost:9000/v1",
+                "VLLM_API_KEY": "token-abc123",
             }
         )
         
