@@ -1,6 +1,35 @@
 """Helper functions for the calculator."""
 
+import functools
+import time
 from typing import Union
+
+
+def timer(func):
+    """Decorator to measure function execution time."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        print(f"{func.__name__} took {end - start:.4f} seconds")
+        return result
+
+    return wrapper
+
+
+def validate_positive(func):
+    """Decorator to ensure arguments are positive numbers."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        for arg in args:
+            if isinstance(arg, (int, float)) and arg < 0:
+                raise ValueError(f"Arguments must be positive, got {arg}")
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 def validate_input(value: Union[int, float]) -> bool:
@@ -59,6 +88,8 @@ def is_even(number: int) -> bool:
     return number % 2 == 0
 
 
+@timer
+@validate_positive
 def factorial(n: int) -> int:
     """Calculate factorial of a number.
 
@@ -82,3 +113,35 @@ def factorial(n: int) -> int:
         result *= i
 
     return result
+
+
+async def async_calculate(x: int, y: int) -> int:
+    """Async function to calculate sum.
+
+    Args:
+        x: First number
+        y: Second number
+
+    Returns:
+        Sum of x and y
+    """
+    import asyncio
+
+    await asyncio.sleep(0.1)
+    return x + y
+
+
+@timer
+async def async_factorial(n: int) -> int:
+    """Async decorated factorial calculation.
+
+    Args:
+        n: Non-negative integer
+
+    Returns:
+        Factorial of n
+    """
+    import asyncio
+
+    await asyncio.sleep(0.1)
+    return factorial(n)

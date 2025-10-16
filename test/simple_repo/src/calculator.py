@@ -1,8 +1,20 @@
 """Calculator module with basic arithmetic operations."""
 
+import functools
 from typing import Union
 
 from .utils.helpers import validate_input
+
+
+def deprecated(func):
+    """Decorator to mark a method as deprecated."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        print(f"Warning: {func.__name__} is deprecated")
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 class Calculator:
@@ -116,3 +128,53 @@ class Calculator:
     def clear_history(self):
         """Clear calculation history."""
         self.history.clear()
+
+    @property
+    def last_result(self) -> Union[int, float, None]:
+        """Get the last calculation result.
+
+        Returns:
+            Last result or None if no history
+        """
+        if not self.history:
+            return None
+        return self.history[-1]["result"]
+
+    @staticmethod
+    def is_valid_number(value) -> bool:
+        """Static method to validate number.
+
+        Args:
+            value: Value to check
+
+        Returns:
+            True if valid number
+        """
+        return isinstance(value, (int, float))
+
+    @classmethod
+    def from_history(cls, history: list):
+        """Create calculator from history.
+
+        Args:
+            history: Previous calculation history
+
+        Returns:
+            Calculator instance with history
+        """
+        calc = cls()
+        calc.history = history.copy()
+        return calc
+
+    @deprecated
+    def old_add(self, a: Union[int, float], b: Union[int, float]) -> Union[int, float]:
+        """Deprecated addition method.
+
+        Args:
+            a: First number
+            b: Second number
+
+        Returns:
+            Sum of a and b
+        """
+        return a + b
