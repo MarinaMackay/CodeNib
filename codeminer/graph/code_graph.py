@@ -1,4 +1,4 @@
-import json
+import pickle
 
 import igraph as ig
 import matplotlib.pyplot as plt
@@ -256,36 +256,45 @@ class CodeGraph:
 
     def save_graph(self, output_path):
         """
-        Save the graph to a JSON file.
+        Save the graph to a pickle file for fast serialization.
 
         Args:
-            output_path: Path to save the JSON file
+            output_path: Path to save the pickle file
         """
-        # Convert graph to JSON
-        data = {"nodes": [], "edges": []}
+        # Prepare data for pickling
+        data = {
+            "project_root": str(self.project_root) if self.project_root else None,
+            "graph": self.graph,  # igraph objects are picklable
+            "symbol_ranges": self.symbol_ranges,
+            "name_to_vertex": self.name_to_vertex,
+        }
 
-        # Add nodes
-        for vertex in self.graph.vs:
-            node_data = {"id": vertex["name"]}
-            # Add all other attributes
-            for key in vertex.attributes():
-                if key != "name":  # "id" is already set from "name"
-                    node_data[key] = vertex[key]
-            data["nodes"].append(node_data)
+        with open(output_path, "wb") as f:
+            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-        # Add edges
-        for edge in self.graph.es:
-            source_name = self.graph.vs[edge.source]["name"]
-            target_name = self.graph.vs[edge.target]["name"]
-            edge_data = {
-                "source": source_name,
-                "target": target_name,
-                "type": edge["type"] if "type" in edge.attributes() else None,
-            }
-            data["edges"].append(edge_data)
+    @classmethod
+    def load_graph(cls, input_path):
+        """
+        Load a graph from a pickle file.
 
-        with open(output_path, "w") as f:
-            json.dump(data, f, indent=2)
+        Args:
+            input_path: Path to the pickle file
+
+        Returns:
+            CodeGraph: Loaded graph instance
+        """
+        with open(input_path, "rb") as f:
+            data = pickle.load(f)
+
+        # Create new CodeGraph instance
+        graph_instance = cls(project_root=data.get("project_root"))
+
+        # Restore the igraph object and internal state
+        graph_instance.graph = data["graph"]
+        graph_instance.symbol_ranges = data.get("symbol_ranges", {})
+        graph_instance.name_to_vertex = data.get("name_to_vertex", {})
+
+        return graph_instance
 
     def get_graph(self):
         """
