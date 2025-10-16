@@ -87,7 +87,9 @@ class CodeChunker:
         self,
         language: str = "python",
         repo_config: Optional[RepoChunkingConfig] = None,
-        max_lines_per_chunk: Optional[int] = None,
+        max_lines_per_chunk: Optional[int] = 200,
+        chunk_depth: int = 2,
+        enable_max_split: bool = True,
     ):
         """
         Initialize the code chunker for a specific language.
@@ -95,12 +97,19 @@ class CodeChunker:
         Args:
             language: Programming language to parse ('python', 'cpp', 'java', etc.)
             repo_config: Configuration for repository-level chunking. Uses defaults if None.
-            max_lines_per_chunk: Optional maximum number of lines per emitted chunk
+            max_lines_per_chunk: Maximum number of lines per emitted chunk. Default: 200
+            chunk_depth: Depth of AST traversal (1=top-level only, 2=include methods)
+            enable_max_split: Whether to apply max_lines_per_chunk splitting
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
+        self.chunk_depth = chunk_depth
+        self.enable_max_split = enable_max_split
         self._chunker = create_chunker(
-            language, max_lines_per_chunk=self.max_lines_per_chunk
+            language,
+            max_lines_per_chunk=self.max_lines_per_chunk,
+            chunk_depth=self.chunk_depth,
+            enable_max_split=self.enable_max_split,
         )
         self.repo_config = repo_config or RepoChunkingConfig()
         self._chunkers = {language: self._chunker}  # Cache chunkers by language
@@ -368,7 +377,10 @@ class CodeChunker:
         # Get or create chunker for this language
         if language not in self._chunkers:
             self._chunkers[language] = create_chunker(
-                language, max_lines_per_chunk=self.max_lines_per_chunk
+                language,
+                max_lines_per_chunk=self.max_lines_per_chunk,
+                chunk_depth=self.chunk_depth,
+                enable_max_split=self.enable_max_split,
             )
 
         chunker = self._chunkers[language]
