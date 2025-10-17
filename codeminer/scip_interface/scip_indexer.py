@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import os
 import subprocess
 import time
@@ -35,6 +34,7 @@ class SCIPIndexer:
         # Set paths for index files in the output directory
         self.index_file = self.output_dir / "index.scip"
         self.decoded_file = self.output_dir / "index.decoded"
+        self.graph_file = self.output_dir / "graph.pkl"
         self.exclude_patterns = exclude_patterns if exclude_patterns else []
 
         # Path to the conda environment file
@@ -298,9 +298,7 @@ class SCIPIndexer:
         project_name: Optional[str] = None,
         target_dir: Optional[str] = None,
         output_file: Optional[str] = None,
-        force: bool = False,
-        skip_index: bool = False,  # Kept for backward compatibility
-        skip_decode: bool = False,  # Kept for backward compatibility
+        skip_level: Optional[str] = None,
     ) -> Union[CodeGraph, None]:
         """
         Run the complete SCIP indexing pipeline: generate, decode, and process
@@ -308,91 +306,81 @@ class SCIPIndexer:
         Args:
             project_name: Project name to use in the index
             target_dir: Optional subdirectory to target for indexing
-            output_file: Path to write the processed data to
-            force: Force regeneration of index and decoded files even if they exist
-            skip_index: Skip index generation, use existing index.scip (deprecated, kept for compatibility)
-            skip_decode: Skip decoding, use existing index.decoded (deprecated, kept for compatibility)
+            output_file: Path to write the processed data to (if None, uses self.graph_file)
+            skip_level: Cache/skip level - 'graph', 'decode', 'index', or None
+                - 'graph': Check if graph.pkl exists, load and return it if found
+                - 'decode': Check if index.decoded exists, skip to processing if found
+                - 'index': Check if index.scip exists, skip to decoding if found
+                - None: Run full pipeline from scratch (default)
 
         Returns:
             CodeGraph: Processed graph object
         """
-        # Determine whether to skip index generation
-        should_generate_index = force or not self.index_file.exists()
-        if skip_index:  # Honor legacy parameter if provided
+        # Use default graph file if output_file not specified
+        if output_file is None:
+            output_file = str(self.graph_file)
+
+        # Check graph cache if skip_level is 'graph'
+        if skip_level == "graph" and self.graph_file.exists():
+            logger.info(f"Loading cached graph from {self.graph_file}")
+            try:
+                graph = CodeGraph.load_graph(str(self.graph_file))
+                logger.info(
+                    f"✅ Successfully loaded cached graph ({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
+                )
+                return graph
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load cached graph: {e}. Proceeding with pipeline..."
+                )
+
+        # Determine what needs to be generated based on what exists
+        # Priority: if decoded exists, we don't need index; if graph exists (handled above), we don't need anything
+
+        # Check if we can skip to processing (decoded file exists)
+        if skip_level in ("graph", "decode") and self.decoded_file.exists():
+            logger.info(
+                f"Found existing decoded file at {self.decoded_file}, skipping index generation and decode"
+            )
             should_generate_index = False
+            should_decode_index = False
+        # Check if we can skip to decoding (index file exists)
+        elif skip_level in ("graph", "decode", "index") and self.index_file.exists():
+            logger.info(
+                f"Found existing index at {self.index_file}, skipping generation"
+            )
+            should_generate_index = False
+            should_decode_index = True
+        # Otherwise, run from scratch
+        else:
+            should_generate_index = True
+            should_decode_index = True
 
         # Generate the index if needed
         if should_generate_index:
-            logger.info(f"Generating SCIP index (force={force})")
+            logger.info(f"Generating SCIP index")
             if not self.generate_index(
                 cwd=self.project_root, project_name=project_name, target_dir=target_dir
             ):
                 return None
 
-        # Determine whether to skip decode step
-        should_decode_index = force or not self.decoded_file.exists()
-        if skip_decode:  # Honor legacy parameter if provided
-            should_decode_index = False
-
         # Decode the index if needed
-        if should_decode_index and self.index_file.exists():
-            logger.info(f"Decoding SCIP index (force={force})")
+        if should_decode_index:
+            if not self.index_file.exists():
+                logger.error(
+                    f"Index file not found at {self.index_file}, cannot decode"
+                )
+                return None
+            logger.info(f"Decoding SCIP index")
             if not self.decode_index():
                 return None
 
-        # Process the index
-        return self.process_index(output_file)
+        # Process the index and save graph
+        graph = self.process_index(output_file)
 
+        if graph:
+            logger.info(
+                f"✅ Graph created successfully ({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
+            )
 
-# Command-line interface
-def run_cli():
-    """CLI entry point for the SCIP indexer"""
-    parser = argparse.ArgumentParser(description="SCIP Index Interface")
-    parser.add_argument(
-        "--project-dir", help="Path to the project root directory", default="."
-    )
-    parser.add_argument(
-        "--project-name", help="Project name for the index", default=None
-    )
-    parser.add_argument(
-        "--target-dir", help="Subdirectory to target for indexing", default=None
-    )
-    parser.add_argument(
-        "--output",
-        help="Path to output processed index file",
-        default="scip_graph.json",
-    )
-    parser.add_argument(
-        "--output-dir",
-        help="Directory to store index files (default: /tmp/<project_name>)",
-        default=None,
-    )
-    parser.add_argument(
-        "--skip-index",
-        action="store_true",
-        help="Skip index generation, use existing index.scip",
-    )
-    parser.add_argument(
-        "--skip-decode",
-        action="store_true",
-        help="Skip decoding, use existing index.decoded",
-    )
-
-    args = parser.parse_args()
-
-    indexer = SCIPIndexer(args.project_dir, args.output_dir)
-    result = indexer.run_pipeline(
-        project_name=args.project_name,
-        target_dir=args.target_dir,
-        output_file=args.output,
-        skip_index=args.skip_index,
-        skip_decode=args.skip_decode,
-    )
-
-    if result:
-        print("SCIP Index Processing Complete:")
-        for key, value in result.items():
-            print(f"  {key}: {value}")
-        return 0
-    else:
-        return 1
+        return graph
