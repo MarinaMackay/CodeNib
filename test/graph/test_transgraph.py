@@ -24,7 +24,7 @@ def test_transgraph_simple():
     """Test traverse functions with a simple test repository."""
 
     # Use the simple test repository
-    repo_path = Path(__file__).parent / "simple_repo"
+    repo_path = Path(__file__).parent.parent / "simple_repo"
     output_path = Path.home() / ".codeminer" / "simple_repo_test"
 
     print(f"Testing with repository: {repo_path}")

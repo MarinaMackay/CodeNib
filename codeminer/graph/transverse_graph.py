@@ -310,7 +310,9 @@ def traverse_tree_structure(
             return
         traversed_nodes.add(node)
 
-        neigh_ids, etypes, edirs = [], [], []
+        # Separate containment and reference edges
+        contain_neighbors = []  # (neighbor_id, etype, edir)
+        reference_neighbors = []  # (neighbor_id, etype, edir)
 
         def is_ntype_not_valid(_ntype):
             return node_type_filter is not None and _ntype not in node_type_filter
@@ -350,10 +352,16 @@ def traverse_tree_structure(
                         continue
                     if not is_test_file(neighbor):
                         if (node, etype, neighbor) not in traversed_edges:
-                            neigh_ids.append(neighbor)
-                            etypes.append(etype)
-                            edirs.append("downstream")
                             traversed_edges.add((node, etype, neighbor))
+                            # Separate by edge type: "contain" vs others
+                            if etype == "contain":
+                                contain_neighbors.append(
+                                    (neighbor, etype, "downstream")
+                                )
+                            else:
+                                reference_neighbors.append(
+                                    (neighbor, etype, "downstream")
+                                )
 
         # Upstream traversal
         if "upstream" == edirection or (node == root and direction == "both"):
@@ -382,13 +390,20 @@ def traverse_tree_structure(
                         continue
                     if not is_test_file(neighbor):
                         if (neighbor, etype, node) not in traversed_edges:
-                            neigh_ids.append(neighbor)
-                            etypes.append(etype)
-                            edirs.append("upstream")
                             traversed_edges.add((neighbor, etype, node))
+                            # Separate by edge type: "contain" vs others
+                            if etype == "contain":
+                                contain_neighbors.append((neighbor, etype, "upstream"))
+                            else:
+                                reference_neighbors.append(
+                                    (neighbor, etype, "upstream")
+                                )
 
-        for i, (neigh_id, etype, edir) in enumerate(zip(neigh_ids, etypes, edirs)):
-            is_last_child = i == len(neigh_ids) - 1
+        # Combine: containment first, then references
+        all_neighbors = contain_neighbors + reference_neighbors
+
+        for i, (neigh_id, etype, edir) in enumerate(all_neighbors):
+            is_last_child = i == len(all_neighbors) - 1
             if edir == "upstream":
                 etype += "-by"
             traverse(neigh_id, new_prefix, is_last_child, level + 1, etype, edir)
