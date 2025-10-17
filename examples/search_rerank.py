@@ -1,155 +1,237 @@
-import os
-from pathlib import Path
-from typing import List, Optional
+#!/usr/bin/env python3
+"""
+This script demonstrates the usage of SearchRerankPipeline on SWE-bench or LocBench datasets.
 
-from codeminer.agent.rerank_agent import RerankAgent
-from codeminer.code_chunker import CodeChunker
-from codeminer.embedding import CodeVectorStore
-from codeminer.llm.llm_config import LLMConfig, LLMProvider
+Usage:
+    # Run on SWE-bench with default settings
+    python examples/search_rerank.py --dataset swebench_lite
+    
+    # Run on LocBench with custom filter
+    python examples/search_rerank.py --dataset locbench_v1 --filter-instance "^(joselc__life-sim-first-try-2)$"
+    
+    # Run on SWE-bench with custom embedding model
+    python examples/search_rerank.py --dataset swebench_lite --embedding-model nomic-ai/CodeRankEmbed --embedding-provider huggingface
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+from codeminer.model import SearchRerankPipeline
+from codeminer.env.process_locbench_data import (
+    load_filter_locbench_dataset,
+    process_locbench_instance,
+)
+from codeminer.env.process_swebench_data import (
+    load_filter_swebench_dataset,
+    process_swebench_instance,
+)
+from codeminer.llm.llm_config import LLMProvider
 from codeminer.log_utils import get_logger
-from codeminer.types import NodeWithScore
 
 logger = get_logger(__name__)
 
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
-class SearchRerankPipeline:
-    """
-    Pipeline for Search + Rerank Pipeline.
 
-    1. __init__: Initialize with embedding and rerank model configs
-    2. query: Query the vector store and rerank the results
-    """
+DATASET_CONFIGS = {
+    "swebench_lite": {
+        "dataset": "princeton-nlp/SWE-bench_Lite",
+        "split": "test",
+        "loader": load_filter_swebench_dataset,
+        "processor": process_swebench_instance,
+    },
+    "locbench_v1": {
+        "dataset": "czlll/Loc-Bench_V1",
+        "split": "test",
+        "loader": load_filter_locbench_dataset,
+        "processor": process_locbench_instance,
+    },
+}
 
-    def __init__(
-        self,
-        # Repo config
-        repo_path: str,
-        repo_commit: str,
-        # Embedding config
-        embedding_model: str = "text-embedding-ada-002",
-        embedding_provider: str = "openai",
-        embedding_dimension: int = 1536,
-        embedding_model_kwargs: Optional[dict] = None,
-        # Rerank config
-        rerank_model: str = "nomic-ai/CodeRankLLM",
-        rerank_provider: LLMProvider = LLMProvider.VLLM_OPENAI,
-        rerank_temperature: float = 0.0,
-        rerank_max_tokens: int = 2048,
-        # Repo processing config
-        languages: Optional[List[str]] = ['python'],
-        max_lines_per_chunk: int = 100,
-        # Cache config
-        cache_dir: Optional[str] = None,
-    ):
-        """
-        Initialize pipeline and build vector database.
-        """
-        # Attributes
-        self.repo_path = None
-        self.repo_commit = None
-        self.vector_store = None
-        self.rerank_agent = None
-        
-        # Validate repo_path and repo_commit
-        self.repo_path = os.path.abspath(repo_path)
-        self.repo_commit = repo_commit.strip()
-        if not os.path.exists(self.repo_path):
-            raise ValueError(f"Repository path does not exist: {self.repo_path}")
-        if not os.path.isdir(self.repo_path):
-            raise ValueError(f"Repository path is not a directory: {self.repo_path}")
-        if not self.repo_commit or not isinstance(self.repo_commit, str):
-            raise ValueError("repo_commit must be provided as a non-empty string")
-        
-        
-        # Initialize index directory
-        cache_dir = Path(cache_dir or Path.home() / ".codeminer")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create the index path based on repo and embedding model
-        repo_name = os.path.basename(self.repo_path)
-        commit_identifier = self.repo_commit[:12]
-        index_path = cache_dir / f"index_{repo_name}@{commit_identifier}_{embedding_model.replace('/', '_')}"
-        
-        # Prepare embedding kwargs
-        embedding_kwargs = {}
-        if embedding_model_kwargs:
-            # Extract specific kwargs for different purposes
-            if "model_kwargs" in embedding_model_kwargs:
-                embedding_kwargs["model_kwargs"] = embedding_model_kwargs["model_kwargs"]
-            if "encode_kwargs" in embedding_model_kwargs:
-                embedding_kwargs["encode_kwargs"] = embedding_model_kwargs["encode_kwargs"]
-            if "trust_remote_code" in embedding_model_kwargs:
-                if "model_kwargs" not in embedding_kwargs:
-                    embedding_kwargs["model_kwargs"] = {}
-                embedding_kwargs["model_kwargs"]["trust_remote_code"] = embedding_model_kwargs["trust_remote_code"]
 
-        self.vector_store = CodeVectorStore(
-            embedding_model=embedding_model,
-            embedding_provider=embedding_provider,
-            dimension=embedding_dimension,
-            store_path=str(index_path),
-            **embedding_kwargs,
-        )
-
-        # Check if cache exists
-        cache_exists = (index_path / "config.json").exists()
-        
-        if cache_exists:
-            logger.info(f"Loading existing vector store from cache: {index_path}")
-            try:
-                self.vector_store.load(str(index_path))
-            except Exception as e:
-                logger.warning(f"Failed to load cache: {e}. Rebuilding index...")
-                cache_exists = False
-        
-        if not cache_exists:
-            code_chunker = CodeChunker(
-                language=languages[0],
-                max_lines_per_chunk=max_lines_per_chunk,
-            )
-            chunks = code_chunker.chunk_repository(
-                repo_path=self.repo_path,
-                languages=languages,
-            )
-            if not chunks:
-                raise ValueError("No code chunks generated from repository")
-
-            chunks_for_indexing = [chunk._asdict() for chunk in chunks]
-            self.vector_store.add_code_chunks(chunks_for_indexing)
-            self.vector_store.save(str(index_path))
-            logger.info(f"Built and saved vector store to cache: {index_path}")
-        
-        # Create LLM config for rerank model
-        llm_config = LLMConfig(
-            model_name=rerank_model,
-            provider=rerank_provider,
-            max_tokens=rerank_max_tokens,
-            temperature=rerank_temperature,
-            config_data={
-                "VLLM_TRUST_REMOTE_CODE": "true",
-                "VLLM_API_BASE_URL": "http://localhost:9000/v1",
-                "VLLM_API_KEY": "token-abc123",
-            }
-        )
-        
-        # Initialize rerank agent
-        self.rerank_agent = RerankAgent(llm_config=llm_config)
-
-        logger.info(
-            f"Pipeline initialized: "
-            f"embed={embedding_provider}:{embedding_model}, "
-            f"repo={self.repo_path}@{self.repo_commit}, "
-            f"index_dir={index_path} with {len(self.vector_store.documents)} chunks, "
-            f"rerank={rerank_provider.value}:{rerank_model}"
-        )
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Run Search + Rerank Pipeline on benchmark datasets",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
     
-    def query(self, query: str, top_k: int = 10) -> List[NodeWithScore]:
-        """
-        Query the vector store and rerank the results.
-        """
-        # Search the vector store
-        nodes = self.vector_store.search_with_content(query=query, top_k=top_k)
-        # Rerank the nodes
-        ranked_results = self.rerank_agent.rerank_nodes(query, nodes, top_k=top_k)
+    # Dataset configuration
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        required=True,
+        choices=["swebench_lite", "locbench_v1"],
+        help="Type of dataset to run on",
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="test",
+        help="Dataset split to use",
+    )
+    parser.add_argument(
+        "--filter-instance",
+        type=str,
+        default=None,
+        help="Regex pattern to filter instances (None processes all instances)",
+    )
+    
+    # Embedding configuration
+    parser.add_argument(
+        "--embedding-model",
+        type=str,
+        default="nomic-ai/CodeRankEmbed",
+        help="Embedding model name for dense retrieval",
+    )
+    parser.add_argument(
+        "--embedding-provider",
+        type=str,
+        default="huggingface",
+        choices=["openai", "huggingface"],
+        help="Embedding provider",
+    )
+    parser.add_argument(
+        "--embedding-dimension",
+        type=int,
+        default=768,
+        help="Embedding dimension",
+    )
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        default=True,
+        help="Trust remote code for embedding model",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Batch size for embedding encoding",
+    )
+    
+    # Rerank configuration
+    parser.add_argument(
+        "--rerank-model",
+        type=str,
+        default="Qwen/Qwen2.5-Coder-7B",
+        help="Rerank model name",
+    )
+    parser.add_argument(
+        "--rerank-provider",
+        type=str,
+        default="vllm_openai",
+        choices=[pv.value for pv in LLMProvider],
+        help="Rerank provider",
+    )
+    
+    # Repository processing configuration
+    parser.add_argument(
+        "--languages",
+        type=str,
+        nargs="+",
+        default=["python"],
+        help="Programming languages to process",
+    )
+    parser.add_argument(
+        "--max-lines-per-chunk",
+        type=int,
+        default=100,
+        help="Maximum lines per code chunk",
+    )
+    
+    # Search configuration
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=5,
+        help="Number of top results to return",
+    )
+    
+    # Cache configuration
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default=Path.home() / ".codeminer",
+        help="Cache directory for vector store (default: ~/.codeminer)",
+    )
+    
+    return parser.parse_args()
 
-        return ranked_results
+
+def run_pipeline(args):
+    """Run the search + rerank pipeline on the specified dataset."""
+    
+    # Get dataset configuration
+    dataset = args.dataset
+    dataset_config = DATASET_CONFIGS[dataset]
+    
+    # Prepare dataset args
+    dataset_args = argparse.Namespace(
+        dataset=dataset_config["dataset"],
+        split=args.split,
+        filter_instance=args.filter_instance,
+    )
+    
+    # Load dataset
+    dataset_instances = dataset_config["loader"](args=dataset_args)
+    
+    if len(dataset_instances) == 0:
+        raise ValueError(f"No instances found in {dataset} dataset")
+    
+    logger.info(f"Loaded {len(dataset_instances)} instance(s)")
+    
+    # Process each instance
+    for _, instance in enumerate(dataset_instances):
+        # Process instance to get repo path
+        repo_path = dataset_config["processor"](instance)
+        
+        # Initialize pipeline
+        embedding_model_kwargs = {
+            "trust_remote_code": args.trust_remote_code,
+            "encode_kwargs": {
+                "batch_size": args.batch_size,
+            },
+        }
+        
+        pipeline = SearchRerankPipeline(
+            repo_path=repo_path,
+            embedding_model=args.embedding_model,
+            embedding_provider=args.embedding_provider,
+            embedding_dimension=args.embedding_dimension,
+            embedding_model_kwargs=embedding_model_kwargs,
+            rerank_model=args.rerank_model,
+            rerank_provider=LLMProvider(args.rerank_provider),
+            languages=args.languages,
+            max_lines_per_chunk=args.max_lines_per_chunk,
+            cache_dir=args.cache_dir,
+        )
+        
+        # Query the pipeline
+        query = instance["problem_statement"]
+        results = pipeline.query(query=query, top_k=args.top_k)
+        
+        for i, node in enumerate(results):
+            #TODO: save the results to a file
+            logger.info(f"Rank {i + 1} (Score: {node.score:.4f})")
+            logger.info(f"  Node Name: {node.node_name}")
+            logger.info(f"  Node Type: {node.type}")
+            logger.info(f"  File: {node.file}")
+            logger.info(f"  Lines: {node.start_line}-{node.end_line}")
+
+
+def main():
+    """Main entry point."""
+    args = parse_args()
+    logger.info(f"Dataset type: {args.dataset}")
+    logger.info(f"Embedding model: {args.embedding_model}")
+    logger.info(f"Rerank model: {args.rerank_model}")
+    logger.info(f"Top-K: {args.top_k}")
+    
+    run_pipeline(args)
+
+
+if __name__ == "__main__":
+    main()
