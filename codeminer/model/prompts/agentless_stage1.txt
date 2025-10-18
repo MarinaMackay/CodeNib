@@ -1,0 +1,22 @@
+Do NOT output any thinking process or explanation. Output ONLY the final answer in the requested format.
+Please look through the following GitHub problem description and Repository structure and provide a list of files that one would need to edit to fix the problem.
+
+### GitHub Problem Description ###
+{problem_statement}
+
+###
+
+### Repository Structure ###
+{structure}
+
+###
+
+Please analyze the structure above and return the node IDs (full paths) of the files that need to be edited.
+- Return at most {top_n} files
+- Each file should be identified by its exact node ID as shown in the Repository Structure (e.g., "src/main.py", "tests/test_main.py")
+- Order the files from most to least important
+
+Return your response as a JSON object with a "files" key containing a list of file paths.
+
+Example format:
+{{"files": ["src/models/base.py", "src/utils/helper.py", "tests/test_models.py"]}}
