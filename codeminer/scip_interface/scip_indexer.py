@@ -307,10 +307,10 @@ class SCIPIndexer:
             project_name: Project name to use in the index
             target_dir: Optional subdirectory to target for indexing
             output_file: Path to write the processed data to (if None, uses self.graph_file)
-            skip_level: Cache/skip level - 'graph', 'decode', 'index', or None
+            skip_level: Cache/skip level - 'graph', 'decode', 'raw', or None
                 - 'graph': Check if graph.pkl exists, load and return it if found
                 - 'decode': Check if index.decoded exists, skip to processing if found
-                - 'index': Check if index.scip exists, skip to decoding if found
+                - 'raw': Check if index.scip exists, skip to decoding if found
                 - None: Run full pipeline from scratch (default)
 
         Returns:
@@ -344,10 +344,10 @@ class SCIPIndexer:
             )
             should_generate_index = False
             should_decode_index = False
-        # Check if we can skip to decoding (index file exists)
-        elif skip_level in ("graph", "decode", "index") and self.index_file.exists():
+        # Check if we can skip to decoding (raw index file exists)
+        elif skip_level in ("graph", "decode", "raw") and self.index_file.exists():
             logger.info(
-                f"Found existing index at {self.index_file}, skipping generation"
+                f"Found existing raw index at {self.index_file}, skipping generation"
             )
             should_generate_index = False
             should_decode_index = True
@@ -384,3 +384,57 @@ class SCIPIndexer:
             )
 
         return graph
+
+    def clear_cache(self, level: str = "all") -> bool:
+        """
+        Clear cache files at different levels
+
+        Args:
+            level: Cache level to clear
+                - 'graph': Keep only graph.pkl, remove index.decoded and index.scip
+                - 'decode': Keep only index.decoded, remove graph.pkl and index.scip
+                - 'raw': Keep only index.scip, remove graph.pkl and index.decoded
+                - 'all': Remove all cache files (default)
+
+        Returns:
+            bool: True if cache clearing was successful, False otherwise
+        """
+        try:
+            files_to_remove = []
+
+            if level == "graph":
+                # Keep graph.pkl, remove everything else
+                files_to_remove = [self.index_file, self.decoded_file]
+                logger.info("Clearing cache: keeping graph.pkl only")
+            elif level == "decode":
+                # Keep index.decoded, remove everything else
+                files_to_remove = [self.index_file, self.graph_file]
+                logger.info("Clearing cache: keeping index.decoded only")
+            elif level == "raw":
+                # Keep index.scip, remove everything else
+                files_to_remove = [self.decoded_file, self.graph_file]
+                logger.info("Clearing cache: keeping index.scip only")
+            elif level == "all":
+                # Remove all cache files
+                files_to_remove = [self.index_file, self.decoded_file, self.graph_file]
+                logger.info("Clearing all cache files")
+            else:
+                logger.error(
+                    f"Invalid cache level: {level}. Must be 'graph', 'decode', 'raw', or 'all'"
+                )
+                return False
+
+            # Remove the specified files
+            for file_path in files_to_remove:
+                if file_path.exists():
+                    file_path.unlink()
+                    logger.info(f"Removed {file_path}")
+                else:
+                    logger.debug(f"File does not exist, skipping: {file_path}")
+
+            logger.info("✅ Cache cleared successfully")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error clearing cache: {e}")
+            return False
