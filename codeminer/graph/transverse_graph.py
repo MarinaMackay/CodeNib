@@ -90,6 +90,7 @@ class RepoEntitySearcher:
             formatted_data = {
                 "node_id": nid,
                 "type": vertex["type"] if "type" in vertex.attributes() else "unknown",
+                "file": vertex["file"] if "file" in vertex.attributes() else None,
             }
 
             # Get code content from the CodeGraph

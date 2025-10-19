@@ -1,0 +1,19 @@
+Do NOT output any thinking process or explanation. Output ONLY the final answer in the requested format.
+Please review the following GitHub problem description and file skeletons, and identify the symbols (classes, functions, methods) that need changes to fix the issue.
+
+Every symbol in the skeleton includes its canonical `node_id` in the format `file.py:SymbolName`. Always reply with those exact `node_id` values (do not invent new ones or rename them).
+
+### GitHub Problem Description ###
+{problem_statement}
+
+###
+
+### File Skeletons ###
+{file_structures}
+
+###
+
+Return your response as a JSON object with a "nodes" key containing a list of symbol node IDs that should be edited.
+
+Example format:
+{{"nodes": ["path/to/file1.py:MyClass", "path/to/file1.py:MyClass.my_method()", "path/to/file2.py:helper_function()"]}}

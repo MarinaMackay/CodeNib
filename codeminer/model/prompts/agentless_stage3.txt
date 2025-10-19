@@ -1,0 +1,19 @@
+Do NOT output any thinking process or explanation. Output ONLY the final answer in the requested format.
+Please review the following GitHub problem description and code segments for the candidate symbols. Each segment header lists the canonical `node_id`.
+
+Select only from the provided `node_id` values.
+
+### GitHub Problem Description ###
+{problem_statement}
+
+###
+
+### Code Segments ###
+{code_segments}
+
+###
+
+Return your response as a JSON object with a "refined_nodes" key containing a list of node IDs that truly require changes.
+
+Example format:
+{{"refined_nodes": ["path/to/file1.py:MyClass", "path/to/file1.py:MyClass.my_method()", "path/to/file2.py:helper_function()"]}}

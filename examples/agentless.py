@@ -1,28 +1,21 @@
 #!/usr/bin/env python3
 """
-This script demonstrates the usage of SearchRerankPipeline on SWE-bench or LocBench datasets.
-Before running the pipeline, start a vLLM server for the rerank model:
+This script demonstrates the usage of AgentlessPipeline on SWE-bench or LocBench datasets.
+Before running the pipeline, start a vLLM server for the llm model:
 
 ```bash
 python scripts/start_vllm_server.py --model Qwen/Qwen2.5-Coder-7B
 ```
 
-Usage:
-    # Run on SWE-bench with default settings
-    python examples/search_rerank.py --dataset swebench_lite
-    
-    # Run on LocBench with custom filter
-    python examples/search_rerank.py --dataset locbench_v1 --filter-instance "^(joselc__life-sim-first-try-2)$"
-    
-    # Run on SWE-bench with custom embedding model
-    python examples/search_rerank.py --dataset swebench_lite --embedding-model nomic-ai/CodeRankEmbed --embedding-provider huggingface
+Usage example:
+    python examples/agentless.py --dataset swebench_lite  --filter-instance "^(psf__requests-1963)$" --llm-model "Qwen/Qwen3-32B" --llm-provider "vllm_openai" 
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-from codeminer.model import SearchRerankPipeline
+from codeminer.model import AgentlessPipeline
 from codeminer.env.process_locbench_data import (
     load_filter_locbench_dataset,
     process_locbench_instance,
@@ -31,8 +24,8 @@ from codeminer.env.process_swebench_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
-from codeminer.llm.llm_config import LLMProvider
 from codeminer.log_utils import get_logger
+from codeminer.llm.llm_config import LLMProvider
 
 logger = get_logger(__name__)
 
@@ -59,7 +52,7 @@ DATASET_CONFIGS = {
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Run Search + Rerank Pipeline on benchmark datasets",
+        description="Run Agentless Pipeline on benchmark datasets",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     
@@ -84,52 +77,39 @@ def parse_args():
         help="Regex pattern to filter instances (None processes all instances)",
     )
     
-    # Embedding configuration
+    # LLM configuration
     parser.add_argument(
-        "--embedding-model",
+        "--llm-model",
         type=str,
-        default="nomic-ai/CodeRankEmbed",
-        help="Embedding model name for dense retrieval",
+        default="gpt-4o",
+        help="LLM model name for localization",
     )
     parser.add_argument(
-        "--embedding-provider",
+        "--llm-provider",
         type=str,
-        default="huggingface",
-        choices=["openai", "huggingface"],
-        help="Embedding provider",
+        default="openai",
+        choices=[e.value for e in LLMProvider],
+        help="LLM provider",
     )
     parser.add_argument(
-        "--embedding-dimension",
+        "--llm-temperature",
+        type=float,
+        default=0.0,
+        help="Temperature for LLM sampling",
+    )
+    parser.add_argument(
+        "--llm-max-tokens",
         type=int,
-        default=768,
-        help="Embedding dimension",
-    )
-    parser.add_argument(
-        "--trust-remote-code",
-        action="store_true",
-        default=True,
-        help="Trust remote code for embedding model",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=8,
-        help="Batch size for embedding encoding",
+        default=2048,
+        help="Max tokens for LLM response",
     )
     
-    # Rerank configuration
+    # Localization configuration
     parser.add_argument(
-        "--rerank-model",
-        type=str,
-        default="Qwen/Qwen2.5-Coder-7B",
-        help="Rerank model name",
-    )
-    parser.add_argument(
-        "--rerank-provider",
-        type=str,
-        default="vllm_openai",
-        choices=[pv.value for pv in LLMProvider],
-        help="Rerank provider",
+        "--top-n-files",
+        type=int,
+        default=3,
+        help="Number of files to localize in Stage 1",
     )
     
     # Repository processing configuration
@@ -140,34 +120,20 @@ def parse_args():
         default=["python"],
         help="Programming languages to process",
     )
-    parser.add_argument(
-        "--max-lines-per-chunk",
-        type=int,
-        default=100,
-        help="Maximum lines per code chunk",
-    )
-    
-    # Search configuration
-    parser.add_argument(
-        "--top-k",
-        type=int,
-        default=5,
-        help="Number of top results to return",
-    )
     
     # Cache configuration
     parser.add_argument(
         "--cache-dir",
         type=str,
         default=Path.home() / ".codeminer",
-        help="Cache directory for vector store (default: ~/.codeminer)",
+        help="Cache directory for code graph (default: ~/.codeminer)",
     )
     
     return parser.parse_args()
 
 
 def run_pipeline(args):
-    """Run the search + rerank pipeline on the specified dataset."""
+    """Run the Agentless pipeline on the specified dataset."""
     
     # Get dataset configuration
     dataset = args.dataset
@@ -190,33 +156,33 @@ def run_pipeline(args):
     
     # Process each instance
     for _, instance in enumerate(dataset_instances):
-        # Process instance to get repo path
-        repo_path = dataset_config["processor"](instance)
+        # Process instance to get repo path and commit
+        repo_info = dataset_config["processor"](instance)
+        
+        # Extract repo_path and repo_commit
+        if isinstance(repo_info, dict):
+            repo_path = repo_info.get("repo_path")
+            repo_commit = repo_info.get("base_commit") or repo_info.get("commit", "HEAD")
+        else:
+            repo_path = repo_info
+            repo_commit = instance.get("base_commit", "HEAD")
         
         # Initialize pipeline
-        embedding_model_kwargs = {
-            "trust_remote_code": args.trust_remote_code,
-            "encode_kwargs": {
-                "batch_size": args.batch_size,
-            },
-        }
-        
-        pipeline = SearchRerankPipeline(
+        pipeline = AgentlessPipeline(
             repo_path=repo_path,
-            embedding_model=args.embedding_model,
-            embedding_provider=args.embedding_provider,
-            embedding_dimension=args.embedding_dimension,
-            embedding_model_kwargs=embedding_model_kwargs,
-            rerank_model=args.rerank_model,
-            rerank_provider=LLMProvider(args.rerank_provider),
+            repo_commit=repo_commit,
+            llm_model=args.llm_model,
+            llm_provider=args.llm_provider,
+            llm_temperature=args.llm_temperature,
+            llm_max_tokens=args.llm_max_tokens,
+            top_n_files=args.top_n_files,
             languages=args.languages,
-            max_lines_per_chunk=args.max_lines_per_chunk,
             cache_dir=args.cache_dir,
         )
         
         # Query the pipeline
         query = instance["problem_statement"]
-        results = pipeline.query(query=query, top_k=args.top_k)
+        results = pipeline.query(problem_statement=query)
         
         for i, node in enumerate(results):
             #TODO: save the results to a file
@@ -230,13 +196,15 @@ def run_pipeline(args):
 def main():
     """Main entry point."""
     args = parse_args()
+    
     logger.info(f"Dataset type: {args.dataset}")
-    logger.info(f"Embedding model: {args.embedding_model}")
-    logger.info(f"Rerank model: {args.rerank_model}")
-    logger.info(f"Top-K: {args.top_k}")
+    logger.info(f"LLM model: {args.llm_model}")
+    logger.info(f"LLM provider: {args.llm_provider}")
+    logger.info(f"Top-N files: {args.top_n_files}")
     
     run_pipeline(args)
 
 
 if __name__ == "__main__":
     main()
+
