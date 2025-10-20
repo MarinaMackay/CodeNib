@@ -14,7 +14,7 @@ args_dict = {
 
 
 def test_scip_exclude():
-    exclude_file = "sympy/polys/numberfields/resolvent_lookup.py"
+    # exclude_file = "sympy/polys/numberfields/resolvent_lookup.py"
     exclude_pattern = "test_*"
     args = argparse.Namespace(**args_dict)
     dataset = load_filter_locbench_dataset(args=args)
@@ -27,11 +27,11 @@ def test_scip_exclude():
     repo_indexer = SCIPIndexer(
         repo_path,
         output_dir=output_path,
-        exclude_patterns=[exclude_file, exclude_pattern],
+        exclude_patterns=[exclude_pattern],
     )
 
     # Run the indexing pipeline from scratch (skip_level=None)
-    graph = repo_indexer.run_pipeline(project_name="test_swebench", skip_level="graph")
+    graph = repo_indexer.run_pipeline(project_name="test_swebench", skip_level="index")
 
     # list the neighbors of the sympy/utilities/lamdify.py file node
     start_file = "sympy/utilities/lambdify.py"

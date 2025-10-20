@@ -66,22 +66,28 @@ def load_filter_swebench_dataset_explicit(
     else:
         logger.info(f"Dataset already exists at {dataset_path}")
         data_files = {split: dataset_path}
-        ft = Features(
-            {
-                "repo": Value("string"),
-                "instance_id": Value("string"),
-                "base_commit": Value("string"),
-                "patch": Value("string"),
-                "test_patch": Value("string"),
-                "problem_statement": Value("string"),
-                "hints_text": Value("string"),
-                "created_at": Value("string"),
-                "version": Value("string"),
-                "FAIL_TO_PASS": Value("string"),
-                "PASS_TO_PASS": Value("string"),
-                "environment_setup_commit": Value("string"),
-            }
-        )
+
+        # Define base features common to all SWE-bench variants
+        base_features = {
+            "repo": Value("string"),
+            "instance_id": Value("string"),
+            "base_commit": Value("string"),
+            "patch": Value("string"),
+            "test_patch": Value("string"),
+            "problem_statement": Value("string"),
+            "hints_text": Value("string"),
+            "created_at": Value("string"),
+            "version": Value("string"),
+            "FAIL_TO_PASS": Value("string"),
+            "PASS_TO_PASS": Value("string"),
+            "environment_setup_commit": Value("string"),
+        }
+
+        # Add difficulty field for SWE-bench Verified
+        if "verified" in dataset.lower():
+            base_features["difficulty"] = Value("string")
+
+        ft = Features(base_features)
         ds = datasets.load_dataset(
             "json", data_files=data_files, split=split, features=ft
         )
