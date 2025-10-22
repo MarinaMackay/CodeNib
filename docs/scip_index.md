@@ -46,15 +46,38 @@ Get the scip.proto from [SCIP](https://github.com/sourcegraph/scip/tree/main).
 
 ### Using the SCIPIndexer
 
-The `SCIPIndexer` class provides a Python interface for working with SCIP indices.
+The `SCIPIndexer` class provides a Python interface for working with SCIP indices. **It automatically handles conda environment isolation** to prevent conflicts with system Python packages.
+
+#### Conda Environment Isolation
+
+**Important:** The SCIPIndexer uses conda for environment isolation when running `scip-python`. This prevents issues with:
+- Package version conflicts
+- System Python package interference
+- Inconsistent dependency resolution
+
+The indexer automatically:
+1. Checks if conda is installed
+2. Creates a dedicated `scip-env` environment (if not exists) using [scip-environment.yml](scip-environment.yml)
+3. Runs all `scip-python` commands within this isolated environment
+
+**Manual conda environment setup** (optional - the indexer does this automatically):
+```bash
+conda env create -f codeminer/scip_interface/scip-environment.yml
+```
+
+#### Basic Usage
 
 ```python
 from codeminer.scip_interface.scip_indexer import SCIPIndexer
 
 # Create an indexer for a project
+# By default, output goes to /tmp/<project_name>/
 indexer = SCIPIndexer("/path/to/project")
 
-# Generate an index (returns True if successful)
+# Or specify a custom output directory
+indexer = SCIPIndexer("/path/to/project", output_dir="/custom/output/path")
+
+# Generate an index (runs in isolated conda environment automatically)
 indexer.generate_index(project_name="MyProject", target_dir="src")
 
 # Decode the index.scip file to index.decoded
@@ -68,5 +91,32 @@ result = indexer.run_pipeline(
     project_name="MyProject",
     target_dir="src",
     output_file="output.json"
+)
+```
+
+#### Advanced Features
+
+**Cache Management:**
+```python
+# Run pipeline with cache awareness
+# skip_level options: None, 'raw', 'decode', 'graph'
+result = indexer.run_pipeline(
+    project_name="MyProject",
+    skip_level="graph"  # Reuse graph.pkl if exists
+)
+
+# Clear cache at different levels
+indexer.clear_cache(level="all")     # Remove all cache files
+indexer.clear_cache(level="graph")   # Keep only graph.pkl
+indexer.clear_cache(level="decode")  # Keep only index.decoded
+indexer.clear_cache(level="raw")     # Keep only index.scip
+```
+
+**Exclude Patterns:**
+```python
+# Exclude specific directories or files from indexing
+indexer = SCIPIndexer(
+    "/path/to/project",
+    exclude_patterns=["tests/*", "*.test.py", "build/*"]
 )
 ```
