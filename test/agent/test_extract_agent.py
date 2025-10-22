@@ -8,7 +8,8 @@ args_dict = {
     "model": "gemini-2.5-flash",
     "dataset": "princeton-nlp/SWE-bench_Lite",
     "split": "test",
-    "filter_instance": "^(astropy__astropy-12907)$",
+    # "filter_instance": "^(astropy__astropy-12907)$",
+    "filter_instance": "^(django__django-15202)$",
 }
 
 # Example usage
