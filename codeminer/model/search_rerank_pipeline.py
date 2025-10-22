@@ -13,11 +13,60 @@ logger = get_logger(__name__)
 
 
 class SearchRerankPipeline:
-    """
-    Pipeline for Search + Rerank Pipeline.
+    r"""A classical code retrieval baseline using Search + Rerank.
 
-    1. __init__: Initialize with embedding and rerank model configs
-    2. query: Query the vector store and rerank the results
+    :class:`~codeminer.model.SearchRerankPipeline` implements a two-stage
+    retrieval process for code localization:
+
+    **Stage 1 - Dense Retrieval:** Retrieves top-k code chunks using semantic
+    similarity search:
+
+    .. math::
+        \mathcal{C}_{\text{top-k}} = \text{TopK}(\text{sim}(\mathbf{e}_q, \mathbf{e}_c) 
+        \mid c \in \mathcal{C})
+
+    where :math:`\mathbf{e}_q` is the query embedding, :math:`\mathbf{e}_c` is
+    the code chunk embedding, and :math:`\mathcal{C}` is the set of all code
+    chunks in the repository.
+
+    **Stage 2 - Reranking:** Refines the ranking using a specialized reranking
+    model:
+
+    .. math::
+        \mathcal{C}^* = \text{Rerank}(\mathcal{C}_{\text{top-k}}, q)
+
+    where :math:`q` is the query and :math:`\mathcal{C}^*` is the reranked
+    results.
+
+    This approach serves as a baseline method in code information retrieval,
+    combining the efficiency of vector search with the precision of neural
+    reranking.
+
+    Args:
+        repo_path (str): Path to the repository to index and search.
+        embedding_model (str, optional): Name of the embedding model.
+            (default: :obj:`"text-embedding-ada-002"`)
+        embedding_provider (str, optional): Embedding model provider.
+            (default: :obj:`"openai"`)
+        embedding_dimension (int, optional): Dimension of embedding vectors.
+            (default: :obj:`1536`)
+        embedding_model_kwargs (dict, optional): Additional kwargs for embedding
+            model initialization. (default: :obj:`None`)
+        rerank_model (str, optional): Name of the reranking model.
+            (default: :obj:`"nomic-ai/CodeRankLLM"`)
+        rerank_provider (LLMProvider, optional): Reranking model provider.
+            (default: :obj:`LLMProvider.VLLM_OPENAI`)
+        rerank_temperature (float, optional): Temperature for reranking model.
+            (default: :obj:`0.0`)
+        rerank_max_tokens (int, optional): Maximum tokens for reranking.
+            (default: :obj:`4096`)
+        languages (List[str], optional): Programming languages to index.
+            (default: :obj:`["python"]`)
+        max_lines_per_chunk (int, optional): Maximum lines per code chunk.
+            (default: :obj:`100`)
+        cache_dir (str, optional): Directory for caching vector store indices.
+            If set to :obj:`None`, defaults to :obj:`~/.codeminer`.
+            (default: :obj:`None`)
     """
 
     def __init__(

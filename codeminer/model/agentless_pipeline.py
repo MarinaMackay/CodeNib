@@ -34,8 +34,61 @@ class Stage3Result(BaseModel):
 
 
 class AgentlessPipeline:
-    """
-    Agentless localization pipeline integrated with CodeMiner.
+    r"""The Agentless approach from the `"Agentless: Demystifying LLM-based
+    Software Engineering Agents" <https://arxiv.org/abs/2407.01489>`_ paper.
+
+    :class:`~codeminer.model.AgentlessPipeline` localizes code locations that
+    need modification by employing a simplistic three-phase process:
+
+    **Phase 1 - File Localization:** Identifies relevant files using repository
+    structure and LLM reasoning:
+
+    .. math::
+        \mathcal{F} = \text{LLM}(\text{problem}, \text{structure}(\mathcal{R}))
+
+    where :math:`\mathcal{R}` is the repository and :math:`\mathcal{F}` is the
+    set of candidate files.
+    #TODO: add dense retrieval to the file localization phase
+
+    **Phase 2 - Node Localization:** Narrows down to specific code entities
+    (functions, classes, methods) within the identified files:
+
+    .. math::
+        \mathcal{N} = \text{LLM}(\text{problem}, \{\text{structure}(f) \mid f \in \mathcal{F}\})
+
+    where :math:`\mathcal{N}` is the set of candidate nodes (symbols).
+
+    **Phase 3 - Node Refinement:** Validates and refines the final set of nodes
+    using full code content:
+
+    .. math::
+        \mathcal{N}^* = \text{LLM}(\text{problem}, \{\text{content}(n) \mid n \in \mathcal{N}\})
+
+    where :math:`\mathcal{N}^*` is the refined set of nodes requiring changes.
+
+    The localization results can be used for downstream tasks such as automated
+    program repair, code synthesis, or interactive code editing via
+    :meth:`~codeminer.model.AgentlessPipeline.query`.
+
+    Args:
+        repo_path (str): Path to the repository to analyze.
+        repo_commit (str): Git commit hash for version identification.
+        llm_model (str, optional): Name of the LLM to use.
+            (default: :obj:`"gpt-4o"`)
+        llm_provider (str, optional): LLM provider (e.g., "openai", "anthropic").
+            (default: :obj:`"openai"`)
+        llm_temperature (float, optional): Temperature for LLM sampling.
+            (default: :obj:`0.0`)
+        llm_max_tokens (int, optional): Maximum tokens for LLM responses.
+            (default: :obj:`2048`)
+        top_n_files (int, optional): Number of top files to consider in Stage 1.
+            (default: :obj:`3`)
+        languages (List[str], optional): Programming languages to index.
+            If set to :obj:`None`, defaults to :obj:`["python"]`.
+            (default: :obj:`None`)
+        cache_dir (str, optional): Directory for caching SCIP indices and graphs.
+            If set to :obj:`None`, defaults to :obj:`~/.codeminer`.
+            (default: :obj:`None`)
     """
 
     def __init__(
