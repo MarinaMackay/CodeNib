@@ -11,7 +11,7 @@ from ..graph.transverse_graph import RepoEntitySearcher, traverse_tree_structure
 from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
 from ..log_utils import get_logger
 from ..scip_interface import SCIPIndexer
-from ..types import ROOT_NODE, NodeWithScore
+from ..types import ROOT_NODE, NodeWithScoreContent
 
 logger = get_logger(__name__)
 
@@ -183,7 +183,7 @@ class AgentlessPipeline:
     def query(
         self, 
         problem_statement: str,
-    ) -> List[NodeWithScore]:
+    ) -> List[NodeWithScoreContent]:
         files = self._stage_1(problem_statement)
         logger.info(f"Localized {len(files)} files: {files}")
         if not files:
@@ -298,7 +298,7 @@ class AgentlessPipeline:
         self,
         problem_statement: str,
         symbols: List[str],
-    ) -> List[NodeWithScore]:
+    ) -> List[NodeWithScoreContent]:
         """
         Stage 3: Node-level refinement using full code content.
         """
@@ -307,6 +307,7 @@ class AgentlessPipeline:
 
         code_segments = []
         usable_symbols: List[str] = []
+        content_map: dict = {}
 
         for symbol_node_id in symbols:
             if not self.entity_searcher.has_node(symbol_node_id):
@@ -333,6 +334,7 @@ class AgentlessPipeline:
                 f"### {symbol_node_id} ###\n```\n{code_content}\n```\n"
             )
             usable_symbols.append(symbol_node_id)
+            content_map[symbol_node_id] = code_content
 
         # Create prompt from loaded template
         prompt = self.stage3_prompt.format(
@@ -350,20 +352,21 @@ class AgentlessPipeline:
             raise ValueError(f"Error in Stage 3: {e}")
 
         candidate_set = set(usable_symbols)
-        results: List[NodeWithScore] = []
+        results: List[NodeWithScoreContent] = []
 
         for node_id in shortlisted_node_ids:
             if node_id not in candidate_set:
                 raise ValueError(f"Discarding node not part of Stage 2 results: {node_id}")
             
             attrs = self.entity_searcher.get_node_data([node_id])[0]
-            results.append(NodeWithScore(
+            results.append(NodeWithScoreContent(
                 node_name=node_id,
                 type=attrs.get("type", "unknown"),
                 file=attrs.get("file"),
                 start_line=attrs.get("start_line"),
                 end_line=attrs.get("end_line"),
                 score=0.0,
+                content=content_map.get(node_id),
             ))
 
         return results

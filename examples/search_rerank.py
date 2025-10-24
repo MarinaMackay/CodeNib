@@ -220,12 +220,13 @@ def run_pipeline(args):
         
         for i, node in enumerate(results):
             #TODO: save the results to a file
+            logger.info("--------------------------------")
             logger.info(f"Rank {i + 1} (Score: {node.score:.4f})")
             logger.info(f"  Node Name: {node.node_name}")
             logger.info(f"  Node Type: {node.type}")
             logger.info(f"  File: {node.file}")
             logger.info(f"  Lines: {node.start_line}-{node.end_line}")
-
+            logger.info(f"  Content: {node.content}")
 
 def main():
     """Main entry point."""

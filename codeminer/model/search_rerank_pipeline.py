@@ -7,7 +7,7 @@ from ..code_chunker import CodeChunker
 from ..embedding import CodeVectorStore
 from ..llm.llm_config import LLMConfig, LLMProvider
 from ..log_utils import get_logger
-from ..types import NodeWithScore
+from ..types import NodeWithScoreContent
 
 logger = get_logger(__name__)
 
@@ -82,7 +82,7 @@ class SearchRerankPipeline:
         rerank_model: str = "nomic-ai/CodeRankLLM",
         rerank_provider: LLMProvider = LLMProvider.VLLM_OPENAI,
         rerank_temperature: float = 0.0,
-        rerank_max_tokens: int = 4096,
+        rerank_max_tokens: int = 2048,
         # Repo processing config
         languages: Optional[List[str]] = ['python'],
         max_lines_per_chunk: int = 100,
@@ -183,14 +183,27 @@ class SearchRerankPipeline:
             f"rerank={rerank_provider.value}:{rerank_model}"
         )
     
-    def query(self, query: str, top_k: int = 10) -> List[NodeWithScore]:
+    def query(self, query: str, top_k: int = 10) -> List[NodeWithScoreContent]:
         """
         Query the vector store and rerank the results.
         """
-        # Search the vector store
-        nodes = self.vector_store.search_with_content(query=query, top_k=top_k)
-        # Rerank the nodes
-        ranked_results = self.rerank_agent.rerank_nodes(query, nodes, top_k=top_k)
+        nodes_with_content = self.vector_store.search_with_content(query=query, top_k=top_k)
+        content_map = {node.node_name: node.content for node in nodes_with_content}
+        
+        ranked_nodes = self.rerank_agent.rerank_nodes(query, nodes_with_content, top_k=top_k)
+        
+        results = []
+        for node in ranked_nodes:
+            result = NodeWithScoreContent(
+                node_name=node.node_name,
+                type=node.type,
+                file=node.file,
+                start_line=node.start_line,
+                end_line=node.end_line,
+                score=node.score,
+                content=content_map.get(node.node_name),
+            )
+            results.append(result)
 
-        return ranked_results
+        return results
 
