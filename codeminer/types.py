@@ -50,8 +50,6 @@ class NodeWithScore(NodeInfo):
     score: float = 0.0
 
 
-class NodeWithScoreContent(NodeInfo):
+class NodeWithScoreContent(NodeWithScore, NodeWithContent):
     """Node attributes with both relevance score and content."""
-
-    score: float = 0.0
-    content: Optional[str] = None
+    pass
