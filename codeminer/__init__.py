@@ -4,7 +4,7 @@ from .graph.code_graph import CodeGraph
 from .scip_interface import SCIPIndexer
 from .search import CodeSearchEngine
 from .sparse_idx.bm25_index import BM25CodeIndexer
-from .sqlite_idx.sqlite_index import SqliteNodeIndex
+from .regex_idx.regex_idx import RegexNodeIndex
 
 __all__ = [
     "SCIPIndexer",
@@ -15,5 +15,5 @@ __all__ = [
     "RerankAgent",
     "CodeChunker",
     "RepoChunkingConfig",
-    "SqliteNodeIndex",
+    "RegexNodeIndex",
 ]
