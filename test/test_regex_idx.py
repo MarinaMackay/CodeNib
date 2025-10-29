@@ -1,7 +1,6 @@
 """
 Test RegexNodeIndex functionality using simple_repo.
 """
-import os
 from pathlib import Path
 
 from codeminer import CodeGraph, RegexNodeIndex
