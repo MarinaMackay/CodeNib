@@ -3,7 +3,7 @@ Test RegexNodeIndex functionality using simple_repo.
 """
 from pathlib import Path
 
-from codeminer import CodeGraph, RegexNodeIndex
+from codeminer import RegexNodeIndex
 from codeminer.scip_interface import SCIPIndexer
 
 
