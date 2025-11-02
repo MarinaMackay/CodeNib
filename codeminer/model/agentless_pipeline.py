@@ -89,6 +89,10 @@ class AgentlessPipeline:
         cache_dir (str, optional): Directory for caching SCIP indices and graphs.
             If set to :obj:`None`, defaults to :obj:`~/.codeminer`.
             (default: :obj:`None`)
+        instance_id (str, optional): Instance identifier for organizing cache.
+            If provided, uses :obj:`cache_dir/instance_id` as the cache path.
+            Otherwise, falls back to :obj:`cache_dir/scip_{repo_name}@{commit}`.
+            (default: :obj:`None`)
     """
 
     def __init__(
@@ -107,6 +111,7 @@ class AgentlessPipeline:
         languages: Optional[List[str]] = None,
         # Cache
         cache_dir: Optional[str] = None,
+        instance_id: Optional[str] = None,
     ):
         # Attributes
         self.repo_path = os.path.abspath(repo_path)
@@ -127,11 +132,16 @@ class AgentlessPipeline:
         cache_dir = Path(cache_dir or Path.home() / ".codeminer")
         cache_dir.mkdir(parents=True, exist_ok=True)
         
+        # Prepare repo identifiers
         repo_name = os.path.basename(self.repo_path)
         commit_identifier = self.repo_commit[:12]
         
-        # Initialize CodeGraph via SCIP
-        scip_output_dir = cache_dir / f"scip_{repo_name}@{commit_identifier}"
+        # Create SCIP output directory based on instance_id or repo name
+        if instance_id:
+            scip_output_dir = cache_dir / instance_id
+        else:
+            scip_output_dir = cache_dir / f"scip_{repo_name}@{commit_identifier}"
+        
         scip_output_dir.mkdir(parents=True, exist_ok=True)
         
         scip_indexer = SCIPIndexer(self.repo_path, output_dir=str(scip_output_dir))

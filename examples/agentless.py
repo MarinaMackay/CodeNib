@@ -125,8 +125,8 @@ def parse_args():
     parser.add_argument(
         "--cache-dir",
         type=str,
-        default=Path.home() / ".codeminer",
-        help="Cache directory for code graph (default: ~/.codeminer)",
+        default="/mnt/data/codeminer",
+        help="Cache directory for index (default: /mnt/data/codeminer)",
     )
     
     return parser.parse_args()
@@ -167,6 +167,10 @@ def run_pipeline(args):
             repo_path = repo_info
             repo_commit = instance.get("base_commit", "HEAD")
         
+        # Get instance_id and convert to directory name
+        instance_id = instance["instance_id"]
+        instance_dir_name = instance_id.replace("/", "__")
+        
         # Initialize pipeline
         pipeline = AgentlessPipeline(
             repo_path=repo_path,
@@ -178,6 +182,7 @@ def run_pipeline(args):
             top_n_files=args.top_n_files,
             languages=args.languages,
             cache_dir=args.cache_dir,
+            instance_id=instance_dir_name,
         )
         
         # Query the pipeline

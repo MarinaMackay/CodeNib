@@ -67,6 +67,10 @@ class SearchRerankPipeline:
         cache_dir (str, optional): Directory for caching vector store indices.
             If set to :obj:`None`, defaults to :obj:`~/.codeminer`.
             (default: :obj:`None`)
+        instance_id (str, optional): Instance identifier for organizing cache.
+            If provided, uses :obj:`cache_dir/instance_id` as the index path.
+            Otherwise, falls back to :obj:`cache_dir/index_{repo_name}_{model}`.
+            (default: :obj:`None`)
     """
 
     def __init__(
@@ -74,12 +78,12 @@ class SearchRerankPipeline:
         # Repo config
         repo_path: str,
         # Embedding config
-        embedding_model: str = "text-embedding-ada-002",
-        embedding_provider: str = "openai",
-        embedding_dimension: int = 1536,
+        embedding_model: str = "nomic-ai/CodeRankEmbed",
+        embedding_provider: str = "huggingface",
+        embedding_dimension: int = 768,
         embedding_model_kwargs: Optional[dict] = None,
         # Rerank config
-        rerank_model: str = "nomic-ai/CodeRankLLM",
+        rerank_model: str = "Qwen/Qwen2.5-Coder-7B",
         rerank_provider: LLMProvider = LLMProvider.VLLM_OPENAI,
         rerank_temperature: float = 0.0,
         rerank_max_tokens: int = 2048,
@@ -88,6 +92,7 @@ class SearchRerankPipeline:
         max_lines_per_chunk: int = 100,
         # Cache config
         cache_dir: Optional[str] = None,
+        instance_id: Optional[str] = None,
     ):
         """
         Initialize pipeline and build vector database.
@@ -108,9 +113,12 @@ class SearchRerankPipeline:
         cache_dir = Path(cache_dir or Path.home() / ".codeminer")
         cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # Create the index path based on repo and embedding model
-        repo_name = os.path.basename(self.repo_path)
-        index_path = cache_dir / f"index_{repo_name}_{embedding_model.replace('/', '_')}"
+        # Create the index path based on instance_id or repo name
+        if instance_id:
+            index_path = cache_dir / instance_id
+        else:
+            repo_name = os.path.basename(self.repo_path)
+            index_path = cache_dir / f"index_{repo_name}_{embedding_model.replace('/', '_')}"
         
         # Prepare embedding kwargs
         embedding_kwargs = {}
