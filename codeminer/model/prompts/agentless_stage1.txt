@@ -12,11 +12,21 @@ Please look through the following GitHub problem description and Repository stru
 ###
 
 Please analyze the structure above and return the node IDs (full paths) of the files that need to be edited.
+
+IMPORTANT NOTES:
+- The repository structure uses a tree format where edge types (like "contain ──" or "reference ──") are just labels showing relationships
+- You should extract ONLY the file path that appears AFTER these edge type labels
+- For example, if you see "├── contain ── requests/sessions.py", return "requests/sessions.py" (NOT "contain/requests/sessions.py")
 - Return at most {top_n} files
-- Each file should be identified by its exact node ID as shown in the Repository Structure (e.g., "src/main.py", "tests/test_main.py")
 - Order the files from most to least important
 
 Return your response as a JSON object with a "files" key containing a list of file paths.
 
-Example format:
-{{"files": ["src/models/base.py", "src/utils/helper.py", "tests/test_models.py"]}}
+Example:
+If the structure shows:
+  .
+  ├── contain ── src/models/base.py
+  └── contain ── src/utils/helper.py
+
+You should return:
+{{"files": ["src/models/base.py", "src/utils/helper.py"]}}

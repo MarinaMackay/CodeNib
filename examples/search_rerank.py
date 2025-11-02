@@ -113,7 +113,7 @@ def parse_args():
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=8,
+        default=32,
         help="Batch size for embedding encoding",
     )
     
@@ -143,7 +143,7 @@ def parse_args():
     parser.add_argument(
         "--max-lines-per-chunk",
         type=int,
-        default=100,
+        default=300,
         help="Maximum lines per code chunk",
     )
     
@@ -159,8 +159,8 @@ def parse_args():
     parser.add_argument(
         "--cache-dir",
         type=str,
-        default=Path.home() / ".codeminer",
-        help="Cache directory for vector store (default: ~/.codeminer)",
+        default="/mnt/data/codeminer",
+        help="Cache directory for index (default: /mnt/data/codeminer)",
     )
     
     return parser.parse_args()
@@ -193,6 +193,10 @@ def run_pipeline(args):
         # Process instance to get repo path
         repo_path = dataset_config["processor"](instance)
         
+        # Get instance_id and convert to directory name
+        instance_id = instance["instance_id"]
+        instance_dir_name = instance_id.replace("/", "__")
+        
         # Initialize pipeline
         embedding_model_kwargs = {
             "trust_remote_code": args.trust_remote_code,
@@ -212,6 +216,7 @@ def run_pipeline(args):
             languages=args.languages,
             max_lines_per_chunk=args.max_lines_per_chunk,
             cache_dir=args.cache_dir,
+            instance_id=instance_dir_name,
         )
         
         # Query the pipeline
@@ -220,12 +225,13 @@ def run_pipeline(args):
         
         for i, node in enumerate(results):
             #TODO: save the results to a file
+            logger.info("--------------------------------")
             logger.info(f"Rank {i + 1} (Score: {node.score:.4f})")
             logger.info(f"  Node Name: {node.node_name}")
             logger.info(f"  Node Type: {node.type}")
             logger.info(f"  File: {node.file}")
             logger.info(f"  Lines: {node.start_line}-{node.end_line}")
-
+            logger.info(f"  Content: {node.content}")
 
 def main():
     """Main entry point."""

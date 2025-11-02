@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Set
 # Import from the new modular code chunking system
 from .code_chunking import CodeChunk, create_chunker
 from .log_utils import get_logger
+from .utils import is_test_file
 
 logger = get_logger(__name__)
 
@@ -31,6 +32,7 @@ class RepoChunkingConfig:
     # File filtering
     ignore_patterns: Set[str] = None
     max_file_size_mb: float = 10.0  # Skip files larger than this
+    filter_tests: bool = True  # Skip test files by default
 
     def __post_init__(self):
         """Initialize default values."""
@@ -356,6 +358,11 @@ class CodeChunker:
             elif pattern.endswith("*") and file_name.startswith(pattern[:-1]):
                 return False
             elif pattern == file_name:
+                return False
+
+        # Check if test files should be filtered
+        if self.repo_config.filter_tests:
+            if is_test_file(str(file_path)):
                 return False
 
         return True

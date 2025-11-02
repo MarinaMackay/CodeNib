@@ -11,7 +11,7 @@ from ..graph.transverse_graph import RepoEntitySearcher, traverse_tree_structure
 from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
 from ..log_utils import get_logger
 from ..scip_interface import SCIPIndexer
-from ..types import ROOT_NODE, NodeWithScore
+from ..types import ROOT_NODE, NodeWithScoreContent
 
 logger = get_logger(__name__)
 
@@ -34,8 +34,65 @@ class Stage3Result(BaseModel):
 
 
 class AgentlessPipeline:
-    """
-    Agentless localization pipeline integrated with CodeMiner.
+    r"""The Agentless approach from the `"Agentless: Demystifying LLM-based
+    Software Engineering Agents" <https://arxiv.org/abs/2407.01489>`_ paper.
+
+    :class:`~codeminer.model.AgentlessPipeline` localizes code locations that
+    need modification by employing a simplistic three-phase process:
+
+    **Phase 1 - File Localization:** Identifies relevant files using repository
+    structure and LLM reasoning:
+
+    .. math::
+        \mathcal{F} = \text{LLM}(\text{problem}, \text{structure}(\mathcal{R}))
+
+    where :math:`\mathcal{R}` is the repository and :math:`\mathcal{F}` is the
+    set of candidate files.
+    #TODO: add dense retrieval to the file localization phase
+
+    **Phase 2 - Node Localization:** Narrows down to specific code entities
+    (functions, classes, methods) within the identified files:
+
+    .. math::
+        \mathcal{N} = \text{LLM}(\text{problem}, \{\text{structure}(f) \mid f \in \mathcal{F}\})
+
+    where :math:`\mathcal{N}` is the set of candidate nodes (symbols).
+
+    **Phase 3 - Node Refinement:** Validates and refines the final set of nodes
+    using full code content:
+
+    .. math::
+        \mathcal{N}^* = \text{LLM}(\text{problem}, \{\text{content}(n) \mid n \in \mathcal{N}\})
+
+    where :math:`\mathcal{N}^*` is the refined set of nodes requiring changes.
+
+    The localization results can be used for downstream tasks such as automated
+    program repair, code synthesis, or interactive code editing via
+    :meth:`~codeminer.model.AgentlessPipeline.query`.
+
+    Args:
+        repo_path (str): Path to the repository to analyze.
+        repo_commit (str): Git commit hash for version identification.
+        llm_model (str, optional): Name of the LLM to use.
+            (default: :obj:`"gpt-4o"`)
+        llm_provider (str, optional): LLM provider (e.g., "openai", "anthropic").
+            (default: :obj:`"openai"`)
+        llm_temperature (float, optional): Temperature for LLM sampling.
+            (default: :obj:`0.0`)
+        llm_max_tokens (int, optional): Maximum tokens for LLM responses.
+            (default: :obj:`2048`)
+        top_n_files (int, optional): Number of top files to consider in Stage 1.
+            (default: :obj:`3`)
+        languages (List[str], optional): Programming languages to index.
+            If set to :obj:`None`, defaults to :obj:`["python"]`.
+            (default: :obj:`None`)
+        cache_dir (str, optional): Directory for caching SCIP indices and graphs.
+            If set to :obj:`None`, defaults to :obj:`~/.codeminer`.
+            (default: :obj:`None`)
+        instance_id (str, optional): Instance identifier for organizing cache.
+            If provided, uses :obj:`cache_dir/instance_id` as the cache path.
+            Otherwise, falls back to :obj:`cache_dir/scip_{repo_name}@{commit}`.
+            (default: :obj:`None`)
     """
 
     def __init__(
@@ -54,6 +111,7 @@ class AgentlessPipeline:
         languages: Optional[List[str]] = None,
         # Cache
         cache_dir: Optional[str] = None,
+        instance_id: Optional[str] = None,
     ):
         # Attributes
         self.repo_path = os.path.abspath(repo_path)
@@ -74,11 +132,16 @@ class AgentlessPipeline:
         cache_dir = Path(cache_dir or Path.home() / ".codeminer")
         cache_dir.mkdir(parents=True, exist_ok=True)
         
+        # Prepare repo identifiers
         repo_name = os.path.basename(self.repo_path)
         commit_identifier = self.repo_commit[:12]
         
-        # Initialize CodeGraph via SCIP
-        scip_output_dir = cache_dir / f"scip_{repo_name}@{commit_identifier}"
+        # Create SCIP output directory based on instance_id or repo name
+        if instance_id:
+            scip_output_dir = cache_dir / instance_id
+        else:
+            scip_output_dir = cache_dir / f"scip_{repo_name}@{commit_identifier}"
+        
         scip_output_dir.mkdir(parents=True, exist_ok=True)
         
         scip_indexer = SCIPIndexer(self.repo_path, output_dir=str(scip_output_dir))
@@ -130,7 +193,7 @@ class AgentlessPipeline:
     def query(
         self, 
         problem_statement: str,
-    ) -> List[NodeWithScore]:
+    ) -> List[NodeWithScoreContent]:
         files = self._stage_1(problem_statement)
         logger.info(f"Localized {len(files)} files: {files}")
         if not files:
@@ -245,7 +308,7 @@ class AgentlessPipeline:
         self,
         problem_statement: str,
         symbols: List[str],
-    ) -> List[NodeWithScore]:
+    ) -> List[NodeWithScoreContent]:
         """
         Stage 3: Node-level refinement using full code content.
         """
@@ -254,6 +317,7 @@ class AgentlessPipeline:
 
         code_segments = []
         usable_symbols: List[str] = []
+        content_map: dict = {}
 
         for symbol_node_id in symbols:
             if not self.entity_searcher.has_node(symbol_node_id):
@@ -280,6 +344,7 @@ class AgentlessPipeline:
                 f"### {symbol_node_id} ###\n```\n{code_content}\n```\n"
             )
             usable_symbols.append(symbol_node_id)
+            content_map[symbol_node_id] = code_content
 
         # Create prompt from loaded template
         prompt = self.stage3_prompt.format(
@@ -297,20 +362,21 @@ class AgentlessPipeline:
             raise ValueError(f"Error in Stage 3: {e}")
 
         candidate_set = set(usable_symbols)
-        results: List[NodeWithScore] = []
+        results: List[NodeWithScoreContent] = []
 
         for node_id in shortlisted_node_ids:
             if node_id not in candidate_set:
                 raise ValueError(f"Discarding node not part of Stage 2 results: {node_id}")
             
             attrs = self.entity_searcher.get_node_data([node_id])[0]
-            results.append(NodeWithScore(
+            results.append(NodeWithScoreContent(
                 node_name=node_id,
                 type=attrs.get("type", "unknown"),
                 file=attrs.get("file"),
                 start_line=attrs.get("start_line"),
                 end_line=attrs.get("end_line"),
                 score=0.0,
+                content=content_map.get(node_id),
             ))
 
         return results
