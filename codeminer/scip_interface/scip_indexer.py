@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 import os
 import subprocess
-import time
 from pathlib import Path
 from typing import List, Optional, Union
 
 from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger
+from ..profiler import Profiler
 
 logger = get_logger("scip_indexer")
 
@@ -19,6 +19,7 @@ class SCIPIndexer:
         project_root: Union[str, Path],
         output_dir: Optional[Union[str, Path]] = None,
         exclude_patterns: Optional[List] = None,
+        profiler: Optional[Profiler] = None,
     ):
         self.project_root = Path(project_root).absolute()
 
@@ -36,6 +37,7 @@ class SCIPIndexer:
         self.decoded_file = self.output_dir / "index.decoded"
         self.graph_file = self.output_dir / "graph.pkl"
         self.exclude_patterns = exclude_patterns if exclude_patterns else []
+        self.profiler = profiler or Profiler("scip_indexer")
 
         # Path to the conda environment file
         self.module_dir = Path(__file__).parent
@@ -187,14 +189,10 @@ class SCIPIndexer:
 
         logger.debug(f"Running command: {' '.join(cmd)}")
 
-        # Time the index generation
-        start_time = time.time()
-
         # Run in conda environment
-        success = self._run_in_conda_env(cmd, self.project_root)
-
-        end_time = time.time()
-        duration = end_time - start_time
+        with self.profiler.section("generate_index") as section:
+            success = self._run_in_conda_env(cmd, self.project_root)
+        duration = section.duration
 
         if success:
             logger.info(f"Successfully generated SCIP index at {self.index_file}")
@@ -230,13 +228,9 @@ class SCIPIndexer:
             cmd_str = " ".join(cmd)
             logger.info(f"Running command: {cmd_str}")
 
-            # Time the decoding
-            start_time = time.time()
-
-            subprocess.run(cmd_str, shell=True, check=True, cwd=self.module_dir)
-
-            end_time = time.time()
-            duration = end_time - start_time
+            with self.profiler.section("decode_index") as section:
+                subprocess.run(cmd_str, shell=True, check=True, cwd=self.module_dir)
+            duration = section.duration
 
             logger.info(f"Successfully decoded SCIP index to {self.decoded_file}")
             logger.info(f"⏱️  Index decoding took: {duration:.2f} seconds")
@@ -265,24 +259,20 @@ class SCIPIndexer:
             # Import here to avoid circular imports
             from .scip_decode import SCIPGraphDecoder
 
-            # Time the processing
-            start_time = time.time()
-
             # Pass the project root to the decoder to enable directory indexing
             logger.info("Starting SCIP index processing...")
-            decoder = SCIPGraphDecoder(
-                str(self.decoded_file), project_root=self.project_root
-            )
-            graph: CodeGraph = decoder.decode()
-
-            end_time = time.time()
-            duration = end_time - start_time
+            with self.profiler.section("process_index.decode") as section:
+                decoder = SCIPGraphDecoder(
+                    str(self.decoded_file), project_root=self.project_root
+                )
+                graph: CodeGraph = decoder.decode()
+            duration = section.duration
 
             if output_file:
-                save_start = time.time()
-                output_path = Path(output_file)
-                decoder.save_graph(str(output_path))
-                save_duration = time.time() - save_start
+                with self.profiler.section("process_index.save_graph") as save_section:
+                    output_path = Path(output_file)
+                    decoder.save_graph(str(output_path))
+                save_duration = save_section.duration
                 logger.info(f"Saved processed SCIP index to {output_path}")
                 logger.info(f"⏱️  Graph saving took: {save_duration:.2f} seconds")
 
@@ -299,6 +289,9 @@ class SCIPIndexer:
         target_dir: Optional[str] = None,
         output_file: Optional[str] = None,
         skip_level: Optional[str] = None,
+        *,
+        reset_profiler: bool = True,
+        report_profile: bool = True,
     ) -> Union[CodeGraph, None]:
         """
         Run the complete SCIP indexing pipeline: generate, decode, and process
@@ -312,6 +305,8 @@ class SCIPIndexer:
                 - 'decode': Check if index.decoded exists, skip to processing if found
                 - 'raw': Check if index.scip exists, skip to decoding if found
                 - None: Run full pipeline from scratch (default)
+            reset_profiler: Clear profiler stats before running the pipeline.
+            report_profile: Emit profiler summary automatically after the run.
 
         Returns:
             CodeGraph: Processed graph object
@@ -356,34 +351,43 @@ class SCIPIndexer:
             should_generate_index = True
             should_decode_index = True
 
-        # Generate the index if needed
-        if should_generate_index:
-            logger.info(f"Generating SCIP index")
-            if not self.generate_index(
-                cwd=self.project_root, project_name=project_name, target_dir=target_dir
-            ):
-                return None
+        if reset_profiler:
+            self.profiler.reset()
 
-        # Decode the index if needed
-        if should_decode_index:
-            if not self.index_file.exists():
-                logger.error(
-                    f"Index file not found at {self.index_file}, cannot decode"
+        try:
+            # Generate the index if needed
+            if should_generate_index:
+                logger.info("Generating SCIP index")
+                if not self.generate_index(
+                    cwd=self.project_root,
+                    project_name=project_name,
+                    target_dir=target_dir,
+                ):
+                    return None
+
+            # Decode the index if needed
+            if should_decode_index:
+                if not self.index_file.exists():
+                    logger.error(
+                        f"Index file not found at {self.index_file}, cannot decode"
+                    )
+                    return None
+                logger.info("Decoding SCIP index")
+                if not self.decode_index():
+                    return None
+
+            # Process the index and save graph
+            graph = self.process_index(output_file)
+
+            if graph:
+                logger.info(
+                    f"✅ Graph created successfully ({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
                 )
-                return None
-            logger.info(f"Decoding SCIP index")
-            if not self.decode_index():
-                return None
 
-        # Process the index and save graph
-        graph = self.process_index(output_file)
-
-        if graph:
-            logger.info(
-                f"✅ Graph created successfully ({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
-            )
-
-        return graph
+            return graph
+        finally:
+            if report_profile:
+                self.profiler.report(reset=reset_profiler)
 
     def clear_cache(self, level: str = "all") -> bool:
         """
