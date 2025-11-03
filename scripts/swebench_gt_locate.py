@@ -111,6 +111,7 @@ class GTLocator:
         """
         changed_ranges = defaultdict(list)
         current_file = None
+        old_file = None  # Track the "before" file for deleted files
 
         # Parse the patch line by line
         lines = patch_content.split('\n')
@@ -119,11 +120,21 @@ class GTLocator:
         while i < len(lines):
             line = lines[i]
 
-            # Check for file header
+            ### Currently no detetions ###
+            # Check for "before" file header (--- a/...)
+            if line.startswith('--- a/'):
+                old_file = line[6:]  # Remove '--- a/' prefix
+                if old_file == '/dev/null':
+                    old_file = None
+                i += 1
+                continue
+
+            # Check for "after" file header (+++ b/...)
             if line.startswith('+++ b/'):
                 current_file = line[6:]  # Remove '+++ b/' prefix
                 if current_file == '/dev/null':
-                    current_file = None
+                    # File is being deleted, use the old file path
+                    current_file = old_file
                 i += 1
                 continue
 
@@ -379,6 +390,21 @@ class GTLocator:
             'error': None
         }
 
+        # Setup repository - use shared repo directory (one per repository, not per instance)
+        repo_dir_name = repo.replace("/", "_")
+        repo_dir = os.path.join(self.work_dir, repo_dir_name)
+        repo_url = f"https://github.com/{repo}.git"
+        logger.info(f"Repository directory: {repo_dir}")
+
+        # Clone and checkout
+        if not self.clone_repo(repo_url, repo_dir):
+            result['error'] = 'Failed to clone repository'
+            return result
+
+        if not self.checkout_commit(repo_dir, base_commit):
+            result['error'] = 'Failed to checkout base commit'
+            return result
+        
         # Get target files from patch
         logger.debug(f"Extracting target files for {instance_id}")
         target_files = self.get_target_files(patch)
@@ -395,21 +421,6 @@ class GTLocator:
 
         if not python_files:
             logger.info(f"No Python files affected in {instance_id}")
-            return result
-
-        # Setup repository - use shared repo directory (one per repository, not per instance)
-        repo_dir_name = repo.replace("/", "_")
-        repo_dir = os.path.join(self.work_dir, repo_dir_name)
-        repo_url = f"https://github.com/{repo}.git"
-        logger.info(f"Repository directory: {repo_dir}")
-
-        # Clone and checkout
-        if not self.clone_repo(repo_url, repo_dir):
-            result['error'] = 'Failed to clone repository'
-            return result
-
-        if not self.checkout_commit(repo_dir, base_commit):
-            result['error'] = 'Failed to checkout base commit'
             return result
 
         # Extract symbols before patch
