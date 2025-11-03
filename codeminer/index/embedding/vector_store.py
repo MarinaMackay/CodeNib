@@ -15,8 +15,8 @@ from langchain_core.embeddings import Embeddings
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import OpenAIEmbeddings
 
-from ..log_utils import get_logger
-from ..types import NodeWithContent, NodeWithScore
+from ...log_utils import get_logger
+from ...types import NodeWithContent, NodeWithScore
 
 logger = get_logger(__name__)
 
@@ -73,15 +73,15 @@ class CodeVectorStore:
             model_name = self.embedding_model
             if model_name == "text-embedding-ada-002":  # Default OpenAI model
                 model_name = "microsoft/codebert-base"
-                
+
             model_kwargs = kwargs.pop("model_kwargs", {})
             encode_kwargs = kwargs.pop("encode_kwargs", {})
-            
+
             return HuggingFaceEmbeddings(
-                model_name=model_name, 
+                model_name=model_name,
                 model_kwargs=model_kwargs,
                 encode_kwargs=encode_kwargs,
-                **kwargs
+                **kwargs,
             )
         else:
             raise ValueError(

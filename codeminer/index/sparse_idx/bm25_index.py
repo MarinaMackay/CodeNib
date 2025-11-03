@@ -6,11 +6,16 @@ from typing import List, Optional
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
-from ..code_chunker import CodeChunk
-from ..graph.code_graph import CodeGraph
-from ..log_utils import get_logger
-from ..types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NodeWithContent, is_symbol_node
-from ..utils import is_test_file, wrap_code_snippet
+from ...code_chunker import CodeChunk
+from ...graph.code_graph import CodeGraph
+from ...log_utils import get_logger
+from ...types import (
+    NODE_TYPE_DIRECTORY,
+    NODE_TYPE_FILE,
+    NodeWithContent,
+    is_symbol_node,
+)
+from ...utils import is_test_file, wrap_code_snippet
 
 logger = get_logger(__name__)
 
@@ -128,28 +133,39 @@ class BM25CodeIndexer:
         Returns:
             Document object or None if the node couldn't be converted
         """
+        metadata = {"node_id": node_id}
+
         if ":" not in node_id:
-            return None
-
-        file_path, symbol_name = node_id.split(":", 1)
-
-        # Determine node type based on symbol name
-        if "()" in symbol_name:
-            node_type = "function"
+            # Interpret as a file or directory node
+            _, ext = os.path.splitext(node_id)
+            if ext:
+                node_type = NODE_TYPE_FILE
+                metadata["file"] = node_id
+            else:
+                node_type = NODE_TYPE_DIRECTORY
+            metadata["type"] = node_type
+            metadata["name"] = node_id
+            content = node_id
         else:
-            node_type = "class"
+            file_path, symbol_name = node_id.split(":", 1)
 
-        metadata = {
-            "node_id": node_id,
-            "type": node_type,
-            "name": symbol_name,
-            "file": file_path,
-        }
+            # Determine node type based on symbol name
+            if "()" in symbol_name:
+                node_type = "function"
+            else:
+                node_type = "class"
 
-        # Use node_id as content for searching
-        content = node_id
+            metadata.update(
+                {
+                    "type": node_type,
+                    "name": symbol_name,
+                    "file": file_path,
+                }
+            )
 
-        # Apply custom text processing for code-specific tokenization
+            # Use node_id as content for searching
+            content = node_id
+
         content = self._apply_stemming(content)
 
         # Create a unique ID for the document
