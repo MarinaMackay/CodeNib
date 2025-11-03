@@ -12,32 +12,20 @@ Usage Examples:
     # Process first 10 instances of repo "django/django", output into local file
     python scripts/swebench_gt_locate.py --filter "django__django-.*" --limit 10 --output results/test_gt.json --keep-repos
 
-
-
 Output Format:
     Each entry in the output JSON array contains:
     {
         "instance_id": "astropy__astropy-13398",
         "repo": "astropy/astropy",
         "base_commit": "6500928dc0e57be8f06d1162eacc3ba5e2eff692",
-        "target_files": [
-            "astropy/coordinates/builtin_frames/itrs.py",
-            "astropy/coordinates/builtin_frames/itrs_observed_transforms.py"
-        ],
-        "symbols_modified": [
-            "astropy/coordinates/builtin_frames/itrs.py::ITRS",
-            "astropy/coordinates/builtin_frames/itrs.py::ITRS.earth_location"
-        ],
-        "symbols_added": [
-            "astropy/coordinates/builtin_frames/itrs_observed_transforms.py::itrs_to_observed",
-            "astropy/coordinates/builtin_frames/itrs_observed_transforms.py::observed_to_itrs"
-        ],
+        "target_files":     ["astropy/coordinates/builtin_frames/itrs.py", ...],
+        "symbols_modified": ["astropy/coordinates/builtin_frames/itrs.py::ITRS", ...],
+        "symbols_added":    ["astropy/coordinates/builtin_frames/itrs_observed_transforms.py::itrs_to_observed", ...],
         "symbols_deleted": [],
         "error": null
     }
 
-    Symbol Naming Convention:
-    - Format: "file_path::symbol_name"
+    Symbol Naming:
     - Top-level functions: "module/file.py::function_name"
     - Class methods: "module/file.py::ClassName.method_name"
     - Nested classes: "module/file.py::OuterClass.InnerClass"
@@ -74,11 +62,11 @@ class GTLocator:
         Initialize the ground truth locator.
 
         Args:
-            work_dir: Working directory for cloning repos (default: ~/.codeminer/repos)
+            work_dir: Working directory for cloning repos (default: ~/.codeminer)
             language: Programming language to analyze (default: python)
         """
         if work_dir is None:
-            self.work_dir = str(Path.home()) + "/.codeminer/repos"
+            self.work_dir = str(Path.home()) + "/.codeminer"
             os.makedirs(self.work_dir, exist_ok=True)
         else:
             self.work_dir = work_dir
@@ -183,7 +171,7 @@ class GTLocator:
 
     def clone_repo(self, repo_url: str, target_dir: str) -> bool:
         """
-        Clone a git repository.
+        Clone a git repository if it doesn't exist.
 
         Args:
             repo_url: URL of the repository
@@ -204,6 +192,7 @@ class GTLocator:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
+            logger.info(f"Successfully cloned repository to {target_dir}")
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to clone {repo_url}: {e}")
@@ -221,7 +210,32 @@ class GTLocator:
         Returns:
             True if successful, False otherwise
         """
+        # Check if it's a valid git repository
+        git_dir = os.path.join(repo_dir, ".git")
+        if not os.path.exists(git_dir):
+            logger.error(f"Not a git repository: {repo_dir}")
+            return False
+
         try:
+            # Reset any local changes to ensure clean state
+            logger.debug("Resetting repository to clean state")
+            subprocess.run(
+                ["git", "reset", "--hard"],
+                cwd=repo_dir,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            # Clean untracked files
+            subprocess.run(
+                ["git", "clean", "-fd"],
+                cwd=repo_dir,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
             # Fetch all updates to ensure we can checkout the commit
             logger.info("Fetching updates from remote repository")
             subprocess.run(
@@ -235,7 +249,7 @@ class GTLocator:
             # Checkout to the base commit
             logger.info(f"Checking out commit {commit_hash}")
             subprocess.run(
-                ["git", "checkout", commit_hash],
+                ["git", "checkout", "-f", commit_hash],
                 cwd=repo_dir,
                 check=True,
                 stdout=subprocess.PIPE,
@@ -367,6 +381,7 @@ class GTLocator:
 
         if not target_files:
             logger.warning(f"No target files found in patch for {instance_id}")
+            result['error'] = 'No target files found in patch'
             return result
 
         # Filter for Python files only (for now)
@@ -377,9 +392,9 @@ class GTLocator:
             logger.info(f"No Python files affected in {instance_id}")
             return result
 
-        # Setup repository
-        repo_name = repo.split('/')[-1]
-        repo_dir = os.path.join(self.work_dir, repo_name, instance_id)
+        # Setup repository - use shared repo directory (one per repository, not per instance)
+        repo_dir_name = repo.replace("/", "_")
+        repo_dir = os.path.join(self.work_dir, repo_dir_name)
         repo_url = f"https://github.com/{repo}.git"
         logger.info(f"Repository directory: {repo_dir}")
 
@@ -393,7 +408,7 @@ class GTLocator:
             return result
 
         # Extract symbols before patch
-        logger.info("Extracting symbols before patch")
+        logger.info("Extracting symbols BEFORE patch")
         symbols_before = {}
         for file_path in python_files:
             full_path = os.path.join(repo_dir, file_path)
@@ -415,7 +430,7 @@ class GTLocator:
             return result
 
         # Extract symbols after patch
-        logger.info("Extracting symbols after patch")
+        logger.info("Extracting symbols AFTER patch")
         symbols_after = {}
         for file_path in python_files:
             full_path = os.path.join(repo_dir, file_path)
@@ -445,7 +460,7 @@ class GTLocator:
 
     def cleanup(self):
         """Clean up working directory if it's not the cache directory."""
-        # Don't cleanup if using the default ~/.codeminer/repos cache
+        # Don't cleanup if using the default ~/.codeminer cache
         if self.work_dir.startswith(str(Path.home()) + "/.codeminer"):
             logger.info(f"Keeping repositories in cache directory: {self.work_dir}")
         elif self.work_dir and os.path.exists(self.work_dir):
@@ -538,7 +553,7 @@ def main():
         "--work-dir",
         type=str,
         default=None,
-        help="Working directory for cloning repos (default: ~/.codeminer/repos)"
+        help="Working directory for cloning repos (default: ~/.codeminer)"
     )
     parser.add_argument(
         "--limit",
