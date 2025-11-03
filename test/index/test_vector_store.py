@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from codeminer.code_chunking import create_chunker
-from codeminer.embedding.vector_store import create_code_vector_store
+from codeminer.index import create_code_vector_store
 
 # Add the parent directory to the path to import codeminer modules
 sys.path.insert(0, str(Path(__file__).parent.parent))

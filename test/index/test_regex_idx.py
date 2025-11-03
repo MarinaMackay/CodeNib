@@ -1,6 +1,7 @@
 """
 Test RegexNodeIndex functionality using simple_repo.
 """
+
 from pathlib import Path
 
 from codeminer import RegexNodeIndex
@@ -31,21 +32,21 @@ def test_regex_index_basic():
 
     # Test 1: Search for 'calculator' (plain string)
     print("\n=== Test 1: Plain string search for 'calculator' ===")
-    results = regex_idx.search('calculator', use_regex=False)
+    results = regex_idx.search("calculator", use_regex=False)
     print(f"Found {len(results)} nodes containing 'calculator':")
     for node in results[:5]:  # Show first 5
         print(f"  - {node.node_name} ({node.type})")
 
     # Test 2: Regex search for function definitions
     print("\n=== Test 2: Regex search for function definitions ===")
-    results = regex_idx.search(r'def\s+\w+', file_glob='*.py')
+    results = regex_idx.search(r"def\s+\w+", file_glob="*.py")
     print(f"Found {len(results)} nodes with function definitions:")
     for node in results[:5]:
         print(f"  - {node.file}:{node.start_line} - {node.node_name}")
 
     # Test 3: Search with file glob filter
     print("\n=== Test 3: Search in calculator files only ===")
-    results = regex_idx.search('class', file_glob='*calculator*', use_regex=False)
+    results = regex_idx.search("class", file_glob="*calculator*", use_regex=False)
     print(f"Found {len(results)} nodes containing 'class' in calculator files:")
     for node in results:
         print(f"  - {node.file} - {node.node_name} ({node.type})")
@@ -61,8 +62,12 @@ def test_regex_index_basic():
 
     # Test 5: Case-sensitive search
     print("\n=== Test 5: Case-sensitive vs case-insensitive ===")
-    case_sensitive_results = regex_idx.search('CLASS', case_sensitive=True, use_regex=False)
-    case_insensitive_results = regex_idx.search('CLASS', case_sensitive=False, use_regex=False)
+    case_sensitive_results = regex_idx.search(
+        "CLASS", case_sensitive=True, use_regex=False
+    )
+    case_insensitive_results = regex_idx.search(
+        "CLASS", case_sensitive=False, use_regex=False
+    )
     print(f"Case-sensitive 'CLASS': {len(case_sensitive_results)} results")
     print(f"Case-insensitive 'CLASS': {len(case_insensitive_results)} results")
 
@@ -71,4 +76,3 @@ def test_regex_index_basic():
 
 if __name__ == "__main__":
     test_regex_index_basic()
-

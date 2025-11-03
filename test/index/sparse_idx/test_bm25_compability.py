@@ -6,8 +6,8 @@ from codeminer.env.process_swebench_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
+from codeminer.index import BM25CodeIndexer
 from codeminer.scip_interface import SCIPIndexer
-from codeminer.sparse_idx.bm25_index import BM25CodeIndexer
 
 args_dict = {
     "model": "gpt-4o",
@@ -34,9 +34,9 @@ def test_bm25_transgraph_compatibility():
         # setup codegraph
         repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
 
-        # Run the indexing pipeline, allowing skip_index and skip_decode for faster tests
+        # Run the indexing pipeline
         graph = repo_indexer.run_pipeline(
-            project_name="test_swebench",
+            project_name="test_swebench", skip_level="graph"
         )
 
         # setup bm25 indexer
