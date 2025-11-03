@@ -19,16 +19,16 @@ Output Format:
         "repo": "astropy/astropy",
         "base_commit": "6500928dc0e57be8f06d1162eacc3ba5e2eff692",
         "target_files":     ["astropy/coordinates/builtin_frames/itrs.py", ...],
-        "symbols_modified": ["astropy/coordinates/builtin_frames/itrs.py::ITRS", ...],
-        "symbols_added":    ["astropy/coordinates/builtin_frames/itrs_observed_transforms.py::itrs_to_observed", ...],
+        "symbols_modified": ["astropy/coordinates/builtin_frames/itrs.py:ITRS", ...],
+        "symbols_added":    ["astropy/coordinates/builtin_frames/itrs_observed_transforms.py:itrs_to_observed()", ...],
         "symbols_deleted": [],
         "error": null
     }
 
     Symbol Naming:
-    - Top-level functions: "module/file.py::function_name"
-    - Class methods: "module/file.py::ClassName.method_name"
-    - Nested classes: "module/file.py::OuterClass.InnerClass"
+    - Top-level functions: "module/file.py:function_name()"
+    - Classes: "module/file.py:ClassName"
+    - Class methods: "module/file.py:ClassName.method_name()"
 """
 
 import argparse
@@ -161,7 +161,12 @@ class GTLocator:
 
             for chunk in chunks:
                 if chunk.chunk_type in ('function', 'method', 'class'):
-                    symbols[chunk.name] = (chunk.start_line, chunk.end_line)
+                    # Format symbol name according to codebase standard
+                    if chunk.chunk_type in ('function', 'method'):
+                        symbol_name = f"{chunk.name}()"
+                    else:
+                        symbol_name = chunk.name
+                    symbols[symbol_name] = (chunk.start_line, chunk.end_line)
 
             logger.debug(f"Extracted {len(symbols)} symbols from {file_path}")
             return symbols
@@ -331,7 +336,7 @@ class GTLocator:
 
         for symbol_name in common:
             # Check if any changed lines fall within this symbol's range
-            file_path = symbol_name.split('::')[0]
+            file_path = symbol_name.split(':')[0]
             if file_path in changed_ranges:
                 symbol_range = symbols_after[symbol_name]
                 for change_start, change_end in changed_ranges[file_path]:
@@ -416,7 +421,7 @@ class GTLocator:
                 file_symbols = self.extract_symbols_from_file(full_path)
                 # Prefix with file path for uniqueness
                 for symbol_name, line_range in file_symbols.items():
-                    qualified_name = f"{file_path}::{symbol_name}"
+                    qualified_name = f"{file_path}:{symbol_name}"
                     symbols_before[qualified_name] = line_range
         logger.info(f"Extracted {len(symbols_before)} symbols before patch")
 
@@ -437,7 +442,7 @@ class GTLocator:
             if os.path.exists(full_path):
                 file_symbols = self.extract_symbols_from_file(full_path)
                 for symbol_name, line_range in file_symbols.items():
-                    qualified_name = f"{file_path}::{symbol_name}"
+                    qualified_name = f"{file_path}:{symbol_name}"
                     symbols_after[qualified_name] = line_range
         logger.info(f"Extracted {len(symbols_after)} symbols after patch")
 
