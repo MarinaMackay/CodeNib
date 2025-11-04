@@ -152,15 +152,15 @@ class GTLocator:
         logger.debug(f"Extracted changed line ranges for {len(changed_ranges)} files")
         return dict(changed_ranges)
 
-    def extract_symbols_from_file(self, file_path: str) -> Dict[str, Tuple[int, int]]:
+    def extract_symbols_from_file(self, file_path: str) -> Dict[str, any]:
         """
-        Extract all symbols from a file with their line ranges.
+        Extract all symbols from a file with their chunks.
 
         Args:
             file_path: Path to the source file
 
         Returns:
-            Dictionary mapping symbol names to (start_line, end_line) tuples
+            Dictionary mapping symbol names to CodeChunk objects
         """
         if not os.path.exists(file_path):
             logger.debug(f"File does not exist: {file_path}")
@@ -177,7 +177,7 @@ class GTLocator:
                         symbol_name = f"{chunk.name}()"
                     else:
                         symbol_name = chunk.name
-                    symbols[symbol_name] = (chunk.start_line, chunk.end_line)
+                    symbols[symbol_name] = chunk
 
             logger.debug(f"Extracted {len(symbols)} symbols from {file_path}")
             return symbols
@@ -313,16 +313,16 @@ class GTLocator:
 
     def compare_symbols(
         self,
-        symbols_before: Dict[str, Tuple[int, int]],
-        symbols_after: Dict[str, Tuple[int, int]],
+        symbols_before: Dict[str, any],
+        symbols_after: Dict[str, any],
         changed_ranges: Dict[str, List[Tuple[int, int]]]
     ) -> Tuple[List[str], List[str], List[str]]:
         """
         Compare symbols before and after patch to identify changes.
 
         Args:
-            symbols_before: Dictionary mapping symbol names to line ranges before patch
-            symbols_after: Dictionary mapping symbol names to line ranges after patch
+            symbols_before: Dictionary mapping symbol names to CodeChunk objects before patch
+            symbols_after: Dictionary mapping symbol names to CodeChunk objects after patch
             changed_ranges: Dictionary mapping file paths to list of changed line ranges
 
         Returns:
@@ -346,16 +346,37 @@ class GTLocator:
         symbols_modified = []
 
         for symbol_name in common:
-            # Check if any changed lines fall within this symbol's range
-            file_path = symbol_name.split(':')[0]
-            if file_path in changed_ranges:
-                symbol_range = symbols_after[symbol_name]
-                for change_start, change_end in changed_ranges[file_path]:
-                    # Check if ranges overlap
-                    if change_end >= symbol_range[0] and change_start <= symbol_range[1]:
-                        symbols_modified.append(symbol_name)
-                        logger.debug(f"Symbol modified: {symbol_name} (lines {symbol_range[0]}-{symbol_range[1]})")
-                        break
+            file_path, _, _ = symbol_name.partition(':') 
+            if file_path not in changed_ranges:
+                continue
+
+            chunk_before = symbols_before[symbol_name]
+            chunk_after = symbols_after[symbol_name]
+
+            # First check if length changed (cheapest check)
+            length_before = chunk_before.end_line - chunk_before.start_line + 1
+            length_after = chunk_after.end_line - chunk_after.start_line + 1
+
+            if length_before != length_after:
+                symbols_modified.append(symbol_name)
+                logger.debug(f"Symbol modified (length changed): {symbol_name} "
+                           f"(before: {length_before} lines, after: {length_after} lines)")
+                continue
+
+            # Length is the same, check if any changed lines overlap with this symbol's range
+            has_overlap = any(
+                change_end >= chunk_after.start_line and change_start <= chunk_after.end_line
+                for change_start, change_end in changed_ranges[file_path]
+            )
+
+            if has_overlap:
+                # Length is same but has changes in range, compare content directly
+                if chunk_before.content != chunk_after.content:
+                    symbols_modified.append(symbol_name)
+                    logger.debug(f"Symbol modified (content changed): {symbol_name} "
+                               f"(lines {chunk_after.start_line}-{chunk_after.end_line})")
+                else:
+                    logger.debug(f"Content identical for {symbol_name}, not marking as modified")
 
         symbols_modified = sorted(symbols_modified)
         logger.debug(f"Found {len(symbols_modified)} modified symbols")
@@ -431,9 +452,9 @@ class GTLocator:
             if os.path.exists(full_path):
                 file_symbols = self.extract_symbols_from_file(full_path)
                 # Prefix with file path for uniqueness
-                for symbol_name, line_range in file_symbols.items():
+                for symbol_name, chunk in file_symbols.items():
                     qualified_name = f"{file_path}:{symbol_name}"
-                    symbols_before[qualified_name] = line_range
+                    symbols_before[qualified_name] = chunk
         logger.info(f"Extracted {len(symbols_before)} symbols before patch")
 
         # Get changed line ranges
@@ -452,9 +473,9 @@ class GTLocator:
             full_path = os.path.join(repo_dir, file_path)
             if os.path.exists(full_path):
                 file_symbols = self.extract_symbols_from_file(full_path)
-                for symbol_name, line_range in file_symbols.items():
+                for symbol_name, chunk in file_symbols.items():
                     qualified_name = f"{file_path}:{symbol_name}"
-                    symbols_after[qualified_name] = line_range
+                    symbols_after[qualified_name] = chunk
         logger.info(f"Extracted {len(symbols_after)} symbols after patch")
 
         # Compare symbols to identify changes
