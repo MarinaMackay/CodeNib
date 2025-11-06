@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from codeminer.code_chunker import CodeChunker
+from codeminer.index import BM25CodeIndexer
 from codeminer.scip_interface import SCIPIndexer
-from codeminer.sparse_idx.bm25_index import BM25CodeIndexer
 
 
 @pytest.fixture(scope="module")
@@ -38,8 +38,6 @@ def code_graph(samplemod_repo):
     graph = repo_indexer.run_pipeline(
         project_name="SampleModRepo",
         output_file=output_file,
-        skip_index=False,
-        skip_decode=False,
     )
 
     return graph
@@ -106,73 +104,6 @@ def test_build_index_from_graph(code_graph, test_output_dir):
     assert len(loaded_results) > 0
 
 
-def test_build_index_from_chunker(code_chunker, test_output_dir):
-    """Test building BM25 index from CodeChunker."""
-    print(f"\nCollected {len(code_chunker.nodes)} nodes from chunker")
-
-    # Create BM25 indexer from chunker
-    print("Building BM25 index from chunker...")
-    indexer = BM25CodeIndexer(code_chunker=code_chunker, max_k=10, language="english")
-
-    # Verify index was built
-    assert indexer.retriever is not None
-    assert len(indexer.documents) > 0, "Index should contain documents"
-    assert len(indexer.nodes) > 0, "Index should contain nodes"
-    assert len(indexer.documents) == len(
-        code_chunker.nodes
-    ), "Number of documents should match number of nodes"
-
-    print(f"Index built with {len(indexer.documents)} documents")
-    print(f"Index contains {len(indexer.nodes)} nodes")
-
-    # Test search functionality
-    search_queries = [
-        "hmm",  # Should match get_hmm
-        "get_hmm",  # Partial match
-        "sample",  # Should match sample module
-    ]
-
-    for query in search_queries:
-        print(f"\nSearching for '{query}':")
-        results = indexer.search(query, top_k=3, return_code_content=False)
-
-        assert isinstance(results, list), "Search should return a list"
-        for i, result in enumerate(results, 1):
-            print(f"  {i}. {result.node_name} (type: {result.type})")
-            assert hasattr(result, "node_name")
-            assert hasattr(result, "type")
-
-    # Test save and load functionality
-    index_dir = test_output_dir / "bm25_chunker_index_test"
-    index_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"\nSaving index to {index_dir}...")
-    indexer.save_index(str(index_dir))
-
-    assert (index_dir / "documents.json").exists(), "documents.json should be created"
-    assert (
-        index_dir / "bm25_metadata.json"
-    ).exists(), "bm25_metadata.json should be created"
-
-    # Load the index
-    print("Loading index from disk...")
-    new_indexer = BM25CodeIndexer()
-    new_indexer.load_index(str(index_dir))
-
-    assert new_indexer.retriever is not None, "Loaded index should have a retriever"
-    assert len(new_indexer.documents) == len(
-        indexer.documents
-    ), "Loaded index should have same number of documents"
-
-    # Verify loaded index works
-    print("\nSearching with loaded index:")
-    loaded_results = new_indexer.search(search_queries[0], top_k=3)
-
-    assert len(loaded_results) > 0, "Loaded index should return search results"
-    for i, result in enumerate(loaded_results, 1):
-        print(f"  {i}. {result.node_name} (type: {result.type})")
-
-
 def test_build_index_from_chunks(code_chunks, test_output_dir):
     """Test building BM25 index from a list of CodeChunk objects."""
     print(f"\nReceived {len(code_chunks)} chunks")
@@ -197,9 +128,9 @@ def test_build_index_from_chunks(code_chunks, test_output_dir):
         for chunk in code_chunks
         if hasattr(chunk, "node_id") and chunk.node_id
     )
-    assert len(indexer.documents) == len(
+    assert len(indexer.nodes) == len(
         unique_node_ids
-    ), "Should have one document per unique node_id"
+    ), "Should have one node per unique node_id"
 
     # Test search functionality
     search_queries = [

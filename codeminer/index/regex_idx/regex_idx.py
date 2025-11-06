@@ -6,9 +6,9 @@ import re
 from fnmatch import fnmatch
 from typing import List, Optional
 
-from ..graph.code_graph import CodeGraph
-from ..log_utils import get_logger
-from ..types import NodeWithContent
+from ...graph.code_graph import CodeGraph
+from ...log_utils import get_logger
+from ...types import NodeWithContent
 
 logger = get_logger(__name__)
 
@@ -37,11 +37,11 @@ class RegexNodeIndex:
     def _build_index(self):
         """Build index from CodeGraph."""
         vs = self.code_graph.get_graph().vs
-        
+
         for v in vs:
             vid = v.index
             attrs = v.attributes()
-            
+
             # Get content from the node
             content: Optional[str] = None
             try:
@@ -51,7 +51,7 @@ class RegexNodeIndex:
             except Exception as e:
                 logger.debug(f"Failed to get content for node {vid}: {e}")
                 content = None
-            
+
             # Create NodeWithContent object
             node = NodeWithContent(
                 node_name=v["name"],
@@ -59,10 +59,10 @@ class RegexNodeIndex:
                 file=attrs.get("file"),
                 start_line=attrs.get("start_line"),
                 end_line=attrs.get("end_line"),
-                content=content
+                content=content,
             )
             self.nodes.append(node)
-        
+
         logger.info(f"Built index with {len(vs)} nodes")
 
     def search(
@@ -71,9 +71,9 @@ class RegexNodeIndex:
         file_glob: Optional[str] = None,
         node_type: Optional[str] = None,
         case_sensitive: bool = False,
-        use_regex: bool = True
+        use_regex: bool = True,
     ) -> List[NodeWithContent]:
-        """
+        r"""
         Search for pattern in node content (grep-like functionality).
 
         Args:
@@ -93,22 +93,18 @@ class RegexNodeIndex:
         """
         # Step 1: Filter by structural attributes (file, type)
         candidates = self.nodes
-        
+
         if file_glob:
             candidates = [
-                n for n in candidates 
-                if n.file and fnmatch(n.file, file_glob)
+                n for n in candidates if n.file and fnmatch(n.file, file_glob)
             ]
-        
+
         if node_type:
-            candidates = [
-                n for n in candidates 
-                if n.type == node_type
-            ]
-        
+            candidates = [n for n in candidates if n.type == node_type]
+
         # Step 2: Search in content using regex or plain string
         matches = []
-        
+
         if use_regex:
             # Regex matching
             flags = 0 if case_sensitive else re.IGNORECASE
@@ -117,29 +113,23 @@ class RegexNodeIndex:
             except re.error as e:
                 logger.error(f"Invalid regex pattern '{pattern}': {e}")
                 raise ValueError(f"Invalid regex pattern: {e}")
-            
-            matches = [
-                n for n in candidates 
-                if n.content and regex.search(n.content)
-            ]
+
+            matches = [n for n in candidates if n.content and regex.search(n.content)]
         else:
             # Plain string matching
             if case_sensitive:
-                matches = [
-                    n for n in candidates
-                    if n.content and pattern in n.content
-                ]
+                matches = [n for n in candidates if n.content and pattern in n.content]
             else:
                 pattern_lower = pattern.lower()
                 matches = [
-                    n for n in candidates
+                    n
+                    for n in candidates
                     if n.content and pattern_lower in n.content.lower()
                 ]
-        
+
         logger.debug(
             f"Search pattern='{pattern}' file_glob={file_glob} node_type={node_type}: "
             f"found {len(matches)} matches from {len(candidates)} candidates"
         )
-        
-        return matches
 
+        return matches
