@@ -5,14 +5,14 @@ import unittest
 from pathlib import Path
 
 from codeminer.code_chunker import CodeChunker
+from codeminer.index import BM25CodeIndexer
 from codeminer.scip_interface import SCIPIndexer
-from codeminer.sparse_idx.bm25_index import BM25CodeIndexer
 
 
 class TestDenseCompatibility(unittest.TestCase):
     def setUp(self):
         """Set up test environment"""
-        self.repo_path = Path(__file__).parent / "simple_repo"
+        self.repo_path = Path(__file__).parent.parent / "simple_repo"
         self.output_path = Path.home() / ".codeminer" / "simple_repo_nodes_test"
 
         # Ensure the test repo exists

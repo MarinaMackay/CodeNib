@@ -6,8 +6,8 @@ from codeminer.env.process_swebench_data import (
     process_swebench_instance,
 )
 from codeminer.graph.roi_subgraph import ROISubgraph
+from codeminer.index import BM25CodeIndexer
 from codeminer.scip_interface import SCIPIndexer
-from codeminer.sparse_idx.bm25_index import BM25CodeIndexer
 
 args_dict = {
     "model": "gpt-4o",

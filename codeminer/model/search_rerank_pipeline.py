@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from ..agent.rerank_agent import RerankAgent
 from ..code_chunker import CodeChunker
-from ..embedding import CodeVectorStore
+from ..index.embedding import CodeVectorStore
 from ..llm.llm_config import LLMConfig, LLMProvider
 from ..log_utils import get_logger
 from ..types import NodeWithScoreContent
@@ -22,7 +22,7 @@ class SearchRerankPipeline:
     similarity search:
 
     .. math::
-        \mathcal{C}_{\text{top-k}} = \text{TopK}(\text{sim}(\mathbf{e}_q, \mathbf{e}_c) 
+        \mathcal{C}_{\text{top-k}} = \text{TopK}(\text{sim}(\mathbf{e}_q, \mathbf{e}_c)
         \mid c \in \mathcal{C})
 
     where :math:`\mathbf{e}_q` is the query embedding, :math:`\mathbf{e}_c` is
@@ -88,7 +88,7 @@ class SearchRerankPipeline:
         rerank_temperature: float = 0.0,
         rerank_max_tokens: int = 2048,
         # Repo processing config
-        languages: Optional[List[str]] = ['python'],
+        languages: Optional[List[str]] = None,
         max_lines_per_chunk: int = 100,
         # Cache config
         cache_dir: Optional[str] = None,
@@ -101,37 +101,45 @@ class SearchRerankPipeline:
         self.repo_path = None
         self.vector_store = None
         self.rerank_agent = None
-        
+
         # Validate repo_path
         self.repo_path = os.path.abspath(repo_path)
         if not os.path.exists(self.repo_path):
             raise ValueError(f"Repository path does not exist: {self.repo_path}")
         if not os.path.isdir(self.repo_path):
             raise ValueError(f"Repository path is not a directory: {self.repo_path}")
-        
+
         # Initialize index directory
         cache_dir = Path(cache_dir or Path.home() / ".codeminer")
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create the index path based on instance_id or repo name
         if instance_id:
             index_path = cache_dir / instance_id
         else:
             repo_name = os.path.basename(self.repo_path)
-            index_path = cache_dir / f"index_{repo_name}_{embedding_model.replace('/', '_')}"
-        
+            index_path = (
+                cache_dir / f"index_{repo_name}_{embedding_model.replace('/', '_')}"
+            )
+
         # Prepare embedding kwargs
         embedding_kwargs = {}
         if embedding_model_kwargs:
             # Extract specific kwargs for different purposes
             if "model_kwargs" in embedding_model_kwargs:
-                embedding_kwargs["model_kwargs"] = embedding_model_kwargs["model_kwargs"]
+                embedding_kwargs["model_kwargs"] = embedding_model_kwargs[
+                    "model_kwargs"
+                ]
             if "encode_kwargs" in embedding_model_kwargs:
-                embedding_kwargs["encode_kwargs"] = embedding_model_kwargs["encode_kwargs"]
+                embedding_kwargs["encode_kwargs"] = embedding_model_kwargs[
+                    "encode_kwargs"
+                ]
             if "trust_remote_code" in embedding_model_kwargs:
                 if "model_kwargs" not in embedding_kwargs:
                     embedding_kwargs["model_kwargs"] = {}
-                embedding_kwargs["model_kwargs"]["trust_remote_code"] = embedding_model_kwargs["trust_remote_code"]
+                embedding_kwargs["model_kwargs"]["trust_remote_code"] = (
+                    embedding_model_kwargs["trust_remote_code"]
+                )
 
         self.vector_store = CodeVectorStore(
             embedding_model=embedding_model,
@@ -143,7 +151,7 @@ class SearchRerankPipeline:
 
         # Check if cache exists
         cache_exists = (index_path / "config.json").exists()
-        
+
         if cache_exists:
             logger.info(f"Loading existing vector store from cache: {index_path}")
             try:
@@ -151,7 +159,7 @@ class SearchRerankPipeline:
             except Exception as e:
                 logger.warning(f"Failed to load cache: {e}. Rebuilding index...")
                 cache_exists = False
-        
+
         if not cache_exists:
             code_chunker = CodeChunker(
                 language=languages[0],
@@ -168,18 +176,16 @@ class SearchRerankPipeline:
             self.vector_store.add_code_chunks(chunks_for_indexing)
             self.vector_store.save(str(index_path))
             logger.info(f"Built and saved vector store to cache: {index_path}")
-        
+
         # Create LLM config for rerank model
         llm_config = LLMConfig(
             model_name=rerank_model,
             provider=rerank_provider,
             max_tokens=rerank_max_tokens,
             temperature=rerank_temperature,
-            config_data={
-                "VLLM_TRUST_REMOTE_CODE": "true"
-            }
+            config_data={"VLLM_TRUST_REMOTE_CODE": "true"},
         )
-        
+
         # Initialize rerank agent
         self.rerank_agent = RerankAgent(llm_config=llm_config)
 
@@ -190,16 +196,20 @@ class SearchRerankPipeline:
             f"index_dir={index_path} with {len(self.vector_store.documents)} chunks, "
             f"rerank={rerank_provider.value}:{rerank_model}"
         )
-    
+
     def query(self, query: str, top_k: int = 10) -> List[NodeWithScoreContent]:
         """
         Query the vector store and rerank the results.
         """
-        nodes_with_content = self.vector_store.search_with_content(query=query, top_k=top_k)
+        nodes_with_content = self.vector_store.search_with_content(
+            query=query, top_k=top_k
+        )
         content_map = {node.node_name: node.content for node in nodes_with_content}
-        
-        ranked_nodes = self.rerank_agent.rerank_nodes(query, nodes_with_content, top_k=top_k)
-        
+
+        ranked_nodes = self.rerank_agent.rerank_nodes(
+            query, nodes_with_content, top_k=top_k
+        )
+
         results = []
         for node in ranked_nodes:
             result = NodeWithScoreContent(
@@ -214,4 +224,3 @@ class SearchRerankPipeline:
             results.append(result)
 
         return results
-
