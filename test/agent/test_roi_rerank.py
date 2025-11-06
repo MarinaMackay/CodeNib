@@ -37,9 +37,9 @@ if __name__ == "__main__":
         # setup codegraph
         repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
 
-        # Run the indexing pipeline, allowing skip_index and skip_decode for faster tests
+        # Run the indexing pipeline
         graph = repo_indexer.run_pipeline(
-            project_name="test_swebench",
+            project_name="test_swebench", skip_level="graph"
         )
 
         # get node info
