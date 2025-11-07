@@ -9,7 +9,7 @@ from ..log_utils import get_logger
 from ..plans.execution import ExecutionEngine
 from ..plans.ir_exec import ExecutionNode
 from ..plans.ir_physical import PhysicalOperator
-from ..types import NodeWithScoreContent
+from ..types import QueriedNode
 
 logger = get_logger(__name__)
 
@@ -155,10 +155,10 @@ def _coerce_query_from_payload(payload: object) -> Optional[str]:
     return None
 
 
-def _collect_nodes(inputs: Sequence[object]) -> List[NodeWithScoreContent]:
-    collected: List[NodeWithScoreContent] = []
+def _collect_nodes(inputs: Sequence[object]) -> List[QueriedNode]:
+    collected: List[QueriedNode] = []
     for payload in inputs:
-        if isinstance(payload, NodeWithScoreContent):
+        if isinstance(payload, QueriedNode):
             collected.append(payload)
             continue
         if isinstance(payload, dict):

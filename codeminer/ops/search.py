@@ -10,7 +10,7 @@ from ..log_utils import get_logger
 from ..plans.execution import ExecutionEngine
 from ..plans.ir_exec import ExecutionNode
 from ..plans.ir_physical import PhysicalOperator
-from ..types import NodeWithContent, NodeWithScore, NodeWithScoreContent
+from ..types import NodeWithContent, NodeWithScore, QueriedNode
 
 logger = get_logger(__name__)
 
@@ -40,7 +40,7 @@ def register_search_ops(engine: ExecutionEngine, context: SearchContext) -> None
 
 
 def _bm25_kernel(context: SearchContext):
-    def run(node: ExecutionNode, _: List[object]) -> List[NodeWithScoreContent]:
+    def run(node: ExecutionNode, _: List[object]) -> List[QueriedNode]:
         index = context.bm25
         if index is None:
             raise RuntimeError("BM25 operator invoked but no BM25CodeIndexer provided.")
@@ -69,7 +69,7 @@ def _bm25_kernel(context: SearchContext):
 
 
 def _vector_kernel(context: SearchContext):
-    def run(node: ExecutionNode, _: List[object]) -> List[NodeWithScoreContent]:
+    def run(node: ExecutionNode, _: List[object]) -> List[QueriedNode]:
         store = context.vector_store
         if store is None:
             raise RuntimeError(
@@ -105,7 +105,7 @@ def _vector_kernel(context: SearchContext):
                 if content is not None:
                     content_map[key] = content
 
-        normalized: List[NodeWithScoreContent] = []
+        normalized: List[QueriedNode] = []
         for result in scored:
             data = _dump_model(result)
             key = (
@@ -115,7 +115,7 @@ def _vector_kernel(context: SearchContext):
                 data.get("end_line"),
             )
             data["content"] = content_map.get(key)
-            normalized.append(NodeWithScoreContent(**data))
+            normalized.append(QueriedNode(**data))
 
         return normalized
 
@@ -123,7 +123,7 @@ def _vector_kernel(context: SearchContext):
 
 
 def _regex_kernel(context: SearchContext):
-    def run(node: ExecutionNode, _: List[object]) -> List[NodeWithScoreContent]:
+    def run(node: ExecutionNode, _: List[object]) -> List[QueriedNode]:
         index = context.regex_index
         if index is None:
             raise RuntimeError("Regex search operator invoked without RegexNodeIndex.")
@@ -163,11 +163,11 @@ def _regex_kernel(context: SearchContext):
 
 
 def _hybrid_kernel():
-    def run(node: ExecutionNode, inputs: List[object]) -> List[NodeWithScoreContent]:
+    def run(node: ExecutionNode, inputs: List[object]) -> List[QueriedNode]:
         if not inputs:
             return []
 
-        branches: List[List[NodeWithScoreContent]] = []
+        branches: List[List[QueriedNode]] = []
         for branch in inputs:
             branches.append(_to_score_content(_ensure_sequence(branch)))
 
@@ -177,7 +177,7 @@ def _hybrid_kernel():
             weights = [1.0] * len(branches)
 
         accumulator: Dict[
-            Tuple[str, str, Optional[int], Optional[int]], NodeWithScoreContent
+            Tuple[str, str, Optional[int], Optional[int]], QueriedNode
         ] = {}
 
         for weight, results in zip(weights, branches):
@@ -235,16 +235,16 @@ def _ensure_sequence(value: object) -> Sequence[object]:
     return [value]
 
 
-def _to_score_content(results: Sequence[object]) -> List[NodeWithScoreContent]:
-    converted: List[NodeWithScoreContent] = []
+def _to_score_content(results: Sequence[object]) -> List[QueriedNode]:
+    converted: List[QueriedNode] = []
     for rank, item in enumerate(results):
-        if isinstance(item, NodeWithScoreContent):
+        if isinstance(item, QueriedNode):
             converted.append(item)
             continue
         if isinstance(item, NodeWithScore):
             data = _dump_model(item)
             data.setdefault("content", None)
-            converted.append(NodeWithScoreContent(**data))
+            converted.append(QueriedNode(**data))
             continue
         if isinstance(item, NodeWithContent):
             data = _dump_model(item)
@@ -252,7 +252,7 @@ def _to_score_content(results: Sequence[object]) -> List[NodeWithScoreContent]:
             if not score:
                 score = 1.0 / (rank + 1)
             data["score"] = score
-            converted.append(NodeWithScoreContent(**data))
+            converted.append(QueriedNode(**data))
             continue
         if isinstance(item, dict):
             data = dict(item)
@@ -262,23 +262,23 @@ def _to_score_content(results: Sequence[object]) -> List[NodeWithScoreContent]:
             data["score"] = score
             data.setdefault("node_name", data.get("name", ""))
             data.setdefault("content", data.get("content"))
-            converted.append(NodeWithScoreContent(**data))
+            converted.append(QueriedNode(**data))
             continue
         raise TypeError(f"Unsupported result type for normalization: {type(item)}")
     return converted
 
 
 def _merge_scores(
-    existing: NodeWithScoreContent, new_item: NodeWithScoreContent, delta_score: float
-) -> NodeWithScoreContent:
+    existing: QueriedNode, new_item: QueriedNode, delta_score: float
+) -> QueriedNode:
     updated_score = existing.score + delta_score
     content = existing.content or new_item.content
     return _with_score(existing, updated_score, content_override=content)
 
 
 def _with_score(
-    item: NodeWithScoreContent, score: float, *, content_override: Optional[str] = None
-) -> NodeWithScoreContent:
+    item: QueriedNode, score: float, *, content_override: Optional[str] = None
+) -> QueriedNode:
     update = {"score": score}
     if content_override is not None:
         update["content"] = content_override
@@ -288,7 +288,7 @@ def _with_score(
         return item.copy(update=update)
     data = _dump_model(item)
     data.update(update)
-    return NodeWithScoreContent(**data)
+    return QueriedNode(**data)
 
 
 def _dump_model(model: object) -> Dict[str, object]:
