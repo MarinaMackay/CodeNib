@@ -15,22 +15,25 @@ from ..types import ROOT_NODE, NodeWithScoreContent
 
 logger = get_logger(__name__)
 
+
 class Stage1Result(BaseModel):
     """Model for Stage 1 output - file localization."""
-    
+
     files: List[str] = Field(description="List of file paths that need to be edited")
 
 
 class Stage2Result(BaseModel):
     """Model for Stage 2 output - node localization."""
-    
+
     nodes: List[str] = Field(description="List of node IDs that need to be edited")
 
 
 class Stage3Result(BaseModel):
     """Model for Stage 3 output - node refinement."""
-    
-    refined_nodes: List[str] = Field(description="List of refined node IDs that require changes")
+
+    refined_nodes: List[str] = Field(
+        description="List of refined node IDs that require changes"
+    )
 
 
 class AgentlessPipeline:
@@ -117,9 +120,9 @@ class AgentlessPipeline:
         self.repo_path = os.path.abspath(repo_path)
         self.repo_commit = repo_commit.strip()
         self.top_n_files = top_n_files
-        self.languages = languages or ['python']
+        self.languages = languages or ["python"]
         self._non_test_file_nodes_cache: Optional[List[str]] = None
-        
+
         # Validate repo
         if not os.path.exists(self.repo_path):
             raise ValueError(f"Repository path does not exist: {self.repo_path}")
@@ -127,35 +130,35 @@ class AgentlessPipeline:
             raise ValueError(f"Repository path is not a directory: {self.repo_path}")
         if not self.repo_commit or not isinstance(self.repo_commit, str):
             raise ValueError("repo_commit must be provided as a non-empty string")
-        
+
         # Initialize cache directory
         cache_dir = Path(cache_dir or Path.home() / ".codeminer")
         cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Prepare repo identifiers
         repo_name = os.path.basename(self.repo_path)
         commit_identifier = self.repo_commit[:12]
-        
+
         # Create SCIP output directory based on instance_id or repo name
         if instance_id:
             scip_output_dir = cache_dir / instance_id
         else:
             scip_output_dir = cache_dir / f"scip_{repo_name}@{commit_identifier}"
-        
+
         scip_output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         scip_indexer = SCIPIndexer(self.repo_path, output_dir=str(scip_output_dir))
         self.code_graph: CodeGraph = scip_indexer.run_pipeline(
             project_name=f"{repo_name}@{commit_identifier}",
-            skip_level="graph"  # Enable cache: load from graph.pkl if exists
+            skip_level="graph",  # Enable cache: load from graph.pkl if exists
         )
-        
+
         if not self.code_graph:
             raise ValueError("Failed to build code graph")
-        
+
         # Initialize searcher
         self.entity_searcher = RepoEntitySearcher(self.code_graph)
-        
+
         # Initialize LLM
         llm_config = LLMConfig(
             model_name=llm_model,
@@ -164,7 +167,7 @@ class AgentlessPipeline:
             temperature=llm_temperature,
         )
         self.llm = create_llm(config=llm_config)
-        
+
         # Load prompt templates from files using LangChain
         prompt_dir = Path(__file__).parent / "prompts"
         self.stage1_prompt = PromptTemplate.from_file(
@@ -176,12 +179,12 @@ class AgentlessPipeline:
         self.stage3_prompt = PromptTemplate.from_file(
             str(prompt_dir / "agentless_stage3.txt")
         ).template
-        
+
         # Create structured LLMs for each stage
         self.structured_llm_stage1 = self.llm.with_structured_output(Stage1Result)
         self.structured_llm_stage2 = self.llm.with_structured_output(Stage2Result)
         self.structured_llm_stage3 = self.llm.with_structured_output(Stage3Result)
-        
+
         logger.info(
             f"AgentlessPipeline initialized: "
             f"repo={repo_name}@{commit_identifier}, "
@@ -189,28 +192,28 @@ class AgentlessPipeline:
             f"top_n_files={top_n_files}, "
             f"cache_dir={cache_dir}"
         )
-    
+
     def query(
-        self, 
+        self,
         problem_statement: str,
     ) -> List[NodeWithScoreContent]:
         files = self._stage_1(problem_statement)
         logger.info(f"Localized {len(files)} files: {files}")
         if not files:
             raise ValueError("No files localized in Stage 1")
-        
+
         nodes = self._stage_2(problem_statement, files)
         logger.info(f"Localized {len(nodes)} nodes: {nodes}")
         if not nodes:
             raise ValueError("No nodes localized in Stage 2")
-        
+
         refined_nodes = self._stage_3(problem_statement, nodes)
         logger.info(f"Localized {len(refined_nodes)} nodes: {refined_nodes}")
         if not refined_nodes:
             raise ValueError("No nodes refined in Stage 3")
-        
+
         return refined_nodes
-    
+
     def _stage_1(self, problem_statement: str) -> List[str]:
         """
         Stage 1: File-level localization using LLM + repository structure.
@@ -222,16 +225,16 @@ class AgentlessPipeline:
             direction="downstream",
             hops=3,
             node_type_filter=["file", "directory"],
-            edge_type_filter=["contain"]
+            edge_type_filter=["contain"],
         )
-        
+
         # Create prompt from loaded template
         prompt = self.stage1_prompt.format(
             problem_statement=problem_statement,
             structure=structure,
-            top_n=self.top_n_files
+            top_n=self.top_n_files,
         )
-        
+
         # Query LLM with structured output
         try:
             input_msg = HumanMessage(content=prompt)
@@ -246,12 +249,11 @@ class AgentlessPipeline:
 
         # Filter valid file nodes
         files = [
-            file for file in candidate_files
-            if self.entity_searcher.has_node(file)
+            file for file in candidate_files if self.entity_searcher.has_node(file)
         ]
 
         return files[: self.top_n_files]
-    
+
     def _stage_2(
         self,
         problem_statement: str,
@@ -277,19 +279,21 @@ class AgentlessPipeline:
                         edge_type_filter=["contain", "define"],
                     )
                     if structure:
-                        file_structures.append(f"### {file_path} ###\n```\n{structure}\n```\n")
+                        file_structures.append(
+                            f"### {file_path} ###\n```\n{structure}\n```\n"
+                        )
             except Exception as e:
                 raise ValueError(f"Error processing file {file_path}: {e}")
-        
+
         if not file_structures:
             raise ValueError("No file structures to process")
-        
+
         # Create prompt from loaded template
         prompt = self.stage2_prompt.format(
             problem_statement=problem_statement,
-            file_structures="\n".join(file_structures)
+            file_structures="\n".join(file_structures),
         )
-        
+
         # Query LLM with structured output
         try:
             input_msg = HumanMessage(content=prompt)
@@ -303,7 +307,7 @@ class AgentlessPipeline:
             raise ValueError("LLM did not return any node candidates")
 
         return candidate_nodes
-    
+
     def _stage_3(
         self,
         problem_statement: str,
@@ -333,12 +337,16 @@ class AgentlessPipeline:
                 raise ValueError(f"Error getting code for {symbol_node_id}: {exc}")
 
             if not node_data_list:
-                raise ValueError(f"No code content available for node: {symbol_node_id}")
+                raise ValueError(
+                    f"No code content available for node: {symbol_node_id}"
+                )
 
             node_data = node_data_list[0]
             code_content = node_data.get("code_content", "")
             if not code_content:
-                raise ValueError(f"Empty code content retrieved for node: {symbol_node_id}")
+                raise ValueError(
+                    f"Empty code content retrieved for node: {symbol_node_id}"
+                )
 
             code_segments.append(
                 f"### {symbol_node_id} ###\n```\n{code_content}\n```\n"
@@ -351,7 +359,7 @@ class AgentlessPipeline:
             problem_statement=problem_statement,
             code_segments="\n".join(code_segments),
         )
-        
+
         # Query LLM with structured output
         try:
             input_msg = HumanMessage(content=prompt)
@@ -366,17 +374,21 @@ class AgentlessPipeline:
 
         for node_id in shortlisted_node_ids:
             if node_id not in candidate_set:
-                raise ValueError(f"Discarding node not part of Stage 2 results: {node_id}")
-            
+                raise ValueError(
+                    f"Discarding node not part of Stage 2 results: {node_id}"
+                )
+
             attrs = self.entity_searcher.get_node_data([node_id])[0]
-            results.append(NodeWithScoreContent(
-                node_name=node_id,
-                type=attrs.get("type", "unknown"),
-                file=attrs.get("file"),
-                start_line=attrs.get("start_line"),
-                end_line=attrs.get("end_line"),
-                score=0.0,
-                content=content_map.get(node_id),
-            ))
+            results.append(
+                NodeWithScoreContent(
+                    node_name=node_id,
+                    type=attrs.get("type", "unknown"),
+                    file=attrs.get("file"),
+                    start_line=attrs.get("start_line"),
+                    end_line=attrs.get("end_line"),
+                    score=0.0,
+                    content=content_map.get(node_id),
+                )
+            )
 
         return results

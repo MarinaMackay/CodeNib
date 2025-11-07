@@ -6,13 +6,13 @@ Each instance's embedding will be stored in /mnt/data/codeminer/{instance_id}/
 Usage:
     # Build embeddings for all SWE-bench Lite instances
     python scripts/build_embeddings.py
-    
+
     # Build with custom embedding model
     python scripts/build_embeddings.py --embedding-model nomic-ai/CodeRankEmbed
-    
+
     # Build with filter (for testing)
     python scripts/build_embeddings.py --filter-instance "^(astropy__astropy-13579)$"
-    
+
     # Force rebuild even if embeddings already exist
     python scripts/build_embeddings.py --force-rebuild
 """
@@ -44,7 +44,7 @@ def parse_args():
         description="Build embedding indices for SWE-bench Lite instances",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    
+
     # Dataset configuration
     parser.add_argument(
         "--dataset",
@@ -64,7 +64,7 @@ def parse_args():
         default=".*",
         help="Regex pattern to filter instances (default: .* processes all instances)",
     )
-    
+
     # Embedding configuration
     parser.add_argument(
         "--embedding-model",
@@ -97,7 +97,7 @@ def parse_args():
         default=8,
         help="Batch size for embedding encoding",
     )
-    
+
     # Repository processing configuration
     parser.add_argument(
         "--languages",
@@ -112,7 +112,7 @@ def parse_args():
         default=300,
         help="Maximum lines per code chunk",
     )
-    
+
     # Storage configuration
     parser.add_argument(
         "--storage-dir",
@@ -126,7 +126,7 @@ def parse_args():
         default=False,
         help="Force rebuild embeddings even if they already exist",
     )
-    
+
     # Profiling configuration
     parser.add_argument(
         "--profile-dir",
@@ -139,23 +139,23 @@ def parse_args():
 
 def build_embeddings(args):
     """Build embedding indices for all SWE-bench Lite instances."""
-    
+
     # Prepare dataset args
     dataset_args = argparse.Namespace(
         dataset=args.dataset,
         split=args.split,
         filter_instance=args.filter_instance,
     )
-    
+
     # Load dataset
     dataset_instances = load_filter_swebench_dataset(args=dataset_args)
-    
+
     if len(dataset_instances) == 0:
         raise ValueError(f"No instances found in {args.dataset}")
-    
+
     logger.info(f"Loaded {len(dataset_instances)} instance(s)")
     logger.info(f"Embeddings will be stored in: {args.storage_dir}")
-    
+
     # Setup profile output directory
     profile_output_dir = (
         Path(args.profile_dir).expanduser()
@@ -165,14 +165,14 @@ def build_embeddings(args):
     profile_output_dir.mkdir(parents=True, exist_ok=True)
     if args.profile_dir:
         logger.info(f"Profiler summaries will be stored in: {profile_output_dir}")
-    
+
     # Process each instance
     for idx, instance in enumerate(dataset_instances):
         instance_id = instance["instance_id"]
         logger.info(f"\n{'='*80}")
         logger.info(f"Processing [{idx+1}/{len(dataset_instances)}]: {instance_id}")
         logger.info(f"{'='*80}")
-        
+
         try:
             # Create profiler for this instance
             instance_profiler = Profiler(
@@ -182,27 +182,31 @@ def build_embeddings(args):
                 summary_level=logging.INFO,
             )
             instance_profiler.enabled = args.profile_dir is not None
-            
+
             # Process instance to get repo path
             repo_path = process_swebench_instance(instance)
-            
+
             # Convert instance_id to directory name (replace / with __)
             instance_dir_name = instance_id.replace("/", "__")
-            
+
             # Set final directory for this instance
             instance_final_dir = Path(args.storage_dir) / instance_dir_name
             instance_final_dir.mkdir(parents=True, exist_ok=True)
-            
+
             logger.info(f"Repository path: {repo_path}")
             logger.info(f"Target directory: {instance_final_dir}")
-            
+
             # Check if embedding already exists
             if (instance_final_dir / "config.json").exists() and not args.force_rebuild:
-                logger.info(f"✓ Embedding already exists at {instance_final_dir}, skipping...")
+                logger.info(
+                    f"✓ Embedding already exists at {instance_final_dir}, skipping..."
+                )
                 continue
             elif (instance_final_dir / "config.json").exists() and args.force_rebuild:
-                logger.info(f"⚠ Embedding already exists but force-rebuild is enabled, rebuilding...")
-            
+                logger.info(
+                    f"⚠ Embedding already exists but force-rebuild is enabled, rebuilding..."
+                )
+
             # [Main] Chunk the repository code
             logger.info("Chunking repository code...")
             with instance_profiler.section("chunk_repository"):
@@ -214,13 +218,13 @@ def build_embeddings(args):
                     repo_path=repo_path,
                     languages=args.languages,
                 )
-            
+
             if not chunks:
                 logger.warning(f"No code chunks generated from repository, skipping...")
                 continue
-            
+
             logger.info(f"Generated {len(chunks)} code chunks")
-            
+
             # [Main] Create vector store
             logger.info("Creating vector store...")
             with instance_profiler.section("create_vector_store"):
@@ -230,7 +234,7 @@ def build_embeddings(args):
                     embedding_kwargs["model_kwargs"] = {"trust_remote_code": True}
                 if args.batch_size:
                     embedding_kwargs["encode_kwargs"] = {"batch_size": args.batch_size}
-                
+
                 vector_store = CodeVectorStore(
                     embedding_model=args.embedding_model,
                     embedding_provider=args.embedding_provider,
@@ -238,23 +242,23 @@ def build_embeddings(args):
                     store_path=str(instance_final_dir),
                     **embedding_kwargs,
                 )
-            
+
             # [Main] Add chunks to vector store
             logger.info("Adding chunks to vector store...")
             with instance_profiler.section("add_chunks"):
                 chunks_for_indexing = [chunk._asdict() for chunk in chunks]
                 vector_store.add_code_chunks(chunks_for_indexing)
-            
+
             # Save vector store
             logger.info("Saving vector store...")
             with instance_profiler.section("save_vector_store"):
                 vector_store.save(str(instance_final_dir))
-            
+
             # Save profiler report
             if args.profile_dir:
                 logger.info(f"Profiler summary for {instance_id}:")
                 profile_summary = instance_profiler.report(reset=True)
-                
+
                 sections_payload = [
                     {
                         "label": label,
@@ -267,7 +271,7 @@ def build_embeddings(args):
                     }
                     for label, stats in profile_summary
                 ]
-                
+
                 profile_payload = {
                     "instance_id": instance_id,
                     "repo": instance.get("repo", "unknown"),
@@ -275,24 +279,29 @@ def build_embeddings(args):
                     "total_chunks": len(chunks),
                     "embedding_model": args.embedding_model,
                     "embedding_dimension": args.embedding_dimension,
-                    "total_duration": sum(section["total"] for section in sections_payload),
+                    "total_duration": sum(
+                        section["total"] for section in sections_payload
+                    ),
                     "sections": sections_payload,
                 }
-                
-                profile_file = profile_output_dir / f"{instance_id.replace('/', '__')}.json"
+
+                profile_file = (
+                    profile_output_dir / f"{instance_id.replace('/', '__')}.json"
+                )
                 profile_file.write_text(json.dumps(profile_payload, indent=2))
                 logger.info(f"Saved profiler results to {profile_file}")
-            
+
             logger.info(f"✓ Successfully built embedding for {instance_id}")
             logger.info(f"  - Total chunks: {len(vector_store.documents)}")
             logger.info(f"  - Saved to: {instance_final_dir}")
-            
+
         except Exception as e:
             logger.error(f"✗ Failed to process {instance_id}: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             continue
-    
+
     logger.info(f"\n{'='*80}")
     logger.info("Embedding build complete!")
     logger.info(f"Processed {len(dataset_instances)} instance(s)")
@@ -304,10 +313,9 @@ def build_embeddings(args):
 def main():
     """Main entry point."""
     args = parse_args()
-    
+
     build_embeddings(args)
 
 
 if __name__ == "__main__":
     main()
-

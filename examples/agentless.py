@@ -8,14 +8,13 @@ python scripts/start_vllm_server.py --model Qwen/Qwen2.5-Coder-7B
 ```
 
 Usage example:
-    python examples/agentless.py --dataset swebench_lite  --filter-instance "^(psf__requests-1963)$" --llm-model "Qwen/Qwen3-32B" --llm-provider "vllm_openai" 
+    python examples/agentless.py --dataset swebench_lite  --filter-instance "^(psf__requests-1963)$" --llm-model "Qwen/Qwen3-32B" --llm-provider "vllm_openai"
 """
 
 import argparse
 import sys
 from pathlib import Path
 
-from codeminer.model import AgentlessPipeline
 from codeminer.env.process_locbench_data import (
     load_filter_locbench_dataset,
     process_locbench_instance,
@@ -24,8 +23,9 @@ from codeminer.env.process_swebench_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
-from codeminer.log_utils import get_logger
 from codeminer.llm.llm_config import LLMProvider
+from codeminer.log_utils import get_logger
+from codeminer.model import AgentlessPipeline
 
 logger = get_logger(__name__)
 
@@ -55,7 +55,7 @@ def parse_args():
         description="Run Agentless Pipeline on benchmark datasets",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    
+
     # Dataset configuration
     parser.add_argument(
         "--dataset",
@@ -76,7 +76,7 @@ def parse_args():
         default=None,
         help="Regex pattern to filter instances (None processes all instances)",
     )
-    
+
     # LLM configuration
     parser.add_argument(
         "--llm-model",
@@ -103,7 +103,7 @@ def parse_args():
         default=2048,
         help="Max tokens for LLM response",
     )
-    
+
     # Localization configuration
     parser.add_argument(
         "--top-n-files",
@@ -111,7 +111,7 @@ def parse_args():
         default=3,
         help="Number of files to localize in Stage 1",
     )
-    
+
     # Repository processing configuration
     parser.add_argument(
         "--languages",
@@ -120,7 +120,7 @@ def parse_args():
         default=["python"],
         help="Programming languages to process",
     )
-    
+
     # Cache configuration
     parser.add_argument(
         "--cache-dir",
@@ -128,49 +128,51 @@ def parse_args():
         default="/mnt/data/codeminer",
         help="Cache directory for index (default: /mnt/data/codeminer)",
     )
-    
+
     return parser.parse_args()
 
 
 def run_pipeline(args):
     """Run the Agentless pipeline on the specified dataset."""
-    
+
     # Get dataset configuration
     dataset = args.dataset
     dataset_config = DATASET_CONFIGS[dataset]
-    
+
     # Prepare dataset args
     dataset_args = argparse.Namespace(
         dataset=dataset_config["dataset"],
         split=args.split,
         filter_instance=args.filter_instance,
     )
-    
+
     # Load dataset
     dataset_instances = dataset_config["loader"](args=dataset_args)
-    
+
     if len(dataset_instances) == 0:
         raise ValueError(f"No instances found in {dataset} dataset")
-    
+
     logger.info(f"Loaded {len(dataset_instances)} instance(s)")
-    
+
     # Process each instance
     for _, instance in enumerate(dataset_instances):
         # Process instance to get repo path and commit
         repo_info = dataset_config["processor"](instance)
-        
+
         # Extract repo_path and repo_commit
         if isinstance(repo_info, dict):
             repo_path = repo_info.get("repo_path")
-            repo_commit = repo_info.get("base_commit") or repo_info.get("commit", "HEAD")
+            repo_commit = repo_info.get("base_commit") or repo_info.get(
+                "commit", "HEAD"
+            )
         else:
             repo_path = repo_info
             repo_commit = instance.get("base_commit", "HEAD")
-        
+
         # Get instance_id and convert to directory name
         instance_id = instance["instance_id"]
         instance_dir_name = instance_id.replace("/", "__")
-        
+
         # Initialize pipeline
         pipeline = AgentlessPipeline(
             repo_path=repo_path,
@@ -184,13 +186,13 @@ def run_pipeline(args):
             cache_dir=args.cache_dir,
             instance_id=instance_dir_name,
         )
-        
+
         # Query the pipeline
         query = instance["problem_statement"]
         results = pipeline.query(problem_statement=query)
-        
+
         for i, node in enumerate(results):
-            #TODO: save the results to a file
+            # TODO: save the results to a file
             logger.info("--------------------------------")
             logger.info(f"Rank {i + 1} (Score: {node.score:.4f})")
             logger.info(f"  Node Name: {node.node_name}")
@@ -203,15 +205,14 @@ def run_pipeline(args):
 def main():
     """Main entry point."""
     args = parse_args()
-    
+
     logger.info(f"Dataset type: {args.dataset}")
     logger.info(f"LLM model: {args.llm_model}")
     logger.info(f"LLM provider: {args.llm_provider}")
     logger.info(f"Top-N files: {args.top_n_files}")
-    
+
     run_pipeline(args)
 
 
 if __name__ == "__main__":
     main()
-

@@ -37,19 +37,20 @@ import os
 import re
 import shutil
 import subprocess
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+
+# Add parent directory to path to import codeminer modules
+import sys
 from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import datasets
 from datasets import Features, Value
 
-# Add parent directory to path to import codeminer modules
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from codeminer.log_utils import get_logger
-from codeminer.code_chunking import create_chunker
+from codeminer.code_chunking import create_chunker  # noqa: E402
+from codeminer.log_utils import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -88,18 +89,20 @@ class GTLocator:
 
         # Match file paths in diff headers
         # Format: --- a/path/to/file.py or +++ b/path/to/file.py
-        file_pattern = re.compile(r'^(?:\+\+\+|---) [ab]/(.+)$', re.MULTILINE)
+        file_pattern = re.compile(r"^(?:\+\+\+|---) [ab]/(.+)$", re.MULTILINE)
 
         for match in file_pattern.finditer(patch_content):
             file_path = match.group(1)
             # Skip /dev/null entries (for new/deleted files)
-            if file_path != '/dev/null' and file_path not in target_files:
+            if file_path != "/dev/null" and file_path not in target_files:
                 target_files.append(file_path)
 
         logger.debug(f"Extracted {len(target_files)} target files from patch")
         return target_files
 
-    def get_changed_line_ranges(self, patch_content: str) -> Dict[str, List[Tuple[int, int]]]:
+    def get_changed_line_ranges(
+        self, patch_content: str
+    ) -> Dict[str, List[Tuple[int, int]]]:
         """
         Extract the line ranges that were changed in each file from the patch.
 
@@ -114,38 +117,40 @@ class GTLocator:
         old_file = None  # Track the "before" file for deleted files
 
         # Parse the patch line by line
-        lines = patch_content.split('\n')
+        lines = patch_content.split("\n")
         i = 0
 
         while i < len(lines):
             line = lines[i]
 
-            ### Currently no detetions ###
+            # Currently no detections
             # Check for "before" file header (--- a/...)
-            if line.startswith('--- a/'):
+            if line.startswith("--- a/"):
                 old_file = line[6:]  # Remove '--- a/' prefix
-                if old_file == '/dev/null':
+                if old_file == "/dev/null":
                     old_file = None
                 i += 1
                 continue
 
             # Check for "after" file header (+++ b/...)
-            if line.startswith('+++ b/'):
+            if line.startswith("+++ b/"):
                 current_file = line[6:]  # Remove '+++ b/' prefix
-                if current_file == '/dev/null':
+                if current_file == "/dev/null":
                     # File is being deleted, use the old file path
                     current_file = old_file
                 i += 1
                 continue
 
             # Check for hunk header: @@ -old_start,old_count +new_start,new_count @@
-            hunk_match = re.match(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@', line)
+            hunk_match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
             if hunk_match and current_file:
                 new_start = int(hunk_match.group(1))
                 new_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
 
                 if new_count > 0:
-                    changed_ranges[current_file].append((new_start, new_start + new_count - 1))
+                    changed_ranges[current_file].append(
+                        (new_start, new_start + new_count - 1)
+                    )
 
             i += 1
 
@@ -171,9 +176,9 @@ class GTLocator:
             symbols = {}
 
             for chunk in chunks:
-                if chunk.chunk_type in ('function', 'method', 'class'):
+                if chunk.chunk_type in ("function", "method", "class"):
                     # Format symbol name according to codebase standard
-                    if chunk.chunk_type in ('function', 'method'):
+                    if chunk.chunk_type in ("function", "method"):
                         symbol_name = f"{chunk.name}()"
                     else:
                         symbol_name = chunk.name
@@ -296,7 +301,7 @@ class GTLocator:
                 input=patch_content,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
 
             if process.returncode != 0:
@@ -315,7 +320,7 @@ class GTLocator:
         self,
         symbols_before: Dict[str, any],
         symbols_after: Dict[str, any],
-        changed_ranges: Dict[str, List[Tuple[int, int]]]
+        changed_ranges: Dict[str, List[Tuple[int, int]]],
     ) -> Tuple[List[str], List[str], List[str]]:
         """
         Compare symbols before and after patch to identify changes.
@@ -328,7 +333,9 @@ class GTLocator:
         Returns:
             Tuple of (symbols_modified, symbols_added, symbols_deleted)
         """
-        logger.debug(f"Comparing symbols: {len(symbols_before)} before, {len(symbols_after)} after")
+        logger.debug(
+            f"Comparing symbols: {len(symbols_before)} before, {len(symbols_after)} after"
+        )
 
         before_set = set(symbols_before.keys())
         after_set = set(symbols_after.keys())
@@ -346,7 +353,7 @@ class GTLocator:
         symbols_modified = []
 
         for symbol_name in common:
-            file_path, _, _ = symbol_name.partition(':') 
+            file_path, _, _ = symbol_name.partition(":")
             if file_path not in changed_ranges:
                 continue
 
@@ -359,13 +366,16 @@ class GTLocator:
 
             if length_before != length_after:
                 symbols_modified.append(symbol_name)
-                logger.debug(f"Symbol modified (length changed): {symbol_name} "
-                           f"(before: {length_before} lines, after: {length_after} lines)")
+                logger.debug(
+                    f"Symbol modified (length changed): {symbol_name} "
+                    f"(before: {length_before} lines, after: {length_after} lines)"
+                )
                 continue
 
             # Length is the same, check if any changed lines overlap with this symbol's range
             has_overlap = any(
-                change_end >= chunk_after.start_line and change_start <= chunk_after.end_line
+                change_end >= chunk_after.start_line
+                and change_start <= chunk_after.end_line
                 for change_start, change_end in changed_ranges[file_path]
             )
 
@@ -373,10 +383,14 @@ class GTLocator:
                 # Length is same but has changes in range, compare content directly
                 if chunk_before.content != chunk_after.content:
                     symbols_modified.append(symbol_name)
-                    logger.debug(f"Symbol modified (content changed): {symbol_name} "
-                               f"(lines {chunk_after.start_line}-{chunk_after.end_line})")
+                    logger.debug(
+                        f"Symbol modified (content changed): {symbol_name} "
+                        f"(lines {chunk_after.start_line}-{chunk_after.end_line})"
+                    )
                 else:
-                    logger.debug(f"Content identical for {symbol_name}, not marking as modified")
+                    logger.debug(
+                        f"Content identical for {symbol_name}, not marking as modified"
+                    )
 
         symbols_modified = sorted(symbols_modified)
         logger.debug(f"Found {len(symbols_modified)} modified symbols")
@@ -393,22 +407,22 @@ class GTLocator:
         Returns:
             Dictionary with analysis results
         """
-        instance_id = instance['instance_id']
-        repo = instance['repo']
-        base_commit = instance['base_commit']
-        patch = instance['patch']
+        instance_id = instance["instance_id"]
+        repo = instance["repo"]
+        base_commit = instance["base_commit"]
+        patch = instance["patch"]
 
         logger.info(f"Analyzing instance: {instance_id}")
 
         result = {
-            'instance_id': instance_id,
-            'repo': repo,
-            'base_commit': base_commit,
-            'target_files': [],
-            'symbols_modified': [],
-            'symbols_added': [],
-            'symbols_deleted': [],
-            'error': None
+            "instance_id": instance_id,
+            "repo": repo,
+            "base_commit": base_commit,
+            "target_files": [],
+            "symbols_modified": [],
+            "symbols_added": [],
+            "symbols_deleted": [],
+            "error": None,
         }
 
         # Setup repository - use shared repo directory (one per repository, not per instance)
@@ -419,26 +433,28 @@ class GTLocator:
 
         # Clone and checkout
         if not self.clone_repo(repo_url, repo_dir):
-            result['error'] = 'Failed to clone repository'
+            result["error"] = "Failed to clone repository"
             return result
 
         if not self.checkout_commit(repo_dir, base_commit):
-            result['error'] = 'Failed to checkout base commit'
+            result["error"] = "Failed to checkout base commit"
             return result
-        
+
         # Get target files from patch
         logger.debug(f"Extracting target files for {instance_id}")
         target_files = self.get_target_files(patch)
-        result['target_files'] = target_files
+        result["target_files"] = target_files
 
         if not target_files:
             logger.warning(f"No target files found in patch for {instance_id}")
-            result['error'] = 'No target files found in patch'
+            result["error"] = "No target files found in patch"
             return result
 
         # Filter for Python files only (for now)
-        python_files = [f for f in target_files if f.endswith('.py')]
-        logger.info(f"Found {len(python_files)} Python files in {len(target_files)} target files")
+        python_files = [f for f in target_files if f.endswith(".py")]
+        logger.info(
+            f"Found {len(python_files)} Python files in {len(target_files)} target files"
+        )
 
         if not python_files:
             logger.info(f"No Python files affected in {instance_id}")
@@ -463,7 +479,7 @@ class GTLocator:
 
         # Apply patch
         if not self.apply_patch(repo_dir, patch):
-            result['error'] = 'Failed to apply patch'
+            result["error"] = "Failed to apply patch"
             return result
 
         # Extract symbols after patch
@@ -484,14 +500,16 @@ class GTLocator:
             symbols_before, symbols_after, changed_ranges
         )
 
-        result['symbols_modified'] = symbols_modified
-        result['symbols_added'] = symbols_added
-        result['symbols_deleted'] = symbols_deleted
+        result["symbols_modified"] = symbols_modified
+        result["symbols_added"] = symbols_added
+        result["symbols_deleted"] = symbols_deleted
 
-        logger.info(f"Completed analysis for {instance_id}: "
-                   f"{len(symbols_modified)} modified, "
-                   f"{len(symbols_added)} added, "
-                   f"{len(symbols_deleted)} deleted")
+        logger.info(
+            f"Completed analysis for {instance_id}: "
+            f"{len(symbols_modified)} modified, "
+            f"{len(symbols_added)} added, "
+            f"{len(symbols_deleted)} deleted"
+        )
 
         return result
 
@@ -506,9 +524,7 @@ class GTLocator:
 
 
 def load_swebench_verified(
-    split: str = "test",
-    filter_pattern: str = ".*",
-    limit: Optional[int] = None
+    split: str = "test", filter_pattern: str = ".*", limit: Optional[int] = None
 ) -> datasets.Dataset:
     """
     Load the SWE-bench Verified dataset with optional filtering and limiting.
@@ -552,13 +568,14 @@ def load_swebench_verified(
             "difficulty": Value("string"),
         }
         ft = Features(base_features)
-        ds = datasets.load_dataset("json", data_files={split: dataset_path},
-                                   split=split, features=ft)
+        ds = datasets.load_dataset(
+            "json", data_files={split: dataset_path}, split=split, features=ft
+        )
 
     # Apply filter if specified
     if filter_pattern != ".*":
         logger.info(f"Filtering instances with pattern: {filter_pattern}")
-        ds = ds.filter(lambda x: bool(re.match(filter_pattern, x['instance_id'])))
+        ds = ds.filter(lambda x: bool(re.match(filter_pattern, x["instance_id"])))
         logger.info(f"Filtered to {len(ds)} instances")
 
     # Apply limit if specified
@@ -578,36 +595,36 @@ def main():
         "--split",
         type=str,
         default="test",
-        help="Dataset split to analyze (default: test)"
+        help="Dataset split to analyze (default: test)",
     )
     parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Output JSON file path (default: ~/.codeminer/swebench_verified_gt.json)"
+        help="Output JSON file path (default: ~/.codeminer/swebench_verified_gt.json)",
     )
     parser.add_argument(
         "--work-dir",
         type=str,
         default=None,
-        help="Working directory for cloning repos (default: ~/.codeminer)"
+        help="Working directory for cloning repos (default: ~/.codeminer)",
     )
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Limit number of instances to process (default: all)"
+        help="Limit number of instances to process (default: all)",
     )
     parser.add_argument(
         "--filter",
         type=str,
         default=".*",
-        help="Regex filter for instance IDs (default: .*)"
+        help="Regex filter for instance IDs (default: .*)",
     )
     parser.add_argument(
         "--keep-repos",
         action="store_true",
-        help="Keep cloned repositories after analysis (default: cleanup)"
+        help="Keep cloned repositories after analysis (default: cleanup)",
     )
 
     args = parser.parse_args()
@@ -620,9 +637,7 @@ def main():
 
     # Load dataset with filtering and limiting
     dataset = load_swebench_verified(
-        split=args.split,
-        filter_pattern=args.filter,
-        limit=args.limit
+        split=args.split, filter_pattern=args.filter, limit=args.limit
     )
 
     logger.info(f"Processing {len(dataset)} instances")
@@ -638,20 +653,19 @@ def main():
             result = locator.analyze_instance(instance)
             results.append(result)
         except Exception as e:
-            logger.error(f"Error processing {instance['instance_id']}: {e}", exc_info=True)
-            results.append({
-                'instance_id': instance['instance_id'],
-                'error': str(e)
-            })
+            logger.error(
+                f"Error processing {instance['instance_id']}: {e}", exc_info=True
+            )
+            results.append({"instance_id": instance["instance_id"], "error": str(e)})
 
     # Save results
     output_path = args.output
     logger.info(f"Saving results to {output_path}")
-    with open(output_path, 'w', encoding='utf-8') as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
     # Print summary
-    success_count = sum(1 for r in results if not r.get('error'))
+    success_count = sum(1 for r in results if not r.get("error"))
     error_count = len(results) - success_count
 
     logger.info(f"\n{'='*60}")

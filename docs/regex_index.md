@@ -69,23 +69,22 @@ def search(
 - **`pattern`** (str, required): Search pattern (regex or plain string)
   - If `use_regex=True`: Treated as regular expression
   - If `use_regex=False`: Treated as literal string
-  
+
 - **`file_glob`** (str, optional): Glob pattern to filter by file path
   - Examples: `*.py`, `src/*.js`, `**/test_*.py`, `*calculator*`
   - Uses `fnmatch` for glob matching
-  
+
 - **`node_type`** (str, optional): Filter by node type
   - Available types: `file`, `function`, `method`, `class`, `field`, `directory`, `symbol`
   - Exact match only
-  
+
 - **`case_sensitive`** (bool, default=False): Whether search is case-sensitive
   - `False`: Case-insensitive matching (default)
   - `True`: Exact case matching
-  
+
 - **`use_regex`** (bool, default=True): Whether to use regex matching
   - `True`: Pattern treated as regular expression
   - `False`: Pattern treated as plain string (faster)
 
 **Returns:**
 - `List[NodeWithContent]`: List of matching nodes
-

@@ -52,4 +52,5 @@ class NodeWithScore(NodeInfo):
 
 class NodeWithScoreContent(NodeWithScore, NodeWithContent):
     """Node attributes with both relevance score and content."""
+
     pass
