@@ -7,7 +7,7 @@ from ..code_chunker import CodeChunker
 from ..index.embedding import CodeVectorStore
 from ..llm.llm_config import LLMConfig, LLMProvider
 from ..log_utils import get_logger
-from ..types import NodeWithScoreContent
+from ..types import QueriedNode
 
 logger = get_logger(__name__)
 
@@ -197,7 +197,7 @@ class SearchRerankPipeline:
             f"rerank={rerank_provider.value}:{rerank_model}"
         )
 
-    def query(self, query: str, top_k: int = 10) -> List[NodeWithScoreContent]:
+    def query(self, query: str, top_k: int = 10) -> List[QueriedNode]:
         """
         Query the vector store and rerank the results.
         """
@@ -212,7 +212,7 @@ class SearchRerankPipeline:
 
         results = []
         for node in ranked_nodes:
-            result = NodeWithScoreContent(
+            result = QueriedNode(
                 node_name=node.node_name,
                 type=node.type,
                 file=node.file,
