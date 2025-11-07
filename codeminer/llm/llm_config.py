@@ -16,6 +16,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_community.llms import VLLM
 from langchain_core.language_models import BaseLLM
 from langchain_google_vertexai import ChatVertexAI
+from langchain_google_vertexai.model_garden import ChatAnthropicVertex
 from langchain_openai import ChatOpenAI
 
 from ..log_utils import get_logger
@@ -188,6 +189,11 @@ def create_llm(config: LLMConfig, **kwargs) -> BaseLLM:
             llm_class = ChatAnthropic
 
         elif config.provider == LLMProvider.VERTEX_ANTHROPIC:
+            if ChatAnthropicVertex is None:
+                raise LLMConfigurationError(
+                    "ChatAnthropicVertex is not available. Please install "
+                    "the latest langchain-google-vertexai package."
+                )
             credentials, project_id = config._get_vertex_credentials()
             region = os.environ.get("VERTEX_REGION", "us-east5")
             llm_kwargs.update(
@@ -198,7 +204,7 @@ def create_llm(config: LLMConfig, **kwargs) -> BaseLLM:
                 }
             )
             # Use Claude models on Vertex AI
-            llm_class = ChatVertexAI
+            llm_class = ChatAnthropicVertex
 
         elif config.provider == LLMProvider.VERTEX_GEMINI:
             credentials, project_id = config._get_vertex_credentials()
