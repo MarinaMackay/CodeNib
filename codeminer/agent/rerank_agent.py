@@ -1,28 +1,24 @@
 """
 Rerank agent for ranking code nodes based on relevance to a query.
-This implementation delegates ranking to the rank_llm Reranker abstraction.
+This module uses LLM APIs to rank NodeWithContent objects and return QueriedNode objects.
 """
 
-from __future__ import annotations
+from collections import defaultdict
+from typing import Dict, List, Optional, Sequence, Tuple
 
-from typing import Any, Dict, List, Optional, Tuple
-
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
-from rank_llm.data import Candidate as RankLLMCandidate
-from rank_llm.data import Query as RankLLMQuery
-from rank_llm.data import Request as RankLLMRequest
-from rank_llm.data import Result as RankLLMResult
-from rank_llm.rerank import Reranker as RankLLMReranker
 
-from ..llm.llm_config import LLMConfig
+from ..llm.llm_config import LLMConfig, create_llm
 from ..log_utils import get_logger
-from ..types import NodeWithContent, NodeWithScore
+from ..types import NodeWithContent, QueriedNode
 
 logger = get_logger(__name__)
 
 
+# Define Pydantic model for structured output
 class RerankResult(BaseModel):
-    """Model kept for backwards compatibility with previous API."""
+    """Model for reranking output."""
 
     ranked_indices: List[int] = Field(
         description="List of node indices ranked by relevance (most relevant first)"
@@ -33,317 +29,230 @@ class RerankResult(BaseModel):
 
 
 class RerankAgent:
-    """Agent for reranking code nodes using the rank_llm Reranker."""
+    """Agent for reranking code nodes based on query relevance using LLM APIs."""
 
     def __init__(
         self,
         llm_config: LLMConfig,
-        *,
-        reranker_kwargs: Optional[Dict[str, Any]] = None,
-        interactive: bool = False,
-        **kwargs: Any,
+        **kwargs,
     ):
         """Initialize the rerank agent.
 
         Args:
-            llm_config: Configuration describing which rerank model to use.
-            reranker_kwargs: Extra keyword arguments forwarded to the rank_llm factory.
-            interactive: Whether to construct the RankLLM coordinator in interactive mode.
-            **kwargs: Additional keyword arguments forwarded to the rank_llm factory.
+            llm_config: LLM configuration containing model, provider, and other settings.
+            **kwargs: Additional keyword arguments forwarded to the LLM factory.
         """
-
         self.llm_config = llm_config
-        self._candidate_cls = RankLLMCandidate
-        self._request_cls = RankLLMRequest
-        self._request_counter = 0
-
-        aggregated_kwargs = self._build_reranker_kwargs(
-            llm_config=llm_config,
-            overrides=reranker_kwargs,
-            extra_kwargs=kwargs,
+        self.llm = create_llm(
+            config=llm_config,
+            **kwargs,
         )
 
-        try:
-            model_coordinator = RankLLMReranker.create_model_coordinator(
-                model_path=llm_config.model_name,
-                default_model_coordinator=None,
-                interactive=interactive,
-                **aggregated_kwargs,
-            )
-        except Exception as exc:  # pragma: no cover - depends on external package
-            raise RuntimeError(
-                f"Failed to construct RankLLM coordinator for model "
-                f"{llm_config.model_name}: {exc}"
-            ) from exc
-
-        if model_coordinator is None:
-            raise RuntimeError(
-                f"RankLLM returned no model coordinator for {llm_config.model_name}"
-            )
-        self.reranker = RankLLMReranker(model_coordinator=model_coordinator)
-
+        # Convert the LLM to a structured output LLM
+        self.structured_llm = self.llm.with_structured_output(RerankResult)
         logger.info(
-            "Initialized rerank agent with RankLLM model: %s",
-            self.llm_config.model_name,
+            f"Initialized rerank agent with model: {self.llm_config.model_name}"
         )
 
     def rerank_nodes(
-        self, query: str, nodes: List[NodeWithContent], top_k: Optional[int] = None
-    ) -> List[NodeWithScore]:
-        """
-        Rerank nodes based on their relevance to the query.
-
-        Args:
-            query: The query to rank nodes against.
-            nodes: List of nodes with content to rank.
-            top_k: Optional cap on the number of ranked results to return.
-
-        Returns:
-            List of nodes ranked according to the external reranker.
-        """
-        if not nodes:
-            logger.warning("No nodes provided for reranking.")
-            return []
-
-        if not query or not query.strip():
-            logger.warning("Empty query provided for reranking.")
-            return []
-
-        valid_nodes: List[Tuple[int, NodeWithContent]] = [
-            (idx, node)
-            for idx, node in enumerate(nodes)
-            if node.content and node.content.strip()
-        ]
-
-        if not valid_nodes:
-            logger.warning("No nodes with content found for reranking.")
-            return []
-
-        doc_map: Dict[str, NodeWithContent] = {}
-        candidates: List[Any] = []
-        for position, (original_index, node) in enumerate(valid_nodes):
-            doc_id = self._make_doc_id(node, original_index, position)
-            doc_map[doc_id] = node
-            metadata = {
-                "original_index": original_index,
-                "position": position,
-                "node_name": node.node_name,
-                "file": node.file,
-                "type": node.type,
-                "start_line": node.start_line,
-                "end_line": node.end_line,
-            }
-            candidate = self._build_candidate(
-                doc_id=doc_id,
-                text=node.content,
-                metadata=metadata,
-            )
-            candidates.append(candidate)
-
-        request = self._build_request(query=query, candidates=candidates)
-        rank_limit = len(candidates)
-        if top_k is not None:
-            rank_limit = max(1, min(top_k, rank_limit))
-
-        logger.info(
-            "Reranking %d nodes via rank_llm (limit=%d).", len(candidates), rank_limit
-        )
-
-        try:
-            result = self.reranker.rerank(
-                request=request,
-                rank_start=0,
-                rank_end=rank_limit,
-                shuffle_candidates=False,
-            )
-        except Exception as exc:  # pragma: no cover - depends on external package
-            logger.error("RankLLM rerank failed: %s", exc)
-            return []
-
-        reranked_candidates = self._extract_reranked(result)
-        if not reranked_candidates:
-            logger.warning("RankLLM returned no reranked candidates.")
-            return []
-
-        max_results = min(len(reranked_candidates), rank_limit)
-        ranked_nodes: List[NodeWithScore] = []
-
-        for candidate in reranked_candidates[:max_results]:
-            doc_id = self._extract_doc_id(candidate)
-            if doc_id is None:
-                continue
-            node = doc_map.get(doc_id)
-            if node is None:
-                continue
-            score = self._extract_score(candidate)
-            ranked_nodes.append(
-                NodeWithScore(
-                    node_name=node.node_name,
-                    type=node.type,
-                    file=node.file,
-                    start_line=node.start_line,
-                    end_line=node.end_line,
-                    score=score,
-                )
-            )
-
-        logger.info("Successfully reranked %d nodes.", len(ranked_nodes))
-        return ranked_nodes
-
-    def rerank_with_metadata(
         self,
         query: str,
         nodes: List[NodeWithContent],
         top_k: Optional[int] = None,
+        window_size: Optional[int] = None,
+        window_step: Optional[int] = None,
         include_content: bool = False,
-    ) -> List[dict]:
+    ) -> List[QueriedNode]:
         """
-        Rerank nodes and return detailed results with metadata.
-        """
-        ranked_nodes = self.rerank_nodes(query, nodes, top_k)
+        Rerank nodes based on their relevance to the query.
 
-        results: List[dict] = []
-        content_lookup = {node.node_name: node for node in nodes if node.node_name}
-        for idx, node in enumerate(ranked_nodes):
-            payload = {
-                "rank": idx + 1,
-                "score": node.score,
-                "node_name": node.node_name,
-                "type": node.type,
-                "file": node.file,
-                "start_line": node.start_line,
-                "end_line": node.end_line,
+        Args:
+            query (str): The query to rank nodes against
+            nodes (List[NodeWithContent]): List of nodes with content to rank
+            top_k (Optional[int]): Maximum number of results to return (None for all)
+            window_size (Optional[int]): Number of nodes per rerank window. None -> all nodes.
+            window_step (Optional[int]): Step size between sliding windows. Defaults to window_size.
+            include_content (bool): Whether to include node content in the result objects.
+
+        Returns:
+            List[QueriedNode]: Ranked nodes with relevance scores (optionally with content)
+
+        Notes:
+            When a sliding window is configured, each window is reranked independently and
+            the averaged scores across all windows determine the final ordering.
+        """
+        if not nodes:
+            logger.warning("No nodes provided for reranking")
+            return []
+
+        if not query.strip():
+            logger.warning("Empty query provided for reranking")
+            return []
+
+        try:
+            # Filter nodes with content
+            valid_nodes: List[Tuple[int, NodeWithContent]] = []
+            for i, node in enumerate(nodes):
+                if node.content and node.content.strip():
+                    valid_nodes.append((i, node))
+
+            if not valid_nodes:
+                logger.warning("No nodes with content found for reranking")
+                return []
+
+            logger.info(
+                f"Reranking {len(valid_nodes)} nodes with query: {query[:100]}..."
+            )
+
+            node_lookup: Dict[int, NodeWithContent] = {
+                original_idx: node for original_idx, node in valid_nodes
             }
-            if include_content:
-                origin = content_lookup.get(node.node_name)
-                if origin and origin.content:
-                    payload["content"] = origin.content
-                    payload["content_preview"] = (
-                        origin.content[:150] + "..."
-                        if len(origin.content) > 150
-                        else origin.content
-                    )
-            results.append(payload)
-        return results
 
-    def _build_candidate(
-        self,
-        *,
-        doc_id: str,
-        text: str,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> RankLLMCandidate:
-        metadata = dict(metadata or {})
-        metadata.setdefault("doc_id", doc_id)
-        score = float(metadata.get("score", 0.0))
-        return self._candidate_cls(
-            docid=doc_id,
-            score=score,
-            doc={
-                "text": text,
-                "metadata": metadata,
-            },
-        )
+            total_nodes = len(valid_nodes)
+            window_size = window_size or total_nodes
+            if window_size <= 0:
+                window_size = total_nodes
 
-    def _build_request(
-        self, *, query: str, candidates: List[RankLLMCandidate]
-    ) -> RankLLMRequest:
-        self._request_counter += 1
-        request_id = f"codeminer-{self._request_counter}"
-        query_payload = RankLLMQuery(text=query, qid=request_id)
-        return self._request_cls(query=query_payload, candidates=candidates)
+            window_step = window_step or window_size
+            if window_step <= 0:
+                window_step = window_size
 
-    @staticmethod
-    def _make_doc_id(node: NodeWithContent, original_index: int, position: int) -> str:
-        suffix = node.node_name or f"node-{original_index}"
-        return f"{original_index}-{position}-{suffix}"
+            aggregated_scores: Dict[int, float] = defaultdict(float)
+            appearance_count: Dict[int, int] = defaultdict(int)
 
-    @staticmethod
-    def _extract_reranked(result: RankLLMResult) -> List[RankLLMCandidate]:
-        return list(result.candidates or [])
+            window_starts = list(range(0, total_nodes, window_step))
+            tail_start = max(total_nodes - window_size, 0)
+            if tail_start not in window_starts:
+                window_starts.append(tail_start)
+            window_starts = sorted(set(window_starts))
 
-    def _extract_doc_id(self, candidate: RankLLMCandidate) -> Optional[str]:
-        if candidate.docid not in (None, ""):
-            return str(candidate.docid)
-        doc_payload = candidate.doc if isinstance(candidate.doc, dict) else {}
-        metadata = (
-            doc_payload.get("metadata") if isinstance(doc_payload, dict) else None
-        )
-        if isinstance(metadata, dict):
-            for key in ("doc_id", "docid", "document_id", "id"):
-                value = metadata.get(key)
-                if value not in (None, ""):
-                    return str(value)
-        return None
+            window_id = 0
+            for window_start in window_starts:
+                window_nodes = valid_nodes[window_start : window_start + window_size]
+                if not window_nodes:
+                    continue
 
-    @staticmethod
-    def _extract_score(candidate: RankLLMCandidate) -> float:
-        if isinstance(candidate.score, (int, float)):
-            return float(candidate.score)
-        doc_payload = candidate.doc if isinstance(candidate.doc, dict) else {}
-        metadata = (
-            doc_payload.get("metadata") if isinstance(doc_payload, dict) else None
-        )
-        if isinstance(metadata, dict):
-            for key in ("score", "rerank_score", "relevance_score"):
-                value = metadata.get(key)
-                if isinstance(value, (int, float)):
-                    return float(value)
-        return 0.0
-
-    def _build_reranker_kwargs(
-        self,
-        *,
-        llm_config: LLMConfig,
-        overrides: Optional[Dict[str, Any]],
-        extra_kwargs: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        aggregated: Dict[str, Any] = {}
-        config_data = llm_config.config_data or {}
-
-        reranker_config = config_data.get("reranker_kwargs")
-        if isinstance(reranker_config, dict):
-            aggregated.update(reranker_config)
-
-        if overrides:
-            aggregated.update(overrides)
-        if extra_kwargs:
-            aggregated.update(extra_kwargs)
-
-        # Surface commonly used configuration entries to rank_llm.
-        base_url_env = llm_config.get_config_value_optional("OPENAI_API_BASE_URL")
-        base_url_sources = [
-            config_data.get("OPENAI_API_BASE_URL"),
-            config_data.get("base_url"),
-            aggregated.get("base_url"),
-            base_url_env,
-        ]
-        for url in base_url_sources:
-            if isinstance(url, str) and url.strip():
-                aggregated.setdefault("base_url", url.strip())
-                break
-
-        # Detect OpenRouter usage from config or environment.
-        if "use_openrouter" not in aggregated:
-            base_url_val = aggregated.get("base_url") or base_url_env
-            if isinstance(base_url_val, str) and "openrouter" in base_url_val.lower():
-                aggregated["use_openrouter"] = True
-                aggregated.setdefault("base_url", base_url_val)
-            else:
-                openrouter_key = llm_config.get_config_value_optional(
-                    "OPENROUTER_API_KEY"
+                window_id += 1
+                logger.debug(
+                    "Processing rerank window %s (nodes %s-%s)",
+                    window_id,
+                    window_start,
+                    window_start + len(window_nodes) - 1,
                 )
-                if openrouter_key:
-                    aggregated["use_openrouter"] = True
-                    aggregated.setdefault("base_url", "https://openrouter.ai/api/v1/")
 
-        # Propagate Azure OpenAI usage if credentials are configured.
-        if "use_azure_openai" not in aggregated:
-            azure_key = llm_config.get_config_value_optional("AZURE_OPENAI_API_KEY")
-            if azure_key:
-                aggregated["use_azure_openai"] = True
+                window_results = self._rerank_window(query, window_nodes)
+                for original_idx, score in window_results:
+                    aggregated_scores[original_idx] += float(score)
+                    appearance_count[original_idx] += 1
 
-        return aggregated
+            if not aggregated_scores:
+                logger.warning("Reranker did not return any scores.")
+                return []
+
+            averaged_scores = {
+                idx: aggregated_scores[idx] / appearance_count[idx]
+                for idx in aggregated_scores
+                if appearance_count[idx] > 0
+            }
+
+            sorted_indices = sorted(
+                averaged_scores.items(), key=lambda item: item[1], reverse=True
+            )
+
+            ranked_nodes: List[QueriedNode] = []
+            for original_idx, score in sorted_indices:
+                node = node_lookup.get(original_idx)
+                if not node:
+                    continue
+                payload = {
+                    "node_name": node.node_name,
+                    "type": node.type,
+                    "file": node.file,
+                    "start_line": node.start_line,
+                    "end_line": node.end_line,
+                    "score": float(score),
+                }
+                if include_content:
+                    payload["content"] = node.content
+                ranked_nodes.append(QueriedNode(**payload))
+                if top_k and len(ranked_nodes) >= top_k:
+                    break
+
+            logger.info(
+                "Successfully reranked %s nodes across %s window(s)",
+                len(ranked_nodes),
+                window_id or 1,
+            )
+            return ranked_nodes
+
+        except Exception as e:
+            logger.error(f"Error during reranking: {e}")
+            return []
+
+    def _rerank_window(
+        self, query: str, window_nodes: Sequence[Tuple[int, NodeWithContent]]
+    ) -> List[Tuple[int, float]]:
+        """Invoke the LLM to rerank a specific window of nodes."""
+        if not window_nodes:
+            return []
+
+        system_prompt = (
+            "You are a code relevance ranking specialist. Your task is to rank code snippets "
+            "based on their relevance to a given query. You should consider:\n\n"
+            "1. Semantic relevance - how well the code addresses the query concepts\n"
+            "2. Functional relevance - whether the code implements related functionality\n"
+            "3. Contextual relevance - how the code fits within the broader context\n"
+            "4. Technical accuracy - whether the code is technically sound for the query\n\n"
+            "Return the indices of nodes ranked from most relevant to least relevant, "
+            "along with relevance scores between 0.0 and 1.0."
+        )
+
+        node_descriptions = []
+        for i, (_, node) in enumerate(window_nodes):
+            description = (
+                f"Node {i}:\n"
+                f"Name: {node.node_name}\n"
+                f"Type: {node.type}\n"
+                f"File: {node.file}\n"
+                f"Lines: {node.start_line}-{node.end_line}\n"
+                f"Content:\n{node.content[:1000]}{'...' if len(node.content) > 1000 else ''}\n\n"
+            )
+            node_descriptions.append(description)
+
+        user_prompt = (
+            f"Query: {query}\n\n"
+            f"Please rank the following {len(window_nodes)} code nodes by relevance to the query:\n\n"
+            + "\n".join(node_descriptions)
+            + f"\n\nRank all {len(window_nodes)} nodes by relevance and provide scores. "
+            "Return the indices (0-based) in order of relevance (most relevant first) "
+            "and corresponding relevance scores (0.0 to 1.0)."
+        )
+
+        system_msg = SystemMessage(content=system_prompt)
+        user_msg = HumanMessage(content=user_prompt)
+
+        try:
+            rerank_result = self.structured_llm.invoke([system_msg, user_msg])
+        except Exception as exc:
+            logger.error("LLM rerank invocation failed: %s", exc)
+            return []
+
+        window_scores: List[Tuple[int, float]] = []
+        for local_position, ranked_idx in enumerate(rerank_result.ranked_indices):
+            if local_position >= len(rerank_result.scores):
+                break
+            if not 0 <= ranked_idx < len(window_nodes):
+                continue
+            score = rerank_result.scores[local_position]
+            original_idx = window_nodes[ranked_idx][0]
+            window_scores.append((original_idx, float(score)))
+
+        logger.debug(
+            "Window rerank produced %s scored nodes (window size %s)",
+            len(window_scores),
+            len(window_nodes),
+        )
+        return window_scores
 
 
 def rerank_nodes_with_query(
@@ -351,15 +260,36 @@ def rerank_nodes_with_query(
     nodes: List[NodeWithContent],
     llm_config: LLMConfig,
     top_k: Optional[int] = None,
-    reranker_kwargs: Optional[Dict[str, Any]] = None,
-    **kwargs: Any,
-) -> List[NodeWithScore]:
+    window_size: Optional[int] = None,
+    window_step: Optional[int] = None,
+    include_content: bool = False,
+    **kwargs,
+) -> List[QueriedNode]:
     """
     Convenience function to rerank nodes with a query.
+
+    Args:
+        query (str): The query to rank nodes against
+        nodes (List[NodeWithContent]): List of nodes with content to rank
+        llm_config (LLMConfig): LLM configuration containing model, provider, and other settings.
+        top_k (Optional[int]): Maximum number of results to return (None for all)
+        window_size (Optional[int]): Optional sliding window size for reranking.
+        window_step (Optional[int]): Optional stride between sliding windows.
+        include_content (bool): Whether to include node content in the result objects.
+        **kwargs: Additional arguments to pass to the LLM
+
+    Returns:
+        List[QueriedNode]: Ranked nodes with relevance scores
     """
     agent = RerankAgent(
         llm_config=llm_config,
-        reranker_kwargs=reranker_kwargs,
         **kwargs,
     )
-    return agent.rerank_nodes(query, nodes, top_k)
+    return agent.rerank_nodes(
+        query,
+        nodes,
+        top_k=top_k,
+        window_size=window_size,
+        window_step=window_step,
+        include_content=include_content,
+    )
