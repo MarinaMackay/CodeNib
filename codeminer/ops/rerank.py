@@ -9,7 +9,7 @@ from ..log_utils import get_logger
 from ..plans.execution import ExecutionEngine
 from ..plans.ir_exec import ExecutionNode
 from ..plans.ir_physical import PhysicalOperator
-from ..types import NodeWithContent, NodeWithScore, NodeWithScoreContent
+from ..types import NodeWithContent, QueriedNode
 
 logger = get_logger(__name__)
 
@@ -41,7 +41,7 @@ def register_rerank_ops(engine: ExecutionEngine, context: RerankContext) -> None
 
 
 def _llm_rerank_kernel(context: RerankContext):
-    def run(node: ExecutionNode, inputs: List[object]) -> List[NodeWithScoreContent]:
+    def run(node: ExecutionNode, inputs: List[object]) -> List[QueriedNode]:
         query = _extract_query(node.params, inputs)
         candidates = _collect_candidates(inputs)
         if not candidates:
@@ -61,11 +61,9 @@ def _llm_rerank_kernel(context: RerankContext):
             query=query,
             nodes=candidates,
             top_k=top_k,
+            include_content=include_content,
         )
-
-        if include_content:
-            return _attach_content(ranked, candidates)
-        return _to_score_content(ranked)
+        return ranked
 
     return run
 
@@ -90,7 +88,7 @@ def _collect_candidates(inputs: List[object]) -> List[NodeWithContent]:
         if isinstance(payload, NodeWithContent):
             collected.append(payload)
             continue
-        if isinstance(payload, NodeWithScoreContent):
+        if isinstance(payload, QueriedNode):
             collected.append(
                 NodeWithContent(
                     node_name=payload.node_name,
@@ -122,22 +120,3 @@ def _resolve_top_k(params: Dict[str, object], default: Optional[int]) -> Optiona
         if isinstance(value, int) and value > 0:
             return value
     return default
-
-
-def _attach_content(
-    ranked: List[NodeWithScore], candidates: List[NodeWithContent]
-) -> List[NodeWithScoreContent]:
-    content_index: Dict[str, NodeWithContent] = {
-        c.node_name: c for c in candidates if c.node_name
-    }
-    enriched: List[NodeWithScoreContent] = []
-    for node in ranked:
-        content = content_index.get(node.node_name)
-        payload = node.model_dump()
-        payload["content"] = content.content if content else None
-        enriched.append(NodeWithScoreContent(**payload))
-    return enriched
-
-
-def _to_score_content(results: List[NodeWithScore]) -> List[NodeWithScoreContent]:
-    return [NodeWithScoreContent(**node.model_dump()) for node in results]
