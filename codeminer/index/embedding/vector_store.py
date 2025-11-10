@@ -7,8 +7,11 @@ of code chunks for semantic similarity search.
 import json
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import faiss
+import numpy as np
+from langchain_community.docstore import InMemoryDocstore
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -34,6 +37,7 @@ class CodeVectorStore:
         dimension: int = 1536,
         index_type: str = "flat",
         store_path: Optional[str] = None,
+        index_params: Optional[Dict[str, Any]] = None,
         **embedding_kwargs,
     ):
         """
@@ -45,6 +49,7 @@ class CodeVectorStore:
             dimension: Dimension of the embedding vectors
             index_type: Type of FAISS index ("flat", "ivf", "hnsw")
             store_path: Path to store/load the vector store
+            index_params: Additional parameters for index construction (e.g., nlist)
             **embedding_kwargs: Additional arguments for embedding model
         """
         self.embedding_model = embedding_model
@@ -52,13 +57,19 @@ class CodeVectorStore:
         self.dimension = dimension
         self.index_type = index_type
         self.store_path = Path(store_path) if store_path else None
+        self.index_params = index_params or {}
 
         # Initialize embedding model
         self.embedding = self._initialize_embedding_model(**embedding_kwargs)
 
+        self.dimension = self._infer_embedding_dimension(dimension)
+
         # Initialize vector store (will be created when documents are added)
         self.vector_store = None
         self.documents = []
+        self._pending_documents: List[Document] = []
+        self._index_requires_training = False
+        self._min_train_docs = int(self.index_params.get("train_size", 0))
 
         logger.info(
             f"Initialized CodeVectorStore with {embedding_provider}:{embedding_model}"
@@ -87,6 +98,69 @@ class CodeVectorStore:
             raise ValueError(
                 f"Unsupported embedding provider: {self.embedding_provider}"
             )
+
+    def _infer_embedding_dimension(self, expected: Optional[int]) -> int:
+        """Probe the embedding model to determine vector dimensionality."""
+        probe_text = "codeminer-dimension-probe"
+        vector = self.embedding.embed_query(probe_text)
+        if not vector:
+            raise ValueError("Failed to infer embedding dimension from model output")
+
+        actual_dim = len(vector)
+        if expected is not None and actual_dim != expected:
+            logger.warning(
+                "Embedding dimension mismatch: expected %s, got %s",
+                expected,
+                actual_dim,
+            )
+        return actual_dim
+
+    def _build_faiss_index(self) -> Tuple[faiss.Index, bool, int]:
+        """Create a FAISS index according to the configured index_type."""
+        index_type = self.index_type.lower()
+        params = self.index_params
+
+        if index_type == "flat":
+            return faiss.IndexFlatL2(self.dimension), False, 0
+
+        if index_type == "ivf":
+            nlist = int(params.get("nlist", 1024))
+            quantizer = faiss.IndexFlatL2(self.dimension)
+            index = faiss.IndexIVFFlat(
+                quantizer, self.dimension, nlist, faiss.METRIC_L2
+            )
+            train_docs = max(int(params.get("train_size", nlist)), nlist)
+            return index, True, train_docs
+
+        if index_type == "hnsw":
+            m = int(params.get("M", params.get("m", 32)))
+            index = faiss.IndexHNSWFlat(self.dimension, m)
+            ef_construction = params.get("ef_construction")
+            if ef_construction is not None:
+                try:
+                    faiss.ParameterSpace().set_index_parameter(
+                        index, "efConstruction", int(ef_construction)
+                    )
+                except Exception:
+                    logger.warning("Failed to set efConstruction on HNSW index")
+            return index, False, 0
+
+        raise ValueError(f"Unsupported FAISS index type: {self.index_type}")
+
+    def _ensure_vector_store(self) -> None:
+        """Instantiate an empty FAISS index if needed."""
+        if self.vector_store is not None:
+            return
+
+        index, requires_training, min_train_docs = self._build_faiss_index()
+        self._index_requires_training = requires_training
+        self._min_train_docs = max(min_train_docs, 0)
+        self.vector_store = FAISS(
+            embedding_function=self.embedding,
+            index=index,
+            docstore=InMemoryDocstore(),
+            index_to_docstore_id={},
+        )
 
     def add_code_chunks(self, code_chunks: List[Dict[str, Any]]) -> None:
         """
@@ -128,12 +202,39 @@ class CodeVectorStore:
         # Store documents
         self.documents.extend(documents)
 
-        # Create or update vector store
-        if self.vector_store is None:
-            self.vector_store = FAISS.from_documents(documents, self.embedding)
-        else:
-            # Add documents to existing vector store
-            self.vector_store.add_documents(documents)
+        self._ensure_vector_store()
+
+        if self._index_requires_training and not self.vector_store.index.is_trained:
+            self._pending_documents.extend(documents)
+            pending = len(self._pending_documents)
+            min_docs = max(self._min_train_docs, 1)
+            if pending < min_docs:
+                logger.info(
+                    "Collected %d/%d documents required to train %s index",
+                    pending,
+                    min_docs,
+                    self.index_type.upper(),
+                )
+                return
+
+            texts = [doc.page_content for doc in self._pending_documents]
+            embeddings = self.embedding.embed_documents(texts)
+            vectors = np.asarray(embeddings, dtype="float32")
+            self.vector_store.index.train(vectors)
+            logger.info(
+                "Trained %s index with %d vectors",
+                self.index_type.upper(),
+                pending,
+            )
+            self.vector_store.add_documents(self._pending_documents)
+            self._pending_documents.clear()
+            return
+
+        if self._pending_documents:
+            self.vector_store.add_documents(self._pending_documents)
+            self._pending_documents.clear()
+
+        self.vector_store.add_documents(documents)
 
         logger.info(f"Successfully added {len(documents)} documents to vector store")
 
@@ -281,6 +382,7 @@ class CodeVectorStore:
             "embedding_provider": self.embedding_provider,
             "dimension": self.dimension,
             "index_type": self.index_type,
+            "index_params": self.index_params,
         }
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
@@ -303,6 +405,8 @@ class CodeVectorStore:
             raise FileNotFoundError(f"Vector store not found at {load_path}")
 
         logger.info(f"Loading vector store from {load_path}")
+        self._pending_documents = []
+        self._index_requires_training = False
 
         # Load configuration
         config_path = load_path / "config.json"
@@ -316,6 +420,17 @@ class CodeVectorStore:
                     f"Dimension mismatch: expected {self.dimension}, "
                     f"got {config.get('dimension')}"
                 )
+            saved_index_type = config.get("index_type")
+            if saved_index_type and saved_index_type != self.index_type:
+                logger.warning(
+                    "Index type mismatch: expected %s, got %s",
+                    self.index_type,
+                    saved_index_type,
+                )
+            saved_params = config.get("index_params")
+            if saved_params and saved_params != self.index_params:
+                logger.warning("Index params mismatch between config and runtime")
+                self.index_params = saved_params
 
         # Load FAISS vector store (LangChain format)
         try:
@@ -349,6 +464,7 @@ class CodeVectorStore:
             "embedding_provider": self.embedding_provider,
             "dimension": self.dimension,
             "index_type": self.index_type,
+            "index_params": self.index_params,
             "vector_store_size": len(self.documents),
         }
 
@@ -369,6 +485,8 @@ class CodeVectorStore:
         # Clear data
         self.vector_store = None
         self.documents = []
+        self._pending_documents = []
+        self._index_requires_training = False
 
         logger.info("Vector store cleared")
 
