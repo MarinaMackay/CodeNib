@@ -10,10 +10,10 @@ python scripts/start_vllm_server.py --model Qwen/Qwen2.5-Coder-7B
 Usage:
     # Run on SWE-bench with default settings
     python examples/search_rerank.py --dataset swebench_lite
-    
+
     # Run on LocBench with custom filter
     python examples/search_rerank.py --dataset locbench_v1 --filter-instance "^(joselc__life-sim-first-try-2)$"
-    
+
     # Run on SWE-bench with custom embedding model
     python examples/search_rerank.py --dataset swebench_lite --embedding-model nomic-ai/CodeRankEmbed --embedding-provider huggingface
 """
@@ -22,7 +22,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from codeminer.model import SearchRerankPipeline
 from codeminer.env.process_locbench_data import (
     load_filter_locbench_dataset,
     process_locbench_instance,
@@ -33,6 +32,7 @@ from codeminer.env.process_swebench_data import (
 )
 from codeminer.llm.llm_config import LLMProvider
 from codeminer.log_utils import get_logger
+from codeminer.model import SearchRerankPipeline
 
 logger = get_logger(__name__)
 
@@ -42,7 +42,7 @@ sys.path.insert(0, str(project_root))
 
 DATASET_CONFIGS = {
     "swebench_lite": {
-        "dataset": "princeton-nlp/SWE-bench_Lite",
+        "dataset": "princeton-nlp/SWE-bench_Verified",
         "split": "test",
         "loader": load_filter_swebench_dataset,
         "processor": process_swebench_instance,
@@ -62,7 +62,7 @@ def parse_args():
         description="Run Search + Rerank Pipeline on benchmark datasets",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    
+
     # Dataset configuration
     parser.add_argument(
         "--dataset",
@@ -83,7 +83,7 @@ def parse_args():
         default=None,
         help="Regex pattern to filter instances (None processes all instances)",
     )
-    
+
     # Embedding configuration
     parser.add_argument(
         "--embedding-model",
@@ -116,7 +116,7 @@ def parse_args():
         default=32,
         help="Batch size for embedding encoding",
     )
-    
+
     # Rerank configuration
     parser.add_argument(
         "--rerank-model",
@@ -131,7 +131,7 @@ def parse_args():
         choices=[pv.value for pv in LLMProvider],
         help="Rerank provider",
     )
-    
+
     # Repository processing configuration
     parser.add_argument(
         "--languages",
@@ -146,7 +146,7 @@ def parse_args():
         default=300,
         help="Maximum lines per code chunk",
     )
-    
+
     # Search configuration
     parser.add_argument(
         "--top-k",
@@ -154,7 +154,7 @@ def parse_args():
         default=5,
         help="Number of top results to return",
     )
-    
+
     # Cache configuration
     parser.add_argument(
         "--cache-dir",
@@ -162,41 +162,42 @@ def parse_args():
         default="/mnt/data/codeminer",
         help="Cache directory for index (default: /mnt/data/codeminer)",
     )
-    
+
     return parser.parse_args()
 
 
 def run_pipeline(args):
     """Run the search + rerank pipeline on the specified dataset."""
-    
+
     # Get dataset configuration
     dataset = args.dataset
     dataset_config = DATASET_CONFIGS[dataset]
-    
+
     # Prepare dataset args
     dataset_args = argparse.Namespace(
         dataset=dataset_config["dataset"],
         split=args.split,
         filter_instance=args.filter_instance,
     )
-    
+
     # Load dataset
     dataset_instances = dataset_config["loader"](args=dataset_args)
-    
+
     if len(dataset_instances) == 0:
         raise ValueError(f"No instances found in {dataset} dataset")
-    
+
     logger.info(f"Loaded {len(dataset_instances)} instance(s)")
-    
+
     # Process each instance
     for _, instance in enumerate(dataset_instances):
         # Process instance to get repo path
         repo_path = dataset_config["processor"](instance)
-        
-        # Get instance_id and convert to directory name
+
+        # Compute index path
         instance_id = instance["instance_id"]
         instance_dir_name = instance_id.replace("/", "__")
-        
+        index_path = Path(args.cache_dir) / instance_dir_name
+
         # Initialize pipeline
         embedding_model_kwargs = {
             "trust_remote_code": args.trust_remote_code,
@@ -204,9 +205,10 @@ def run_pipeline(args):
                 "batch_size": args.batch_size,
             },
         }
-        
+
         pipeline = SearchRerankPipeline(
             repo_path=repo_path,
+            index_path=str(index_path),
             embedding_model=args.embedding_model,
             embedding_provider=args.embedding_provider,
             embedding_dimension=args.embedding_dimension,
@@ -215,16 +217,14 @@ def run_pipeline(args):
             rerank_provider=LLMProvider(args.rerank_provider),
             languages=args.languages,
             max_lines_per_chunk=args.max_lines_per_chunk,
-            cache_dir=args.cache_dir,
-            instance_id=instance_dir_name,
         )
-        
+
         # Query the pipeline
         query = instance["problem_statement"]
         results = pipeline.query(query=query, top_k=args.top_k)
-        
+
         for i, node in enumerate(results):
-            #TODO: save the results to a file
+            # TODO: save the results to a file
             logger.info("--------------------------------")
             logger.info(f"Rank {i + 1} (Score: {node.score:.4f})")
             logger.info(f"  Node Name: {node.node_name}")
@@ -233,6 +233,7 @@ def run_pipeline(args):
             logger.info(f"  Lines: {node.start_line}-{node.end_line}")
             logger.info(f"  Content: {node.content}")
 
+
 def main():
     """Main entry point."""
     args = parse_args()
@@ -240,7 +241,7 @@ def main():
     logger.info(f"Embedding model: {args.embedding_model}")
     logger.info(f"Rerank model: {args.rerank_model}")
     logger.info(f"Top-K: {args.top_k}")
-    
+
     run_pipeline(args)
 
 
