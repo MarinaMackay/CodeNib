@@ -2,7 +2,7 @@
 
 ## Setup
 
-Install Python environment:
+Install Python environment with conda:
 ```bash
 conda create -n codeminer python=3.10
 conda activate codeminer
