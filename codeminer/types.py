@@ -50,7 +50,7 @@ class NodeWithScore(NodeInfo):
     score: float = 0.0
 
 
-class NodeWithScoreContent(NodeWithScore, NodeWithContent):
-    """Node attributes with both relevance score and content."""
+class QueriedNode(NodeWithScore, NodeWithContent):
+    """Node attributes representing ranked nodes that keep content."""
 
     pass

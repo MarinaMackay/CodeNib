@@ -11,8 +11,17 @@ from codeminer.index import BM25CodeIndexer
 from codeminer.llm.llm_config import LLMConfig, LLMProvider
 from codeminer.scip_interface import SCIPIndexer
 
+# args_dict = {
+#     "model": "claude-sonnet-4-5-20250929",
+#     "dataset": "princeton-nlp/SWE-bench_Lite",
+#     "split": "test",
+#     "filter_instance": "^(astropy__astropy-12907)$",
+# }
+
+
 args_dict = {
-    "model": "gpt-4o",
+    "model": "claude-sonnet-4@20250514",
+    "provider": "vertex",
     "dataset": "princeton-nlp/SWE-bench_Lite",
     "split": "test",
     "filter_instance": "^(astropy__astropy-12907)$",
@@ -70,7 +79,6 @@ if __name__ == "__main__":
             print(f"Filtered node {i+1}")
             print(f"Node Name: {node.node_name}")
             print(f"Node Type: {node.type}")
-            print(f"Node Content: {node.content}")
             print(f"Node File: {node.file}")
             print(f"Node Start Line: {node.start_line}")
             print(f"Node End Line: {node.end_line}")
@@ -80,37 +88,30 @@ if __name__ == "__main__":
             f"\nReranking {len(filtered_nodes)} nodes by relevance to problem statement..."
         )
         llm_config = LLMConfig(
-            model_name="gpt-4o",
-            provider=LLMProvider.OPENAI,
+            model_name=args.model,
+            provider=LLMProvider.VERTEX_ANTHROPIC,
         )
         rerank_agent = RerankAgent(llm_config=llm_config)
         ranked_nodes = rerank_agent.rerank_nodes(
-            query=instance["problem_statement"], nodes=filtered_nodes, top_k=10
-        )
-
-        # Print top ranked nodes with scores
-        print(f"\nTop ranked nodes (showing top 5):")
-        for i, node in enumerate(ranked_nodes[:5]):
-            print(f"Rank {i+1} (Score: {node.score:.3f})")
-            print(f"  Node Name: {node.node_name}")
-            print(f"  Node Type: {node.type}")
-            print(f"  Node File: {node.file}")
-            print(f"  Lines: {node.start_line}-{node.end_line}")
-            print()
-
-        # Also demonstrate the rerank_with_metadata method for detailed results
-        print("Detailed ranking with metadata:")
-        detailed_results = rerank_agent.rerank_with_metadata(
             query=instance["problem_statement"],
             nodes=filtered_nodes,
-            top_k=3,
+            top_k=5,
+            # window_size=10,
             include_content=True,
         )
 
-        for result in detailed_results:
-            print(f"Rank {result['rank']} (Score: {result['score']:.3f})")
-            print(f"  Name: {result['node_name']}")
-            print(f"  Type: {result['type']}")
-            print(f"  File: {result['file']}")
-            print(f"  Preview: {result.get('content_preview', 'N/A')}")
-            print()
+        # Print ranked nodes
+        for i, node in enumerate(ranked_nodes):
+            print(f"Rank {i+1} (Score: {node.score:.4f})")
+            print(f"Node Name: {node.node_name}")
+            print(f"Node Type: {node.type}")
+            print(f"Node File: {node.file}")
+            print(f"Node Start Line: {node.start_line}")
+            print(f"Node End Line: {node.end_line}")
+            # print content snippet (first 200 chars)
+            content_snippet = (
+                node.content[:200] + "..."
+                if node.content and len(node.content) > 200
+                else node.content
+            )
+            print(f"Node Content Snippet: {content_snippet}\n")

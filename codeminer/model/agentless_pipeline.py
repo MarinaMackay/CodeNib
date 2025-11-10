@@ -11,7 +11,7 @@ from ..graph.transverse_graph import RepoEntitySearcher, traverse_tree_structure
 from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
 from ..log_utils import get_logger
 from ..scip_interface import SCIPIndexer
-from ..types import ROOT_NODE, NodeWithScoreContent
+from ..types import ROOT_NODE, QueriedNode
 
 logger = get_logger(__name__)
 
@@ -196,7 +196,7 @@ class AgentlessPipeline:
     def query(
         self,
         problem_statement: str,
-    ) -> List[NodeWithScoreContent]:
+    ) -> List[QueriedNode]:
         files = self._stage_1(problem_statement)
         logger.info(f"Localized {len(files)} files: {files}")
         if not files:
@@ -312,7 +312,7 @@ class AgentlessPipeline:
         self,
         problem_statement: str,
         symbols: List[str],
-    ) -> List[NodeWithScoreContent]:
+    ) -> List[QueriedNode]:
         """
         Stage 3: Node-level refinement using full code content.
         """
@@ -370,7 +370,7 @@ class AgentlessPipeline:
             raise ValueError(f"Error in Stage 3: {e}")
 
         candidate_set = set(usable_symbols)
-        results: List[NodeWithScoreContent] = []
+        results: List[QueriedNode] = []
 
         for node_id in shortlisted_node_ids:
             if node_id not in candidate_set:
@@ -380,7 +380,7 @@ class AgentlessPipeline:
 
             attrs = self.entity_searcher.get_node_data([node_id])[0]
             results.append(
-                NodeWithScoreContent(
+                QueriedNode(
                     node_name=node_id,
                     type=attrs.get("type", "unknown"),
                     file=attrs.get("file"),
