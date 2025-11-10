@@ -41,7 +41,7 @@ sys.path.insert(0, str(project_root))
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Build embedding indices for SWE-bench Lite instances",
+        description="Build embedding indices for instances",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 

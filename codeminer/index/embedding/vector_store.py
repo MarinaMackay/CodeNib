@@ -265,17 +265,19 @@ class CodeVectorStore:
 
         logger.info(f"Saving vector store to {save_path}")
 
+        model_suffix = self.embedding_model.replace("/", "__")
         # Save FAISS vector store (LangChain format)
         if self.vector_store is not None:
-            self.vector_store.save_local(str(save_path))
+            index_name = f"index_{model_suffix}"
+            self.vector_store.save_local(str(save_path), index_name=index_name)
 
         # Save documents
-        docs_path = save_path / "documents.pkl"
+        docs_path = save_path / f"documents_{model_suffix}.pkl"
         with open(docs_path, "wb") as f:
             pickle.dump(self.documents, f)
 
         # Save configuration
-        config_path = save_path / "config.json"
+        config_path = save_path / f"config_{model_suffix}.json"
         config = {
             "embedding_model": self.embedding_model,
             "embedding_provider": self.embedding_provider,
@@ -304,8 +306,13 @@ class CodeVectorStore:
 
         logger.info(f"Loading vector store from {load_path}")
 
+        model_suffix = self.embedding_model.replace("/", "__")
         # Load configuration
-        config_path = load_path / "config.json"
+        config_path = load_path / f"config_{model_suffix}.json"
+        # Fallback to old format if model-specific config doesn't exist
+        if not config_path.exists():
+            config_path = load_path / "config.json"
+
         if config_path.exists():
             with open(config_path, "r") as f:
                 config = json.load(f)
@@ -319,15 +326,30 @@ class CodeVectorStore:
 
         # Load FAISS vector store (LangChain format)
         try:
+            index_name = f"index_{model_suffix}"
             self.vector_store = FAISS.load_local(
-                str(load_path), self.embedding, allow_dangerous_deserialization=True
+                str(load_path),
+                self.embedding,
+                index_name=index_name,
+                allow_dangerous_deserialization=True,
             )
         except Exception as e:
-            logger.warning(f"Could not load FAISS vector store: {e}")
-            self.vector_store = None
+            # Fallback to old format if model-specific config doesn't exist
+            logger.warning(f"Could not load FAISS vector store with model suffix: {e}")
+            try:
+                self.vector_store = FAISS.load_local(
+                    str(load_path), self.embedding, allow_dangerous_deserialization=True
+                )
+            except Exception as e2:
+                logger.warning(f"Could not load FAISS vector store: {e2}")
+                self.vector_store = None
 
         # Load documents
-        docs_path = load_path / "documents.pkl"
+        docs_path = load_path / f"documents_{model_suffix}.pkl"
+        # Fallback to old format if model-specific documents don't exist
+        if not docs_path.exists():
+            docs_path = load_path / "documents.pkl"
+
         if docs_path.exists():
             with open(docs_path, "rb") as f:
                 self.documents = pickle.load(f)
