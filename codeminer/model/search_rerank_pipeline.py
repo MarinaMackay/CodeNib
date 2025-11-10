@@ -44,39 +44,35 @@ class SearchRerankPipeline:
 
     Args:
         repo_path (str): Path to the repository to index and search.
+        index_path (str): Path to store/load the vector store indices.
         embedding_model (str, optional): Name of the embedding model.
-            (default: :obj:`"text-embedding-ada-002"`)
+            (default: :obj:`"nomic-ai/CodeRankEmbed"`)
         embedding_provider (str, optional): Embedding model provider.
-            (default: :obj:`"openai"`)
+            (default: :obj:`"huggingface"`)
         embedding_dimension (int, optional): Dimension of embedding vectors.
-            (default: :obj:`1536`)
+            (default: :obj:`768`)
         embedding_model_kwargs (dict, optional): Additional kwargs for embedding
             model initialization. (default: :obj:`None`)
         rerank_model (str, optional): Name of the reranking model.
-            (default: :obj:`"nomic-ai/CodeRankLLM"`)
+            (default: :obj:`"Qwen/Qwen2.5-Coder-7B"`)
         rerank_provider (LLMProvider, optional): Reranking model provider.
             (default: :obj:`LLMProvider.VLLM_OPENAI`)
         rerank_temperature (float, optional): Temperature for reranking model.
             (default: :obj:`0.0`)
         rerank_max_tokens (int, optional): Maximum tokens for reranking.
-            (default: :obj:`4096`)
+            (default: :obj:`2048`)
         languages (List[str], optional): Programming languages to index.
             (default: :obj:`["python"]`)
         max_lines_per_chunk (int, optional): Maximum lines per code chunk.
             (default: :obj:`100`)
-        cache_dir (str, optional): Directory for caching vector store indices.
-            If set to :obj:`None`, defaults to :obj:`~/.codeminer`.
-            (default: :obj:`None`)
-        instance_id (str, optional): Instance identifier for organizing cache.
-            If provided, uses :obj:`cache_dir/instance_id` as the index path.
-            Otherwise, falls back to :obj:`cache_dir/index_{repo_name}_{model}`.
-            (default: :obj:`None`)
     """
 
     def __init__(
         self,
-        # Repo config
+        # Repo path
         repo_path: str,
+        # Index path
+        index_path: str,
         # Embedding config
         embedding_model: str = "nomic-ai/CodeRankEmbed",
         embedding_provider: str = "huggingface",
@@ -90,9 +86,6 @@ class SearchRerankPipeline:
         # Repo processing config
         languages: Optional[List[str]] = None,
         max_lines_per_chunk: int = 100,
-        # Cache config
-        cache_dir: Optional[str] = None,
-        instance_id: Optional[str] = None,
     ):
         """
         Initialize pipeline and build vector database.
@@ -104,23 +97,13 @@ class SearchRerankPipeline:
 
         # Validate repo_path
         self.repo_path = os.path.abspath(repo_path)
-        if not os.path.exists(self.repo_path):
-            raise ValueError(f"Repository path does not exist: {self.repo_path}")
-        if not os.path.isdir(self.repo_path):
-            raise ValueError(f"Repository path is not a directory: {self.repo_path}")
-
-        # Initialize index directory
-        cache_dir = Path(cache_dir or Path.home() / ".codeminer")
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Create the index path based on instance_id or repo name
-        if instance_id:
-            index_path = cache_dir / instance_id
-        else:
-            repo_name = os.path.basename(self.repo_path)
-            index_path = (
-                cache_dir / f"index_{repo_name}_{embedding_model.replace('/', '_')}"
+        if not (os.path.exists(self.repo_path) and os.path.isdir(self.repo_path)):
+            raise ValueError(
+                f"Repository path is invalid (does not exist or is not a directory): {self.repo_path}"
             )
+
+        index_path = Path(index_path)
+        index_path.mkdir(parents=True, exist_ok=True)
 
         # Prepare embedding kwargs
         embedding_kwargs = {}
@@ -149,18 +132,15 @@ class SearchRerankPipeline:
             **embedding_kwargs,
         )
 
-        # Check if cache exists
-        cache_exists = (index_path / "config.json").exists()
+        # Check if cache exists (using model-specific filename)
+        model_suffix = embedding_model.replace("/", "__")
+        config_file = index_path / f"config_{model_suffix}.json"
 
-        if cache_exists:
+        if config_file.exists():
             logger.info(f"Loading existing vector store from cache: {index_path}")
-            try:
-                self.vector_store.load(str(index_path))
-            except Exception as e:
-                logger.warning(f"Failed to load cache: {e}. Rebuilding index...")
-                cache_exists = False
-
-        if not cache_exists:
+            self.vector_store.load(str(index_path))
+        else:
+            logger.info("Building new vector store...")
             code_chunker = CodeChunker(
                 language=languages[0],
                 max_lines_per_chunk=max_lines_per_chunk,

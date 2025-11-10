@@ -42,7 +42,7 @@ sys.path.insert(0, str(project_root))
 
 DATASET_CONFIGS = {
     "swebench_lite": {
-        "dataset": "princeton-nlp/SWE-bench_Lite",
+        "dataset": "princeton-nlp/SWE-bench_Verified",
         "split": "test",
         "loader": load_filter_swebench_dataset,
         "processor": process_swebench_instance,
@@ -193,9 +193,10 @@ def run_pipeline(args):
         # Process instance to get repo path
         repo_path = dataset_config["processor"](instance)
 
-        # Get instance_id and convert to directory name
+        # Compute index path
         instance_id = instance["instance_id"]
         instance_dir_name = instance_id.replace("/", "__")
+        index_path = Path(args.cache_dir) / instance_dir_name
 
         # Initialize pipeline
         embedding_model_kwargs = {
@@ -207,6 +208,7 @@ def run_pipeline(args):
 
         pipeline = SearchRerankPipeline(
             repo_path=repo_path,
+            index_path=str(index_path),
             embedding_model=args.embedding_model,
             embedding_provider=args.embedding_provider,
             embedding_dimension=args.embedding_dimension,
@@ -215,8 +217,6 @@ def run_pipeline(args):
             rerank_provider=LLMProvider(args.rerank_provider),
             languages=args.languages,
             max_lines_per_chunk=args.max_lines_per_chunk,
-            cache_dir=args.cache_dir,
-            instance_id=instance_dir_name,
         )
 
         # Query the pipeline
