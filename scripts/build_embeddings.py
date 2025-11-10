@@ -196,13 +196,15 @@ def build_embeddings(args):
             logger.info(f"Repository path: {repo_path}")
             logger.info(f"Target directory: {instance_final_dir}")
 
-            # Check if embedding already exists
-            if (instance_final_dir / "config.json").exists() and not args.force_rebuild:
+            # Check if embedding already exists (model-specific config)
+            model_suffix = args.embedding_model.replace("/", "__")
+            config_file = instance_final_dir / f"config_{model_suffix}.json"
+            if config_file.exists() and not args.force_rebuild:
                 logger.info(
                     f"✓ Embedding already exists at {instance_final_dir}, skipping..."
                 )
                 continue
-            elif (instance_final_dir / "config.json").exists() and args.force_rebuild:
+            elif config_file.exists() and args.force_rebuild:
                 logger.info(
                     f"⚠ Embedding already exists but force-rebuild is enabled, rebuilding..."
                 )
