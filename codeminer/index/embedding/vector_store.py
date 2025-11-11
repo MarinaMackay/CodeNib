@@ -6,11 +6,11 @@ of code chunks for semantic similarity search.
 
 import json
 import pickle
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import faiss
-import numpy as np
 from langchain_community.docstore import InMemoryDocstore
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
@@ -19,6 +19,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_openai import OpenAIEmbeddings
 
 from ...log_utils import get_logger
+from ...profiler import Profiler
 from ...types import NodeWithContent, NodeWithScore
 
 logger = get_logger(__name__)
@@ -38,6 +39,7 @@ class CodeVectorStore:
         index_type: str = "flat",
         store_path: Optional[str] = None,
         index_params: Optional[Dict[str, Any]] = None,
+        profiler: Optional[Profiler] = None,
         **embedding_kwargs,
     ):
         """
@@ -50,6 +52,7 @@ class CodeVectorStore:
             index_type: Type of FAISS index ("flat", "ivf", "hnsw")
             store_path: Path to store/load the vector store
             index_params: Additional parameters for index construction (e.g., nlist)
+            profiler: Optional profiler instance to capture detailed timings
             **embedding_kwargs: Additional arguments for embedding model
         """
         self.embedding_model = embedding_model
@@ -58,6 +61,7 @@ class CodeVectorStore:
         self.index_type = index_type
         self.store_path = Path(store_path) if store_path else None
         self.index_params = index_params or {}
+        self.profiler = profiler
 
         # Initialize embedding model
         self.embedding = self._initialize_embedding_model(**embedding_kwargs)
@@ -65,9 +69,14 @@ class CodeVectorStore:
         self.dimension = self._infer_embedding_dimension(dimension)
 
         # Initialize vector store (will be created when documents are added)
-        self.vector_store = None
+        self.index = self._build_faiss_index()
+        self.vector_store = FAISS(
+            embedding_function=self.embedding,
+            index=self.index,
+            docstore=InMemoryDocstore(),
+            index_to_docstore_id={},
+        )
         self.documents = []
-        self._pending_documents: List[Document] = []
         self._index_requires_training = False
         self._min_train_docs = int(self.index_params.get("train_size", 0))
 
@@ -82,9 +91,6 @@ class CodeVectorStore:
         elif self.embedding_provider.lower() == "huggingface":
             # Default to a good code embedding model if not specified
             model_name = self.embedding_model
-            if model_name == "text-embedding-ada-002":  # Default OpenAI model
-                model_name = "microsoft/codebert-base"
-
             model_kwargs = kwargs.pop("model_kwargs", {})
             encode_kwargs = kwargs.pop("encode_kwargs", {})
 
@@ -115,13 +121,19 @@ class CodeVectorStore:
             )
         return actual_dim
 
-    def _build_faiss_index(self) -> Tuple[faiss.Index, bool, int]:
+    def _profile_section(self, label: str, metadata: Optional[Dict[str, Any]] = None):
+        """Return an active profiler section context if profiling is enabled."""
+        if self.profiler is None:
+            return nullcontext()
+        return self.profiler.section(label, metadata)
+
+    def _build_faiss_index(self) -> faiss.Index:
         """Create a FAISS index according to the configured index_type."""
         index_type = self.index_type.lower()
         params = self.index_params
 
         if index_type == "flat":
-            return faiss.IndexFlatL2(self.dimension), False, 0
+            return faiss.IndexFlatL2(self.dimension)
 
         if index_type == "ivf":
             nlist = int(params.get("nlist", 1024))
@@ -129,8 +141,7 @@ class CodeVectorStore:
             index = faiss.IndexIVFFlat(
                 quantizer, self.dimension, nlist, faiss.METRIC_L2
             )
-            train_docs = max(int(params.get("train_size", nlist)), nlist)
-            return index, True, train_docs
+            return index
 
         if index_type == "hnsw":
             m = int(params.get("M", params.get("m", 32)))
@@ -143,24 +154,9 @@ class CodeVectorStore:
                     )
                 except Exception:
                     logger.warning("Failed to set efConstruction on HNSW index")
-            return index, False, 0
+            return index
 
         raise ValueError(f"Unsupported FAISS index type: {self.index_type}")
-
-    def _ensure_vector_store(self) -> None:
-        """Instantiate an empty FAISS index if needed."""
-        if self.vector_store is not None:
-            return
-
-        index, requires_training, min_train_docs = self._build_faiss_index()
-        self._index_requires_training = requires_training
-        self._min_train_docs = max(min_train_docs, 0)
-        self.vector_store = FAISS(
-            embedding_function=self.embedding,
-            index=index,
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-        )
 
     def add_code_chunks(self, code_chunks: List[Dict[str, Any]]) -> None:
         """
@@ -201,40 +197,14 @@ class CodeVectorStore:
 
         # Store documents
         self.documents.extend(documents)
-
-        self._ensure_vector_store()
-
-        if self._index_requires_training and not self.vector_store.index.is_trained:
-            self._pending_documents.extend(documents)
-            pending = len(self._pending_documents)
-            min_docs = max(self._min_train_docs, 1)
-            if pending < min_docs:
-                logger.info(
-                    "Collected %d/%d documents required to train %s index",
-                    pending,
-                    min_docs,
-                    self.index_type.upper(),
-                )
-                return
-
-            texts = [doc.page_content for doc in self._pending_documents]
-            embeddings = self.embedding.embed_documents(texts)
-            vectors = np.asarray(embeddings, dtype="float32")
-            self.vector_store.index.train(vectors)
-            logger.info(
-                "Trained %s index with %d vectors",
-                self.index_type.upper(),
-                pending,
-            )
-            self.vector_store.add_documents(self._pending_documents)
-            self._pending_documents.clear()
-            return
-
-        if self._pending_documents:
-            self.vector_store.add_documents(self._pending_documents)
-            self._pending_documents.clear()
-
-        self.vector_store.add_documents(documents)
+        # add profiling section
+        with self._profile_section(
+            "vector_store_add_documents",
+            {"num_documents": len(documents)},
+        ):
+            self.vector_store.add_documents(
+                documents
+            )  # this part will majorly blocked by embedding time
 
         logger.info(f"Successfully added {len(documents)} documents to vector store")
 
@@ -407,7 +377,6 @@ class CodeVectorStore:
             raise FileNotFoundError(f"Vector store not found at {load_path}")
 
         logger.info(f"Loading vector store from {load_path}")
-        self._pending_documents = []
         self._index_requires_training = False
 
         model_suffix = self.embedding_model.replace("/", "__")
@@ -507,7 +476,6 @@ class CodeVectorStore:
         # Clear data
         self.vector_store = None
         self.documents = []
-        self._pending_documents = []
         self._index_requires_training = False
 
         logger.info("Vector store cleared")
