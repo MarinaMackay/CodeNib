@@ -24,11 +24,11 @@ import sys
 from pathlib import Path
 
 from codeminer.code_chunker import CodeChunker
-from codeminer.embedding import CodeVectorStore
 from codeminer.env.process_swebench_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
+from codeminer.index.embedding import CodeVectorStore
 from codeminer.log_utils import get_logger
 from codeminer.profiler import Profiler
 
