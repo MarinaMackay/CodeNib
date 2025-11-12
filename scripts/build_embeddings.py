@@ -11,7 +11,7 @@ Usage:
     python scripts/build_embeddings.py --embedding-model nomic-ai/CodeRankEmbed
 
     # Build with filter (for testing)
-    python scripts/build_embeddings.py --filter-instance "^(astropy__astropy-13579)$"
+    python scripts/build_embeddings.py --filter-instance "^(astropy__astropy-12907)$"
 
     # Force rebuild even if embeddings already exist
     python scripts/build_embeddings.py --force-rebuild
@@ -242,6 +242,7 @@ def build_embeddings(args):
                     embedding_provider=args.embedding_provider,
                     dimension=args.embedding_dimension,
                     store_path=str(instance_final_dir),
+                    profiler=instance_profiler,
                     **embedding_kwargs,
                 )
 

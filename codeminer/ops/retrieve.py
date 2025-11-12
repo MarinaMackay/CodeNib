@@ -16,8 +16,8 @@ logger = get_logger(__name__)
 
 
 @dataclass
-class SearchContext:
-    """Handles backing indexes for registered search operators."""
+class RetrieveContext:
+    """Handles backing indexes for registered retrieval operators."""
 
     bm25: Optional[BM25CodeIndexer] = None
     vector_store: Optional[CodeVectorStore] = None
@@ -25,21 +25,21 @@ class SearchContext:
     default_top_k: int = 10
 
 
-def register_search_ops(engine: ExecutionEngine, context: SearchContext) -> None:
+def register_retrieve_ops(engine: ExecutionEngine, context: RetrieveContext) -> None:
     """
-    Register search-related execution kernels on the provided engine.
+    Register retrieval-related execution kernels on the provided engine.
 
     The function wires physical operator names to concrete kernels so that the
-    lowering pipeline can execute BM25, vector, regex, and hybrid searches.
+    lowering pipeline can execute BM25, vector, regex, and hybrid retrieval.
     """
 
     engine.register(PhysicalOperator.BM25_TOPK.value, _bm25_kernel(context))
-    engine.register(PhysicalOperator.FAISS_SEARCH.value, _vector_kernel(context))
-    engine.register(PhysicalOperator.HYBRID_SEARCH.value, _hybrid_kernel())
-    engine.register(PhysicalOperator.REGEX_SEARCH.value, _regex_kernel(context))
+    engine.register(PhysicalOperator.FAISS_RETRIEVE.value, _vector_kernel(context))
+    engine.register(PhysicalOperator.HYBRID_RETRIEVE.value, _hybrid_kernel())
+    engine.register(PhysicalOperator.REGEX_RETRIEVE.value, _regex_kernel(context))
 
 
-def _bm25_kernel(context: SearchContext):
+def _bm25_kernel(context: RetrieveContext):
     def run(node: ExecutionNode, _: List[object]) -> List[QueriedNode]:
         index = context.bm25
         if index is None:
@@ -52,7 +52,7 @@ def _bm25_kernel(context: SearchContext):
         wrap_with_ln = bool(node.params.get("wrap_with_line_numbers", True))
 
         logger.debug(
-            "Executing BM25 search",
+            "Executing BM25 retrieval",
             extra={"query": query, "k": top_k, "filter_test": filter_test},
         )
 
@@ -68,12 +68,12 @@ def _bm25_kernel(context: SearchContext):
     return run
 
 
-def _vector_kernel(context: SearchContext):
+def _vector_kernel(context: RetrieveContext):
     def run(node: ExecutionNode, _: List[object]) -> List[QueriedNode]:
         store = context.vector_store
         if store is None:
             raise RuntimeError(
-                "Vector search operator invoked without a CodeVectorStore."
+                "Vector retrieval operator invoked without a CodeVectorStore."
             )
 
         query = _extract_query(node.params)
@@ -82,7 +82,7 @@ def _vector_kernel(context: SearchContext):
         include_content = bool(node.params.get("return_content", False))
 
         logger.debug(
-            "Executing vector search",
+            "Executing vector retrieval",
             extra={"query": query, "k": top_k, "score_threshold": score_threshold},
         )
 
@@ -122,11 +122,13 @@ def _vector_kernel(context: SearchContext):
     return run
 
 
-def _regex_kernel(context: SearchContext):
+def _regex_kernel(context: RetrieveContext):
     def run(node: ExecutionNode, _: List[object]) -> List[QueriedNode]:
         index = context.regex_index
         if index is None:
-            raise RuntimeError("Regex search operator invoked without RegexNodeIndex.")
+            raise RuntimeError(
+                "Regex retrieval operator invoked without RegexNodeIndex."
+            )
 
         pattern = node.params.get("pattern") or _extract_query(node.params)
         top_k = _resolve_top_k(node.params, context.default_top_k)
@@ -136,7 +138,7 @@ def _regex_kernel(context: SearchContext):
         use_regex = bool(node.params.get("use_regex", True))
 
         logger.debug(
-            "Executing regex search",
+            "Executing regex retrieval",
             extra={
                 "pattern": pattern,
                 "file_glob": file_glob,
@@ -218,7 +220,7 @@ def _extract_query(params: Dict[str, object]) -> str:
         value = params.get(key)
         if isinstance(value, str) and value.strip():
             return value
-    raise ValueError("Search operator requires a non-empty 'query' string parameter.")
+    raise ValueError("Retrieve operator requires a non-empty 'query' string parameter.")
 
 
 def _resolve_top_k(params: Dict[str, object], default_k: int) -> int:

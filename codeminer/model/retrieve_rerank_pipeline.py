@@ -12,10 +12,10 @@ from ..types import QueriedNode
 logger = get_logger(__name__)
 
 
-class SearchRerankPipeline:
-    r"""A classical code retrieval baseline using Search + Rerank.
+class RetrieveRerankPipeline:
+    r"""A classical code retrieval baseline using Retrieve + Rerank.
 
-    :class:`~codeminer.model.SearchRerankPipeline` implements a two-stage
+    :class:`~codeminer.model.RetrieveRerankPipeline` implements a two-stage
     retrieval process for code localization:
 
     **Stage 1 - Dense Retrieval:** Retrieves top-k code chunks using semantic
@@ -39,11 +39,11 @@ class SearchRerankPipeline:
     results.
 
     This approach serves as a baseline method in code information retrieval,
-    combining the efficiency of vector search with the precision of neural
+    combining the efficiency of vector retrieval with the precision of neural
     reranking.
 
     Args:
-        repo_path (str): Path to the repository to index and search.
+        repo_path (str): Path to the repository to index and retrieve from.
         index_path (str): Path to store/load the vector store indices.
         embedding_model (str, optional): Name of the embedding model.
             (default: :obj:`"nomic-ai/CodeRankEmbed"`)
