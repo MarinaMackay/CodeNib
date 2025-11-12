@@ -42,7 +42,7 @@ sys.path.insert(0, str(project_root))
 
 DATASET_CONFIGS = {
     "swebench_lite": {
-        "dataset": "princeton-nlp/SWE-bench_Verified",
+        "dataset": "princeton-nlp/SWE-bench_Lite",
         "split": "test",
         "loader": load_filter_swebench_dataset,
         "processor": process_swebench_instance,
