@@ -7,7 +7,7 @@ name = "codeminer"
 version = "0.1.0"
 description = "A code analysis agent with graph-enhancement"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Zhongming Yu", email = "zhy025@ucsd.edu" }]
 classifiers = [
@@ -19,13 +19,14 @@ dependencies = [
     "matplotlib>=3.4.0",                  # For visualization of graphs
     "pytest>=6.0.0",                      # For testing
     "rank_bm25>=0.2.2",                    # For best match
-    "langchain>=0.3.26",                   # Core langchain functionality
-    "langchain-core>=0.3.75",              # Core langchain types and interfaces
-    "langchain-community>=0.3.28",        # Community integrations (BM25, FAISS)
-    "langchain-anthropic>=0.3.19",         # For Anthropic LLMs
-    "langchain-openai>=0.3.32",            # For OpenAI LLMs
-    "langchain-google-vertexai>=2.1.1",   # For Vertex AI LLMs (better support)
-    "langchain-huggingface>=0.3.1",       # For HuggingFace embeddings
+    "langchain>=1.0.0,<1.1.0",             # Core LangChain runtime (v1+)
+    "langchain-core>=1.0.4,<1.1.0",        # Shared LangChain schemas/runnables
+    "langchain-community>=0.4.1,<0.5.0",   # Community integrations (BM25, FAISS)
+    "langchain-text-splitters>=1.0.0,<1.1.0",  # Standalone splitters package in v1
+    "langchain-anthropic>=1.0.2,<1.1.0",   # Anthropic LLM bindings
+    "langchain-openai>=1.0.2,<1.1.0",      # OpenAI LLM bindings
+    "langchain-google-vertexai>=3.0.3,<4.0.0",  # Vertex AI LLM bindings
+    "langchain-huggingface>=1.0.1,<1.1.0", # HuggingFace embeddings/Runnables
     "pymilvus>=2.6.0",                    # For Milvus vector database with BM25 support
     "faiss-cpu>=1.7.0",                   # For FAISS similarity search
     "sentence-transformers>=2.2.0",       # For code-text similarity
