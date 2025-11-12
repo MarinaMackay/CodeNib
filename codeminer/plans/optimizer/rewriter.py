@@ -97,7 +97,7 @@ class LoweringPipeline:
                 operator = (
                     PhysicalOperator.BM25_TOPK
                     if engine == "sparse"
-                    else PhysicalOperator.FAISS_SEARCH
+                    else PhysicalOperator.FAISS_RETRIEVE
                 )
                 return PhysicalOp(
                     operator=operator,
@@ -113,7 +113,7 @@ class LoweringPipeline:
             if isinstance(node, HybridUnion):
                 children = [lower(child) for child in node.branches]
                 return PhysicalOp(
-                    operator=PhysicalOperator.HYBRID_SEARCH,
+                    operator=PhysicalOperator.HYBRID_RETRIEVE,
                     params={"weights": node.weights},
                     children=children,
                 )

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-This script demonstrates the usage of SearchRerankPipeline on SWE-bench or LocBench datasets.
+This script demonstrates the usage of RetrieveRerankPipeline on SWE-bench or LocBench datasets.
 Before running the pipeline, start a vLLM server for the rerank model:
 
 ```bash
@@ -9,13 +9,13 @@ python scripts/start_vllm_server.py --model Qwen/Qwen2.5-Coder-7B
 
 Usage:
     # Run on SWE-bench with default settings
-    python examples/search_rerank.py --dataset swebench_lite
+    python examples/retrieve_rerank.py --dataset swebench_lite
 
     # Run on LocBench with custom filter
-    python examples/search_rerank.py --dataset locbench_v1 --filter-instance "^(joselc__life-sim-first-try-2)$"
+    python examples/retrieve_rerank.py --dataset locbench_v1 --filter-instance "^(joselc__life-sim-first-try-2)$"
 
     # Run on SWE-bench with custom embedding model
-    python examples/search_rerank.py --dataset swebench_lite --embedding-model nomic-ai/CodeRankEmbed --embedding-provider huggingface
+    python examples/retrieve_rerank.py --dataset swebench_lite --embedding-model nomic-ai/CodeRankEmbed --embedding-provider huggingface
 """
 
 import argparse
@@ -32,7 +32,7 @@ from codeminer.env.process_swebench_data import (
 )
 from codeminer.llm.llm_config import LLMProvider
 from codeminer.log_utils import get_logger
-from codeminer.model import SearchRerankPipeline
+from codeminer.model import RetrieveRerankPipeline
 
 logger = get_logger(__name__)
 
@@ -59,7 +59,7 @@ DATASET_CONFIGS = {
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Run Search + Rerank Pipeline on benchmark datasets",
+        description="Run Retrieve + Rerank Pipeline on benchmark datasets",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -147,7 +147,7 @@ def parse_args():
         help="Maximum lines per code chunk",
     )
 
-    # Search configuration
+    # Retrieval configuration
     parser.add_argument(
         "--top-k",
         type=int,
@@ -167,7 +167,7 @@ def parse_args():
 
 
 def run_pipeline(args):
-    """Run the search + rerank pipeline on the specified dataset."""
+    """Run the retrieve + rerank pipeline on the specified dataset."""
 
     # Get dataset configuration
     dataset = args.dataset
@@ -206,7 +206,7 @@ def run_pipeline(args):
             },
         }
 
-        pipeline = SearchRerankPipeline(
+        pipeline = RetrieveRerankPipeline(
             repo_path=repo_path,
             index_path=str(index_path),
             embedding_model=args.embedding_model,
