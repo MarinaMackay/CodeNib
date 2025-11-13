@@ -21,6 +21,8 @@ class RerankContext:
     llm_config: Optional[LLMConfig] = None
     agent: Optional[RerankAgent] = None
     top_k: Optional[int] = None
+    window_size: Optional[int] = None
+    window_step: Optional[int] = None
 
     def ensure_agent(self) -> RerankAgent:
         if self.agent is None:
@@ -50,6 +52,8 @@ def _llm_rerank_kernel(context: RerankContext):
 
         top_k = _resolve_top_k(node.params, context.top_k)
         include_content = bool(node.params.get("return_content", False))
+        window_size = node.params.get("window_size") or context.window_size
+        window_step = node.params.get("window_step") or context.window_step
 
         agent = context.ensure_agent()
         logger.info(
@@ -61,6 +65,8 @@ def _llm_rerank_kernel(context: RerankContext):
             query=query,
             nodes=candidates,
             top_k=top_k,
+            window_size=window_size,
+            window_step=window_step,
             include_content=include_content,
         )
         return ranked
