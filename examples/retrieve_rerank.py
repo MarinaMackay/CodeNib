@@ -16,10 +16,17 @@ Usage:
 
     # Run on SWE-bench with custom embedding model
     python examples/retrieve_rerank.py --dataset swebench_lite --embedding-model nomic-ai/CodeRankEmbed --embedding-provider huggingface
+
+    # Run with hybrid (dense + sparse) retrieval before rerank
+    python examples/retrieve_rerank.py --dataset swebench_lite --retrieval-mode hybrid
+
+    # Override cache directories (one for indices, one for repos)
+    python examples/retrieve_rerank.py --dataset swebench_lite --index-cache-dir /tmp/codeminer/index --repo-cache-dir ~/.codeminer/
 """
 
 import argparse
-import sys
+import json
+import os
 from pathlib import Path
 
 from codeminer.env.process_locbench_data import (
@@ -30,15 +37,17 @@ from codeminer.env.process_swebench_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
+from codeminer.eval.retrieval_eval import (
+    aggregate_metrics,
+    average_metrics,
+    collect_targets,
+    evaluate_predictions,
+)
 from codeminer.llm.llm_config import LLMProvider
 from codeminer.log_utils import get_logger
-from codeminer.model import RetrieveRerankPipeline
+from codeminer.model import RetrieveRerankPipeline, build_retrieve_plan
 
 logger = get_logger(__name__)
-
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
 
 DATASET_CONFIGS = {
     "swebench_lite": {
@@ -131,6 +140,22 @@ def parse_args():
         choices=[pv.value for pv in LLMProvider],
         help="Rerank provider",
     )
+    parser.add_argument(
+        "--rerank-window-size",
+        type=int,
+        default=10,
+        help=(
+            "Number of candidates per LLM rerank window (None processes all candidates at once)."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-window-step",
+        type=int,
+        default=None,
+        help=(
+            "Stride between rerank windows; defaults to the window size when unspecified."
+        ),
+    )
 
     # Repository processing configuration
     parser.add_argument(
@@ -147,6 +172,33 @@ def parse_args():
         help="Maximum lines per code chunk",
     )
 
+    parser.add_argument(
+        "--retrieval-mode",
+        type=str,
+        default="dense",
+        choices=["dense", "sparse", "hybrid"],
+        help="Retrieval plan to run (dense-only, BM25-only, or hybrid).",
+    )
+
+    # Evaluation configuration
+    default_eval_path = Path.home() / ".codeminer" / "swebench_verified_gt.json"
+    parser.add_argument(
+        "--eval-instances",
+        type=str,
+        default=str(default_eval_path),
+        help=(
+            "Path to JSON file containing evaluation annotations (target_files, symbols_*). "
+            "Defaults to ~/.codeminer/swebench_verified_gt.json."
+        ),
+    )
+    parser.add_argument(
+        "--metrics-k",
+        type=int,
+        nargs="+",
+        default=[10],
+        help="Cutoffs for accuracy/precision/recall reporting",
+    )
+
     # Retrieval configuration
     parser.add_argument(
         "--top-k",
@@ -157,13 +209,42 @@ def parse_args():
 
     # Cache configuration
     parser.add_argument(
-        "--cache-dir",
+        "--index-cache-dir",
         type=str,
         default="/mnt/data/codeminer",
-        help="Cache directory for index (default: /mnt/data/codeminer)",
+        help="Directory to store embedding/vector indices",
+    )
+    parser.add_argument(
+        "--repo-cache-dir",
+        type=str,
+        default="~/.codeminer/",
+        help="Directory to cache cloned repositories for dataset instances",
     )
 
     return parser.parse_args()
+
+
+def load_eval_metadata(path: str):
+    resolved = Path(os.path.expanduser(path)).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(
+            f"Evaluation annotations file not found at {resolved}. "
+            "Generate it via scripts/swebench_gt_locate.py or point --eval-instances elsewhere."
+        )
+    with open(resolved, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if isinstance(payload, dict) and "instances" in payload:
+        records = payload["instances"]
+    elif isinstance(payload, list):
+        records = payload
+    else:
+        records = [payload]
+    metadata = {}
+    for entry in records:
+        instance_id = entry.get("instance_id")
+        if instance_id:
+            metadata[instance_id] = entry
+    return metadata
 
 
 def run_pipeline(args):
@@ -188,15 +269,21 @@ def run_pipeline(args):
 
     logger.info(f"Loaded {len(dataset_instances)} instance(s)")
 
+    eval_metadata = load_eval_metadata(args.eval_instances)
+    retrieve_plan = build_retrieve_plan(args.retrieval_mode)
+    aggregate = {}
+    metrics_k = sorted(set(args.metrics_k))
+    eval_count = 0
+
     # Process each instance
     for _, instance in enumerate(dataset_instances):
         # Process instance to get repo path
-        repo_path = dataset_config["processor"](instance)
+        repo_path = dataset_config["processor"](instance, cache_dir=args.repo_cache_dir)
 
         # Compute index path
         instance_id = instance["instance_id"]
         instance_dir_name = instance_id.replace("/", "__")
-        index_path = Path(args.cache_dir) / instance_dir_name
+        index_path = Path(args.index_cache_dir) / instance_dir_name
 
         # Initialize pipeline
         embedding_model_kwargs = {
@@ -217,21 +304,64 @@ def run_pipeline(args):
             rerank_provider=LLMProvider(args.rerank_provider),
             languages=args.languages,
             max_lines_per_chunk=args.max_lines_per_chunk,
+            retrieval_plan=retrieve_plan,
+            rerank_window_size=args.rerank_window_size,
+            rerank_window_step=args.rerank_window_step,
         )
 
         # Query the pipeline
         query = instance["problem_statement"]
-        results = pipeline.query(query=query, top_k=args.top_k)
+        results = pipeline.query(query=query, top_k=max(max(metrics_k), args.top_k))
 
-        for i, node in enumerate(results):
-            # TODO: save the results to a file
-            logger.info("--------------------------------")
-            logger.info(f"Rank {i + 1} (Score: {node.score:.4f})")
-            logger.info(f"  Node Name: {node.node_name}")
-            logger.info(f"  Node Type: {node.type}")
-            logger.info(f"  File: {node.file}")
-            logger.info(f"  Lines: {node.start_line}-{node.end_line}")
-            logger.info(f"  Content: {node.content}")
+        # for i, node in enumerate(results[: args.top_k]):
+        #     logger.info("--------------------------------")
+        #     logger.info(f"Rank {i + 1} (Score: {node.score:.4f})")
+        #     logger.info(f"  Node Name: {node.node_name}")
+        #     logger.info(f"  Node Type: {node.type}")
+        #     logger.info(f"  File: {node.file}")
+        #     logger.info(f"  Lines: {node.start_line}-{node.end_line}")
+        #     logger.info(f"  Content: {node.content}")
+
+        metadata = eval_metadata.get(instance_id)
+        if metadata:
+            target_files, target_symbols = collect_targets(metadata)
+            metrics = evaluate_predictions(
+                nodes=results,
+                target_files=target_files,
+                target_symbols=target_symbols,
+                ks=metrics_k,
+            )
+            aggregate_metrics(aggregate, metrics)
+            eval_count += 1
+            logger.info("Evaluation metrics for %s:", instance_id)
+            for scope, per_k in metrics.items():
+                for k, stats in per_k.items():
+                    logger.info(
+                        "  [%s] k=%d acc=%.3f prec=%.3f recall=%.3f hits=%d",
+                        scope,
+                        k,
+                        stats["accuracy"],
+                        stats["precision"],
+                        stats["recall"],
+                        int(stats["hits"]),
+                    )
+
+    if aggregate and eval_count:
+        averaged = average_metrics(aggregate, eval_count)
+        logger.info(
+            "=== Aggregate Retrieval Metrics (over %d instances) ===", eval_count
+        )
+        for scope, per_k in averaged.items():
+            for k, stats in per_k.items():
+                logger.info(
+                    "[%s] k=%d acc=%.3f prec=%.3f recall=%.3f avg_hits=%.3f",
+                    scope,
+                    k,
+                    stats["accuracy"],
+                    stats["precision"],
+                    stats["recall"],
+                    stats["avg_hits"],
+                )
 
 
 def main():
