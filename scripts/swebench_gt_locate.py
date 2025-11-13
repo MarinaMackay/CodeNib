@@ -63,14 +63,19 @@ class GTLocator:
         Initialize the ground truth locator.
 
         Args:
-            work_dir: Working directory for cloning repos (default: ~/.codeminer)
+            work_dir: Working directory for cloning repos (default: ~/.codeminer/tmp)
             language: Programming language to analyze (default: python)
         """
         if work_dir is None:
-            self.work_dir = str(Path.home()) + "/.codeminer"
+            # Create a temporary directory under ~/.codeminer
+            cache_dir = str(Path.home()) + "/.codeminer"
+            os.makedirs(cache_dir, exist_ok=True)
+            self.work_dir = os.path.join(cache_dir, "tmp")
             os.makedirs(self.work_dir, exist_ok=True)
+            self.is_temp_dir = True
         else:
             self.work_dir = work_dir
+            self.is_temp_dir = False
         self.language = language
         self.chunker = create_chunker(language)
         logger.info(f"Initialized GTLocator with work_dir: {self.work_dir}")
@@ -514,13 +519,12 @@ class GTLocator:
         return result
 
     def cleanup(self):
-        """Clean up working directory if it's not the cache directory."""
-        # Don't cleanup if using the default ~/.codeminer cache
-        if self.work_dir.startswith(str(Path.home()) + "/.codeminer"):
-            logger.info(f"Keeping repositories in cache directory: {self.work_dir}")
-        elif self.work_dir and os.path.exists(self.work_dir):
-            logger.info(f"Cleaning up work directory: {self.work_dir}")
+        """Clean up working directory if it's a temporary directory."""
+        if self.is_temp_dir and self.work_dir and os.path.exists(self.work_dir):
+            logger.info(f"Cleaning up temporary work directory: {self.work_dir}")
             shutil.rmtree(self.work_dir, ignore_errors=True)
+        else:
+            logger.info(f"Keeping repositories in work directory: {self.work_dir}")
 
 
 def load_swebench_verified(
