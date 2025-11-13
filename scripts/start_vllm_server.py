@@ -74,8 +74,8 @@ def main():
     parser.add_argument(
         "--max-model-len",
         type=int,
-        default=4096,
-        help="Maximum model length (default: 4096)",
+        default=16384,
+        help="Maximum model length (default: 16384)",
     )
     parser.add_argument(
         "--gpu-memory-utilization",
