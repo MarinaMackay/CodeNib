@@ -212,8 +212,10 @@ void CodeGraph::add_symbol_node(const std::string& symbol,
 void CodeGraph::add_symbol_reference(const std::string& symbol,
                                      const std::optional<std::string>& module_path,
                                      const std::string& symbol_type) {
+    const bool already_exists = name_to_vertex_.find(symbol) != name_to_vertex_.end();
     VertexId id = ensure_vertex(symbol);
-    apply_vertex_update(id, symbol_type, module_path, std::nullopt, std::nullopt);
+    std::optional<std::string> file_attr = already_exists ? std::nullopt : module_path;
+    apply_vertex_update(id, symbol_type, file_attr, std::nullopt, std::nullopt);
     add_edge(current_scope_, symbol, EDGE_TYPE_REFERENCE);
 }
 
