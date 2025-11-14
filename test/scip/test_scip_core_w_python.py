@@ -174,28 +174,24 @@ def ensure_decoded_scip(scip_file: Path) -> Path:
 
 
 def normalize_graph_data(graph_data: Dict) -> Dict:
-    """Normalize graph data for consistent comparison."""
-    # Sort nodes/vertices by ID (or name if ID not present)
+    """Normalize graph data for consistent comparison.
+
+    Sorts vertices and edges by their IDs to ensure deterministic ordering.
+    """
+    # Sort nodes/vertices by ID
     for key in ["nodes", "vertices"]:
         if key in graph_data:
             graph_data[key] = sorted(
                 graph_data[key],
-                key=lambda x: (x.get("id", float('inf')), x.get("name", ""))
+                key=lambda x: x.get("id", float('inf'))
             )
 
-    # Sort edges by source, target, type (supporting both ID-based and name-based)
+    # Sort edges by edge ID
     if "edges" in graph_data:
-        def edge_sort_key(edge):
-            source = edge.get("source", "")
-            target = edge.get("target", "")
-            edge_type = edge.get("type", "")
-            # Normalize to consistent types - use int if BOTH are ints, else strings
-            if isinstance(source, int) and isinstance(target, int):
-                return (source, target, edge_type)
-            else:
-                return (str(source), str(target), edge_type)
-
-        graph_data["edges"] = sorted(graph_data["edges"], key=edge_sort_key)
+        graph_data["edges"] = sorted(
+            graph_data["edges"],
+            key=lambda x: x.get("id", float('inf'))
+        )
 
     return graph_data
 
@@ -310,137 +306,168 @@ def cpp_decode(scip_file: Path, project_root: Path, output_file: Path, cpp_decod
         return False
 
 
-def compare_nodes(py_nodes: List[Dict], cpp_nodes: List[Dict]) -> Tuple[List[str], List[str], List[str]]:
-    """Compare nodes between Python and C++ outputs."""
-    py_node_map = {n["name"]: n for n in py_nodes}
-    cpp_node_map = {n["name"]: n for n in cpp_nodes}
+def compare_nodes(py_nodes: List[Dict], cpp_nodes: List[Dict]) -> Tuple[int, List[str]]:
+    """Compare nodes between Python and C++ outputs using strict ID-based comparison.
 
-    py_names = set(py_node_map.keys())
-    cpp_names = set(cpp_node_map.keys())
+    Args:
+        py_nodes: Python decoder's nodes (must be sorted by ID)
+        cpp_nodes: C++ decoder's nodes (must be sorted by ID)
 
-    only_in_py = sorted(py_names - cpp_names)
-    only_in_cpp = sorted(cpp_names - py_names)
-
+    Returns:
+        Tuple of (num_count_mismatch, node_differences)
+        - num_count_mismatch: 0 if counts match, otherwise the difference
+        - node_differences: List of detailed difference descriptions
+    """
     differences = []
-    for name in sorted(py_names & cpp_names):
-        py_node = py_node_map[name]
-        cpp_node = cpp_node_map[name]
 
-        diffs = []
-        for key in set(py_node.keys()) | set(cpp_node.keys()):
+    # First check if node counts match
+    if len(py_nodes) != len(cpp_nodes):
+        count_diff = abs(len(py_nodes) - len(cpp_nodes))
+        differences.append(
+            f"Node count mismatch: Python has {len(py_nodes)} nodes, "
+            f"C++ has {len(cpp_nodes)} nodes (diff: {count_diff})"
+        )
+        return count_diff, differences
+
+    # Compare nodes by ID position
+    for i in range(len(py_nodes)):
+        py_node = py_nodes[i]
+        cpp_node = cpp_nodes[i]
+
+        # Verify IDs match their positions
+        py_id = py_node.get("id")
+        cpp_id = cpp_node.get("id")
+
+        if py_id != i or cpp_id != i:
+            differences.append(
+                f"ID position mismatch at index {i}: "
+                f"Python ID={py_id}, C++ ID={cpp_id}, expected={i}"
+            )
+            continue
+
+        # Compare all fields except 'id' (since IDs are sequential and match by position)
+        node_diffs = []
+        all_keys = set(py_node.keys()) | set(cpp_node.keys())
+        all_keys.discard("id")  # We already verified IDs match positions
+
+        for key in sorted(all_keys):
             py_val = py_node.get(key)
             cpp_val = cpp_node.get(key)
 
             if py_val != cpp_val:
-                diffs.append(f"  {key}: Python={py_val}, C++={cpp_val}")
+                node_diffs.append(f"    {key}: Python={py_val}, C++={cpp_val}")
 
-        if diffs:
-            differences.append(f"Node '{name}':\n" + "\n".join(diffs) + "\n")
+        if node_diffs:
+            py_name = py_node.get("name", "?")
+            differences.append(
+                f"  Node ID {i} (name='{py_name}'):\n" + "\n".join(node_diffs) + "\n"
+            )
 
-    return only_in_py, only_in_cpp, differences
+    return 0, differences
 
 
 def compare_edges(
     py_edges: List[Dict],
     cpp_edges: List[Dict],
     py_nodes: List[Dict] = None,
-    cpp_nodes: List[Dict] = None,
-    use_content_comparison: bool = False
-) -> Tuple[List[str], List[str]]:
-    """Compare edges between Python and C++ outputs.
+    cpp_nodes: List[Dict] = None
+) -> Tuple[int, List[str]]:
+    """Compare edges between Python and C++ outputs using strict ID-based comparison.
 
     Args:
-        py_edges: Python decoder's edges
-        cpp_edges: C++ decoder's edges
-        py_nodes: Python decoder's nodes (for ID-to-content mapping)
-        cpp_nodes: C++ decoder's nodes (for ID-to-content mapping)
-        use_content_comparison: If True, compare edges by node content instead of IDs.
-                               This is used when nodes have identical content but different IDs.
+        py_edges: Python decoder's edges (must be sorted by edge ID)
+        cpp_edges: C++ decoder's edges (must be sorted by edge ID)
+        py_nodes: Python decoder's nodes (for ID-to-name mapping for display)
+        cpp_nodes: C++ decoder's nodes (for ID-to-name mapping for display)
 
     Returns:
-        Tuple of (edges_only_in_python, edges_only_in_cpp)
+        Tuple of (num_count_mismatch, edge_differences)
+        - num_count_mismatch: 0 if counts match, otherwise the difference
+        - edge_differences: List of detailed difference descriptions
     """
-    def normalize_edge_type(edge_type):
-        """Normalize edge types - treat 'contain' and 'reference' as equivalent."""
-        # C++ may use 'reference' where Python uses 'contain' for certain edges
-        # These are considered equivalent for comparison purposes
-        if edge_type in ('contain', 'reference'):
-            return 'contain_or_reference'
-        return edge_type
+    differences = []
 
-    # Build ID-to-name mappings for display
+    # Build ID-to-name mappings for display purposes
     py_id_to_name = {}
     cpp_id_to_name = {}
-
-    # Build ID-to-content mappings for content-based comparison
-    py_id_to_content = {}
-    cpp_id_to_content = {}
 
     if py_nodes:
         for node in py_nodes:
             node_id = node.get("id")
-            if node_id is not None:
-                if "name" in node:
-                    py_id_to_name[node_id] = node["name"]
-                # Create content signature (all fields except id)
-                content = tuple(sorted((k, v) for k, v in node.items() if k != "id"))
-                py_id_to_content[node_id] = content
+            if node_id is not None and "name" in node:
+                py_id_to_name[node_id] = node["name"]
 
     if cpp_nodes:
         for node in cpp_nodes:
             node_id = node.get("id")
-            if node_id is not None:
-                if "name" in node:
-                    cpp_id_to_name[node_id] = node["name"]
-                # Create content signature (all fields except id)
-                content = tuple(sorted((k, v) for k, v in node.items() if k != "id"))
-                cpp_id_to_content[node_id] = content
+            if node_id is not None and "name" in node:
+                cpp_id_to_name[node_id] = node["name"]
 
-    if use_content_comparison:
-        # Use content-based comparison when node IDs differ but content may match
-        def edge_key(edge, id_to_content_map):
-            """Create edge key using node content instead of IDs."""
-            source = edge.get("source")
-            target = edge.get("target")
+    # First check if edge counts match
+    if len(py_edges) != len(cpp_edges):
+        count_diff = abs(len(py_edges) - len(cpp_edges))
+        differences.append(
+            f"Edge count mismatch: Python has {len(py_edges)} edges, "
+            f"C++ has {len(cpp_edges)} edges (diff: {count_diff})"
+        )
+        return count_diff, differences
 
-            # Convert IDs to content signatures
-            if isinstance(source, int) and source in id_to_content_map:
-                source = id_to_content_map[source]
-            if isinstance(target, int) and target in id_to_content_map:
-                target = id_to_content_map[target]
+    # Compare edges by ID position
+    for i in range(len(py_edges)):
+        py_edge = py_edges[i]
+        cpp_edge = cpp_edges[i]
 
-            return (source, target, normalize_edge_type(edge.get("type")))
+        # Verify edge IDs match their positions
+        py_eid = py_edge.get("id")
+        cpp_eid = cpp_edge.get("id")
 
-        py_edge_set = {edge_key(e, py_id_to_content) for e in py_edges}
-        cpp_edge_set = {edge_key(e, cpp_id_to_content) for e in cpp_edges}
+        if py_eid != i or cpp_eid != i:
+            differences.append(
+                f"Edge ID position mismatch at index {i}: "
+                f"Python edge ID={py_eid}, C++ edge ID={cpp_eid}, expected={i}"
+            )
+            continue
 
-        # Format for display using names
-        def format_edge(source_content, target_content, edge_type):
-            # Extract name from content tuple for display
-            source_name = dict(source_content).get("name", "?") if isinstance(source_content, tuple) else str(source_content)
-            target_name = dict(target_content).get("name", "?") if isinstance(target_content, tuple) else str(target_content)
-            return f"{source_name} -> {target_name} ({edge_type})"
+        # Compare edge fields
+        edge_diffs = []
 
-    else:
-        # Use ID-based comparison when node IDs match
-        def edge_key_id(edge):
-            """Create edge key using node IDs directly."""
-            return (edge.get("source"), edge.get("target"), normalize_edge_type(edge.get("type")))
+        # Compare source
+        py_source = py_edge.get("source")
+        cpp_source = cpp_edge.get("source")
+        if py_source != cpp_source:
+            py_source_name = py_id_to_name.get(py_source, "?")
+            cpp_source_name = cpp_id_to_name.get(cpp_source, "?")
+            edge_diffs.append(
+                f"    source: Python={py_source}({py_source_name}), "
+                f"C++={cpp_source}({cpp_source_name})"
+            )
 
-        py_edge_set = {edge_key_id(e) for e in py_edges}
-        cpp_edge_set = {edge_key_id(e) for e in cpp_edges}
+        # Compare target
+        py_target = py_edge.get("target")
+        cpp_target = cpp_edge.get("target")
+        if py_target != cpp_target:
+            py_target_name = py_id_to_name.get(py_target, "?")
+            cpp_target_name = cpp_id_to_name.get(cpp_target, "?")
+            edge_diffs.append(
+                f"    target: Python={py_target}({py_target_name}), "
+                f"C++={cpp_target}({cpp_target_name})"
+            )
 
-        # Format for display with both ID and name
-        def format_edge(source, target, edge_type):
-            # Show ID with name for readability
-            source_str = f"{source}({py_id_to_name.get(source, '?')})" if isinstance(source, int) else str(source)
-            target_str = f"{target}({cpp_id_to_name.get(target, '?')})" if isinstance(target, int) else str(target)
-            return f"{source_str} -> {target_str} ({edge_type})"
+        # Compare type
+        py_type = py_edge.get("type")
+        cpp_type = cpp_edge.get("type")
+        if py_type != cpp_type:
+            edge_diffs.append(f"    type: Python={py_type}, C++={cpp_type}")
 
-    only_in_py = sorted([format_edge(s, t, typ) for s, t, typ in py_edge_set - cpp_edge_set])
-    only_in_cpp = sorted([format_edge(s, t, typ) for s, t, typ in cpp_edge_set - py_edge_set])
+        if edge_diffs:
+            py_source_name = py_id_to_name.get(py_source, "?")
+            py_target_name = py_id_to_name.get(py_target, "?")
+            differences.append(
+                f"  Edge ID {i} ({py_source_name} -> {py_target_name}):\n" +
+                "\n".join(edge_diffs) + "\n"
+            )
 
-    return only_in_py, only_in_cpp
+    return 0, differences
 
 
 def generate_report(py_file: Path, cpp_file: Path, json_report_file: Path = None) -> Tuple[bool, Dict[str, Any]]:
@@ -471,41 +498,15 @@ def generate_report(py_file: Path, cpp_file: Path, json_report_file: Path = None
         py_edges = py_data.get("edges", [])
         cpp_edges = cpp_data.get("edges", [])
 
-        # Compare nodes and edges directly (both now use ID-based format)
-        nodes_only_py, nodes_only_cpp, node_diffs = compare_nodes(py_nodes, cpp_nodes)
+        # Compare nodes using strict ID-based comparison
+        node_count_mismatch, node_diffs = compare_nodes(py_nodes, cpp_nodes)
 
-        # Filter out nodes with ONLY 'id' differences
-        # Keep nodes that have other field differences even if id also differs
-        meaningful_node_diffs = []
-        has_only_id_diffs = False  # Track if there are nodes with only ID differences
-
-        for diff in node_diffs:
-            # Parse the diff to check what fields differ
-            diff_lines = [line.strip() for line in diff.split('\n') if line.strip() and not line.startswith('Node')]
-
-            # Filter out the id field differences
-            non_id_diffs = [line for line in diff_lines if not line.startswith('id:')]
-
-            # Check if this diff only has ID differences
-            if not non_id_diffs and diff_lines:
-                # Only ID differs - don't include in meaningful diffs, but note it
-                has_only_id_diffs = True
-            elif non_id_diffs:
-                # Has other field differences - keep it
-                node_name_line = [line for line in diff.split('\n') if line.startswith('Node')][0]
-                meaningful_diff = node_name_line + '\n' + '\n'.join(non_id_diffs) + '\n'
-                meaningful_node_diffs.append(meaningful_diff)
-
-        # Compare edges
-        # Use content-based comparison if nodes have only ID differences
-        # This works even when there are duplicate node names with different content,
-        # because we match by complete content signature, not just name
-        edges_only_py, edges_only_cpp = compare_edges(
-            py_edges, cpp_edges, py_nodes, cpp_nodes,
-            use_content_comparison=has_only_id_diffs
+        # Compare edges using strict ID-based comparison
+        edge_count_mismatch, edge_diffs = compare_edges(
+            py_edges, cpp_edges, py_nodes, cpp_nodes
         )
 
-        total_meaningful_issues = len(nodes_only_py) + len(nodes_only_cpp) + len(meaningful_node_diffs) + len(edges_only_py) + len(edges_only_cpp)
+        total_issues = node_count_mismatch + edge_count_mismatch + len(node_diffs) + len(edge_diffs)
 
         # Statistics dictionary
         stats = {
@@ -513,24 +514,20 @@ def generate_report(py_file: Path, cpp_file: Path, json_report_file: Path = None
             "cpp_nodes": len(cpp_nodes),
             "py_edges": len(py_edges),
             "cpp_edges": len(cpp_edges),
-            "nodes_only_py": len(nodes_only_py),
-            "nodes_only_cpp": len(nodes_only_cpp),
-            "node_diffs": len(meaningful_node_diffs),
-            "edges_only_py": len(edges_only_py),
-            "edges_only_cpp": len(edges_only_cpp),
-            "total_issues": total_meaningful_issues,
-            "perfect_match": total_meaningful_issues == 0
+            "node_count_mismatch": node_count_mismatch,
+            "edge_count_mismatch": edge_count_mismatch,
+            "node_diffs": len(node_diffs),
+            "edge_diffs": len(edge_diffs),
+            "total_issues": total_issues,
+            "perfect_match": total_issues == 0
         }
 
         # Detailed report data for JSON export
         detailed_report = {
             "summary": stats,
             "details": {
-                "nodes_only_in_python": nodes_only_py,
-                "nodes_only_in_cpp": nodes_only_cpp,
-                "node_differences": meaningful_node_diffs,
-                "edges_only_in_python": edges_only_py,
-                "edges_only_in_cpp": edges_only_cpp
+                "node_differences": node_diffs,
+                "edge_differences": edge_diffs
             }
         }
 
@@ -548,48 +545,40 @@ def generate_report(py_file: Path, cpp_file: Path, json_report_file: Path = None
         report.append(f"C++:    {len(cpp_nodes)} nodes, {len(cpp_edges)} edges")
         report.append("")
 
-        if total_meaningful_issues == 0:
+        if total_issues == 0:
             report.append("✅ PERFECT MATCH")
         else:
-            report.append(f"⚠️  {total_meaningful_issues} differences found")
+            report.append(f"⚠️  {total_issues} differences found")
         report.append("")
 
-        # Only show differences if there are meaningful issues
-        if total_meaningful_issues > 0:
-            if nodes_only_py:
-                report.append(f"Nodes only in Python: {len(nodes_only_py)}")
-                for node in nodes_only_py[:5]:
-                    report.append(f"  - {node}")
-                if len(nodes_only_py) > 5:
-                    report.append(f"  ... and {len(nodes_only_py) - 5} more")
+        # Only show differences if there are issues
+        if total_issues > 0:
+            # Show count mismatches
+            if node_count_mismatch > 0:
+                report.append(f"❌ Node count mismatch: Python={len(py_nodes)}, C++={len(cpp_nodes)}")
+                report.append("")
 
-            if nodes_only_cpp:
-                report.append(f"Nodes only in C++: {len(nodes_only_cpp)}")
-                for node in nodes_only_cpp[:5]:
-                    report.append(f"  - {node}")
-                if len(nodes_only_cpp) > 5:
-                    report.append(f"  ... and {len(nodes_only_cpp) - 5} more")
+            if edge_count_mismatch > 0:
+                report.append(f"❌ Edge count mismatch: Python={len(py_edges)}, C++={len(cpp_edges)}")
+                report.append("")
 
-            if meaningful_node_diffs:
-                report.append(f"Node differences: {len(meaningful_node_diffs)}")
-                for diff in meaningful_node_diffs[:3]:
-                    report.append(f"  {diff}")
-                if len(meaningful_node_diffs) > 3:
-                    report.append(f"  ... and {len(meaningful_node_diffs) - 3} more")
+            # Show node differences
+            if node_diffs:
+                report.append(f"Node differences: {len(node_diffs)}")
+                for diff in node_diffs[:5]:
+                    report.append(f"{diff}")
+                if len(node_diffs) > 5:
+                    report.append(f"  ... and {len(node_diffs) - 5} more")
+                report.append("")
 
-            if edges_only_py:
-                report.append(f"Edges only in Python: {len(edges_only_py)}")
-                for edge in edges_only_py[:5]:
-                    report.append(f"  - {edge}")
-                if len(edges_only_py) > 5:
-                    report.append(f"  ... and {len(edges_only_py) - 5} more")
-
-            if edges_only_cpp:
-                report.append(f"Edges only in C++: {len(edges_only_cpp)}")
-                for edge in edges_only_cpp[:5]:
-                    report.append(f"  - {edge}")
-                if len(edges_only_cpp) > 5:
-                    report.append(f"  ... and {len(edges_only_cpp) - 5} more")
+            # Show edge differences
+            if edge_diffs:
+                report.append(f"Edge differences: {len(edge_diffs)}")
+                for diff in edge_diffs[:5]:
+                    report.append(f"{diff}")
+                if len(edge_diffs) > 5:
+                    report.append(f"  ... and {len(edge_diffs) - 5} more")
+                report.append("")
 
         report.append("=" * 80)
 
@@ -597,7 +586,7 @@ def generate_report(py_file: Path, cpp_file: Path, json_report_file: Path = None
         report_text = "\n".join(report)
         print(f"\n{report_text}")
 
-        return total_meaningful_issues == 0, stats
+        return total_issues == 0, stats
 
     except Exception as e:
         print(f"❌ Error: {e}")
