@@ -266,11 +266,7 @@ igraph_integer_t CodeGraph::add_edge(const std::string& source,
     igraph_integer_t eid = -1;
     if (igraph_get_eid(&graph_, &eid, source_id, target_id, /*directed=*/1, /*error=*/0) == IGRAPH_SUCCESS &&
         eid >= 0) {
-        log_debug("Edge already exists; updating eid " + std::to_string(eid));
-        if (static_cast<std::size_t>(eid) >= edges_.size()) {
-            edges_.resize(static_cast<std::size_t>(igraph_ecount(&graph_)));
-        }
-        edges_[eid] = EdgeData{source_id, target_id, edge_type};
+        log_debug("Edge already exists; returning eid " + std::to_string(eid) + " without updating type");
         return eid;
     }
 
