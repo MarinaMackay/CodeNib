@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-Analyze SWE-bench Verified patches to extract symbol-level changes.
+Analyze SWE-bench patches to extract symbol-level changes.
 
 This script extracts ground truth (GT) localization information from SWE-bench patches,
 identifying which symbols (functions, methods, classes) were modified, added, or deleted.
+Supports both SWE-bench Verified and Lite datasets.
 
 Usage Examples:
-    # Process all instances in the test split (default output: ~/.codeminer/swebench_verified_gt.json)
+    # Process all instances in the test split using Verified dataset (default)
     python scripts/swebench_gt_locate.py
 
+    # Process all instances using Lite dataset
+    python scripts/swebench_gt_locate.py --dataset lite
+
     # Process first 10 instances of repo "django/django", output into local file
-    python scripts/swebench_gt_locate.py --filter "django__django-.*" --limit 10 --output results/test_gt.json --keep-repos
+    python scripts/swebench_gt_locate.py --dataset verified --filter "django__django-.*" --limit 10 --output results/test_gt.json --keep-repos
 
 Output Format:
     Each entry in the output JSON array contains:
@@ -527,26 +531,43 @@ class GTLocator:
             logger.info(f"Keeping repositories in work directory: {self.work_dir}")
 
 
-def load_swebench_verified(
-    split: str = "test", filter_pattern: str = ".*", limit: Optional[int] = None
+def load_swebench(
+    split: str = "test",
+    filter_pattern: str = ".*",
+    limit: Optional[int] = None,
+    dataset_type: str = "verified",
 ) -> datasets.Dataset:
     """
-    Load the SWE-bench Verified dataset with optional filtering and limiting.
+    Load the SWE-bench dataset with optional filtering and limiting.
 
     Args:
         split: Dataset split to load (default: "test")
         filter_pattern: Regex pattern to filter instance IDs (default: ".*" - no filter)
         limit: Maximum number of instances to return (default: None - no limit)
+        dataset_type: Dataset type - "verified" or "lite" (default: "verified")
 
     Returns:
         Dataset object
     """
-    logger.info(f"Loading SWE-bench Verified dataset (split: {split})")
+    # Validate dataset_type
+    if dataset_type.lower() not in ("verified", "lite"):
+        raise ValueError(
+            f"Invalid dataset_type: {dataset_type}. Must be 'verified' or 'lite'"
+        )
+
+    logger.info(
+        f"Loading SWE-bench {dataset_type.capitalize()} dataset (split: {split})"
+    )
 
     cache_dir = str(Path.home()) + "/.codeminer"
     os.makedirs(cache_dir, exist_ok=True)
 
-    dataset_name = "princeton-nlp/SWE-bench_Verified"
+    # Select dataset name based on type
+    if dataset_type.lower() == "lite":
+        dataset_name = "princeton-nlp/SWE-bench_Lite"
+    else:
+        dataset_name = "princeton-nlp/SWE-bench_Verified"
+
     dataset_file = f'{dataset_name.replace("/", "__")}_{split}.json'
     dataset_path = f"{cache_dir}/{dataset_file}"
 
@@ -593,7 +614,14 @@ def load_swebench_verified(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze SWE-bench Verified patches to extract symbol-level changes"
+        description="Analyze SWE-bench patches to extract symbol-level changes"
+    )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="verified",
+        choices=["verified", "lite"],
+        help="Dataset type to use: 'verified' or 'lite' (default: verified)",
     )
     parser.add_argument(
         "--split",
@@ -605,7 +633,7 @@ def main():
         "--output",
         type=str,
         default=None,
-        help="Output JSON file path (default: ~/.codeminer/swebench_verified_gt.json)",
+        help="Output JSON file path (default: ~/.codeminer/swebench_{dataset}_gt.json)",
     )
     parser.add_argument(
         "--work-dir",
@@ -637,11 +665,14 @@ def main():
     if args.output is None:
         cache_dir = str(Path.home()) + "/.codeminer"
         os.makedirs(cache_dir, exist_ok=True)
-        args.output = os.path.join(cache_dir, "swebench_verified_gt.json")
+        args.output = os.path.join(cache_dir, f"swebench_{args.dataset}_gt.json")
 
     # Load dataset with filtering and limiting
-    dataset = load_swebench_verified(
-        split=args.split, filter_pattern=args.filter, limit=args.limit
+    dataset = load_swebench(
+        split=args.split,
+        filter_pattern=args.filter,
+        limit=args.limit,
+        dataset_type=args.dataset,
     )
 
     logger.info(f"Processing {len(dataset)} instances")
