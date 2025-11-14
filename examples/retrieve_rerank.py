@@ -89,7 +89,7 @@ def parse_args():
     parser.add_argument(
         "--filter-instance",
         type=str,
-        default=None,
+        default=".*",
         help="Regex pattern to filter instances (None processes all instances)",
     )
 

@@ -304,7 +304,7 @@ class RetrieveRerankPipeline:
         for idx, stage in enumerate(self.retrieve_plan):
             node_id = f"retrieve_{idx}"
             params = dict(stage.params)
-            stage_top_k = stage.top_k or max(top_k, self._default_stage_top_k)
+            stage_top_k = max(stage.top_k or 0, top_k, self._default_stage_top_k)
             params.setdefault("query", query)
             params.setdefault("top_k", stage_top_k)
             params.setdefault("return_content", True)
