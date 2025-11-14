@@ -90,7 +90,7 @@ def parse_args():
         "--filter-instance",
         type=str,
         default=".*",
-        help="Regex pattern to filter instances (None processes all instances)",
+        help="Regex pattern to filter instances (`.*` processes all instances)",
     )
 
     # Embedding configuration
