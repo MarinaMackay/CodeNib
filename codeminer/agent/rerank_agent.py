@@ -168,6 +168,7 @@ class RerankAgent:
                     "node_name": node.node_name,
                     "type": node.type,
                     "file": node.file,
+                    "node_id": node.node_id,
                     "start_line": node.start_line,
                     "end_line": node.end_line,
                     "score": float(score),

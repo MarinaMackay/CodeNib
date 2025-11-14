@@ -34,6 +34,7 @@ class NodeInfo(BaseModel):
     node_name: str = ""
     type: str = ""
     file: Optional[str] = None
+    node_id: Optional[str] = None
     start_line: Optional[int] = None
     end_line: Optional[int] = None
 
