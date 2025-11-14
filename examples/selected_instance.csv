@@ -1,0 +1,13 @@
+instance_id
+astropy__astropy-14096
+django__django-14053
+matplotlib__matplotlib-24627
+mwaskom__seaborn-3069
+pallets__flask-5014
+psf__requests-1142
+pydata__xarray-4687
+pylint-dev__pylint-6386
+pytest-dev__pytest-7432
+scikit-learn__scikit-learn-15100
+sphinx-doc__sphinx-7440
+sympy__sympy-15349

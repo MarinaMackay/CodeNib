@@ -260,7 +260,7 @@ def create_llm(config: LLMConfig, **kwargs) -> BaseLLM:
             # Use OpenAI client but with vLLM server endpoint
             base_url = config.get_config_value_optional("VLLM_API_BASE_URL")
             if not base_url:
-                base_url = "http://localhost:8000/v1"  # Default vLLM server endpoint
+                base_url = "http://localhost:9000/v1"  # Default vLLM server endpoint
 
             api_key = config.get_config_value_optional("VLLM_API_KEY")
             if not api_key:

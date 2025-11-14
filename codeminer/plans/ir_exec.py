@@ -29,23 +29,26 @@ class ExecutionGraph:
         self.nodes[node.node_id] = node
 
     def iter_topo(self) -> Iterable[ExecutionNode]:
-        visited: Dict[str, bool] = {}
-        stack: List[str] = []
+        visited: Dict[str, str] = {}
+        order: List[str] = []
 
         def dfs(node_id: str) -> None:
-            if visited.get(node_id):
-                return
-            if not visited.get(node_id):
+            state = visited.get(node_id)
+            if state == "visiting":
                 raise RuntimeError("Cycle detected in execution graph.")
-            visited[node_id] = False
+            if state == "done":
+                return
+            if node_id not in self.nodes:
+                raise KeyError(f"Unknown execution node dependency: {node_id}")
+            visited[node_id] = "visiting"
             node = self.nodes[node_id]
             for dep in node.deps:
                 dfs(dep)
-            visited[node_id] = True
-            stack.append(node_id)
+            visited[node_id] = "done"
+            order.append(node_id)
 
-        for node_id in self.nodes:
+        for node_id in list(self.nodes):
             dfs(node_id)
 
-        while stack:
-            yield self.nodes[stack.pop()]
+        for node_id in order:
+            yield self.nodes[node_id]
