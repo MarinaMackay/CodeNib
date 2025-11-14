@@ -48,12 +48,11 @@ def collect_targets(instance: Mapping[str, object]) -> Tuple[List[str], List[str
 
 
 def build_symbol_prediction(node: QueriedNode) -> Optional[str]:
-    """Format a retrieved node into `file:node_name` when both fields exist."""
-    normalized_file = normalize_file_path(node.file)
-    node_name = (node.node_name or "").strip()
-    if not normalized_file or not node_name:
-        return None
-    return f"{normalized_file}:{node_name}"
+    """Format a retrieved node into `file:node_name` from node_id."""
+    # Use node_id (format: "file.py:symbol" or "file.py" for headers)
+    if node.node_id and ":" in node.node_id:
+        return normalize_symbol_identifier(node.node_id)
+    return None
 
 
 def compute_metrics(
@@ -80,11 +79,18 @@ def evaluate_predictions(
     ks: Sequence[int],
 ) -> Dict[str, Dict[int, Dict[str, float]]]:
     """Evaluate retrieved nodes against targets for multiple cutoffs."""
-    normalized_files = [
-        value
-        for value in (normalize_file_path(node.file) for node in nodes)
-        if value is not None
-    ]
+    # Extract file paths directly from node_id (format: "file.py" or "file.py:symbol")
+    normalized_files = []
+    for node in nodes:
+        if node.node_id:
+            file_path = (
+                node.node_id.split(":")[0] if ":" in node.node_id else node.node_id
+            )
+            normalized = normalize_file_path(file_path)
+            if normalized:
+                normalized_files.append(normalized)
+
+    # Build symbol predictions from node_id
     normalized_symbols = [
         value
         for value in (build_symbol_prediction(node) for node in nodes)

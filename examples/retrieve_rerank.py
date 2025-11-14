@@ -89,8 +89,8 @@ def parse_args():
     parser.add_argument(
         "--filter-instance",
         type=str,
-        default=None,
-        help="Regex pattern to filter instances (None processes all instances)",
+        default=".*",
+        help="Regex pattern to filter instances (`.*` processes all instances)",
     )
 
     # Embedding configuration
