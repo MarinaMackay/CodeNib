@@ -10,3 +10,4 @@ build/
 *.decoded
 key.cfg
 logs/
+uv.lock

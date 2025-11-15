@@ -37,6 +37,7 @@ class CodeVectorStore:
         embedding_provider: str = "openai",
         dimension: int = 1536,
         index_type: str = "flat",
+        index_metric: str = "ip",
         store_path: Optional[str] = None,
         index_params: Optional[Dict[str, Any]] = None,
         profiler: Optional[Profiler] = None,
@@ -50,6 +51,7 @@ class CodeVectorStore:
             embedding_provider: Provider for embeddings ("openai", "huggingface")
             dimension: Dimension of the embedding vectors
             index_type: Type of FAISS index ("flat", "ivf", "hnsw")
+            index_metric: Distance metric ("ip" for inner product, "l2" for L2 distance)
             store_path: Path to store/load the vector store
             index_params: Additional parameters for index construction (e.g., nlist)
             profiler: Optional profiler instance to capture detailed timings
@@ -59,6 +61,7 @@ class CodeVectorStore:
         self.embedding_provider = embedding_provider
         self.dimension = dimension
         self.index_type = index_type
+        self.index_metric = index_metric.lower()
         self.store_path = Path(store_path) if store_path else None
         self.index_params = index_params or {}
         self.profiler = profiler
@@ -130,10 +133,16 @@ class CodeVectorStore:
     def _build_faiss_index(self) -> faiss.Index:
         """Create a FAISS index according to the configured index_type."""
         index_type = self.index_type.lower()
+        metric = self.index_metric
         params = self.index_params
 
         if index_type == "flat":
-            return faiss.IndexFlatL2(self.dimension)
+            if metric == "ip":
+                return faiss.IndexFlatIP(self.dimension)
+            elif metric == "l2":
+                return faiss.IndexFlatL2(self.dimension)
+            else:
+                raise ValueError(f"Unsupported metric for flat index: {metric}")
 
         if index_type == "ivf":
             nlist = int(params.get("nlist", 1024))
@@ -356,6 +365,7 @@ class CodeVectorStore:
             "embedding_provider": self.embedding_provider,
             "dimension": self.dimension,
             "index_type": self.index_type,
+            "index_metric": self.index_metric,
             "index_params": self.index_params,
         }
         with open(config_path, "w") as f:
@@ -405,6 +415,14 @@ class CodeVectorStore:
                     self.index_type,
                     saved_index_type,
                 )
+            saved_metric = config.get("index_metric")
+            if saved_metric and saved_metric != self.index_metric:
+                logger.warning(
+                    "Index metric mismatch: expected %s, got %s",
+                    self.index_metric,
+                    saved_metric,
+                )
+                self.index_metric = saved_metric
             saved_params = config.get("index_params")
             if saved_params and saved_params != self.index_params:
                 logger.warning("Index params mismatch between config and runtime")
@@ -457,6 +475,7 @@ class CodeVectorStore:
             "embedding_provider": self.embedding_provider,
             "dimension": self.dimension,
             "index_type": self.index_type,
+            "index_metric": self.index_metric,
             "index_params": self.index_params,
             "vector_store_size": len(self.documents),
         }
