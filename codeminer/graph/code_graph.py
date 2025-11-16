@@ -67,7 +67,7 @@ class CodeGraph:
         # Use specific symbol type if provided, otherwise default to generic symbol
         node_type = symbol_type if symbol_type else NODE_TYPE_SYMBOL
 
-        if scope_start_line and scope_end_line:
+        if scope_start_line is not None and scope_end_line is not None:
             # Store symbol range
             self.symbol_ranges[symbol] = (scope_start_line, scope_end_line)
 
