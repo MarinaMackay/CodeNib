@@ -62,6 +62,8 @@ class CodeVectorStore:
         self.dimension = dimension
         self.index_type = index_type
         self.index_metric = index_metric.lower()
+        if self.index_metric not in ["ip", "l2"]:
+            raise ValueError(f"Unsupported index_metric: {index_metric}. Must be 'ip' or 'l2'.")
         self.store_path = Path(store_path) if store_path else None
         self.index_params = index_params or {}
         self.profiler = profiler
