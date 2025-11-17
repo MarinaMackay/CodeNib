@@ -46,14 +46,13 @@ def test_python_chunking():
 
     # Verify expected chunks - now includes methods within classes
     # Note: header and epilogue are excluded by default (include_header_epilogue=False)
+    # Note: class chunks are excluded by default (include_class_level=False, aligned with SweRank)
     expected_types = [
         "function",  # hello_world
-        "class",  # Calculator class
         "method",  # Calculator.__init__
         "method",  # Calculator.add
         "method",  # Calculator.subtract
         "function",  # fibonacci
-        "class",  # DataProcessor class
         "method",  # DataProcessor.__init__
         "method",  # DataProcessor.process
         "function",  # async_function
@@ -67,12 +66,10 @@ def test_python_chunking():
     # Note: method names now include class prefix (e.g., Calculator.__init__)
     expected_names = [
         "hello_world",
-        "Calculator",
         "Calculator.__init__",
         "Calculator.add",
         "Calculator.subtract",
         "fibonacci",
-        "DataProcessor",
         "DataProcessor.__init__",
         "DataProcessor.process",
         "async_function",
@@ -94,14 +91,69 @@ def test_python_chunking():
         return False
 
 
+def test_python_chunking_with_classes():
+    """Test chunking on a Python file with include_class_level=True."""
+    print("\n=== Testing Python Code Chunking with include_class_level=True ===")
+
+    # Path to the test file
+    test_file = Path(__file__).parent / "sample_python_file.py"
+
+    # Create chunker for Python with include_class_level=True
+    chunker = CodeChunker(language="python", include_class_level=True)
+
+    # Chunk the file
+    chunks = chunker.chunk_file(str(test_file))
+
+    if not chunks:
+        print("ERROR: No chunks generated!")
+        return False
+
+    # Print detailed results
+    print(f"\nGenerated {len(chunks)} chunks:")
+
+    for i, chunk in enumerate(chunks, 1):
+        print(f"\n--- Chunk {i} ---")
+        print(f"Type: {chunk.chunk_type}")
+        print(f"Name: {chunk.name}")
+
+    # Verify that class chunks are now included
+    expected_types = [
+        "function",  # hello_world
+        "class",  # Calculator class
+        "method",  # Calculator.__init__
+        "method",  # Calculator.add
+        "method",  # Calculator.subtract
+        "function",  # fibonacci
+        "class",  # DataProcessor class
+        "method",  # DataProcessor.__init__
+        "method",  # DataProcessor.process
+        "function",  # async_function
+    ]
+    actual_types = [chunk.chunk_type for chunk in chunks]
+
+    print(f"\nExpected chunk types: {expected_types}")
+    print(f"Actual chunk types: {actual_types}")
+
+    if actual_types == expected_types:
+        print("=== Class chunks correctly included when include_class_level=True! ===")
+        return True
+    else:
+        print("=== Unexpected chunk types! ===")
+        return False
+
+
 def main():
     """Run all tests."""
     print("Starting code chunking tests...\n")
 
     success = True
 
-    # Test Python chunking
+    # Test Python chunking (default: no class chunks)
     if not test_python_chunking():
+        success = False
+
+    # Test Python chunking with class chunks enabled
+    if not test_python_chunking_with_classes():
         success = False
 
     if success:
