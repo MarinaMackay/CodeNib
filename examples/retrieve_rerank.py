@@ -42,6 +42,7 @@ from codeminer.eval.retrieval_eval import (
     average_metrics,
     collect_targets,
     evaluate_predictions,
+    extract_predictions,
 )
 from codeminer.llm.llm_config import LLMProvider
 from codeminer.log_utils import get_logger
@@ -220,6 +221,12 @@ def parse_args():
         default="~/.codeminer/",
         help="Directory to cache cloned repositories for dataset instances",
     )
+    parser.add_argument(
+        "--result-path",
+        type=str,
+        default=None,
+        help="Path to store retrieval results in json format",
+    )
 
     return parser.parse_args()
 
@@ -274,6 +281,7 @@ def run_pipeline(args):
     aggregate = {}
     metrics_k = sorted(set(args.metrics_k))
     eval_count = 0
+    all_results = [] if args.result_path else None
 
     # Process each instance
     for _, instance in enumerate(dataset_instances):
@@ -313,15 +321,6 @@ def run_pipeline(args):
         query = instance["problem_statement"]
         results = pipeline.query(query=query, top_k=max(max(metrics_k), args.top_k))
 
-        # for i, node in enumerate(results[: args.top_k]):
-        #     logger.info("--------------------------------")
-        #     logger.info(f"Rank {i + 1} (Score: {node.score:.4f})")
-        #     logger.info(f"  Node Name: {node.node_name}")
-        #     logger.info(f"  Node Type: {node.type}")
-        #     logger.info(f"  File: {node.file}")
-        #     logger.info(f"  Lines: {node.start_line}-{node.end_line}")
-        #     logger.info(f"  Content: {node.content}")
-
         metadata = eval_metadata.get(instance_id)
         if metadata:
             target_files, target_symbols = collect_targets(metadata)
@@ -345,11 +344,43 @@ def run_pipeline(args):
                         stats["recall"],
                         int(stats["hits"]),
                     )
+        else:
+            metrics = None
+            target_files = []
+            target_symbols = []
+
+        # Collect results if result_path is provided
+        if all_results is not None:
+            max_k = max(metrics_k)
+
+            unique_files_ordered, normalized_symbols = extract_predictions(results)
+            metric_k_files = unique_files_ordered[:max_k]
+            metric_k_node_ids = normalized_symbols[:max_k]
+
+            result_entry = {
+                "instance_id": instance_id,
+                "metric_k_node_ids": metric_k_node_ids,
+                "metric_k_files": metric_k_files,
+                "target_files": (
+                    list(metadata.get("target_files", [])) if metadata else []
+                ),
+                "symbols_modified": (
+                    list(metadata.get("symbols_modified", [])) if metadata else []
+                ),
+                "symbols_added": (
+                    list(metadata.get("symbols_added", [])) if metadata else []
+                ),
+                "symbols_deleted": (
+                    list(metadata.get("symbols_deleted", [])) if metadata else []
+                ),
+                "metrics": metrics,
+            }
+            all_results.append(result_entry)
 
     if aggregate and eval_count:
         averaged = average_metrics(aggregate, eval_count)
         logger.info(
-            "=== Aggregate Retrieval Metrics (over %d instances) ===", eval_count
+            "=== Aggregate Retrieval Rerank Metrics (over %d instances) ===", eval_count
         )
         for scope, per_k in averaged.items():
             for k, stats in per_k.items():
@@ -362,6 +393,16 @@ def run_pipeline(args):
                     stats["recall"],
                     stats["avg_hits"],
                 )
+
+    # Save results to JSON file if result_path is provided
+    if args.result_path and all_results is not None:
+        result_path = Path(args.result_path).expanduser().resolve()
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(all_results, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"Results saved to {result_path} ({len(all_results)} instances)")
 
 
 def main():

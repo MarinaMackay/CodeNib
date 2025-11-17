@@ -10,6 +10,9 @@ Usage:
     # Build with custom embedding model
     python scripts/build_embeddings.py --embedding-model nomic-ai/CodeRankEmbed
 
+    # Build with custom index metric (ip: inner product, l2: L2 distance)
+    python scripts/build_embeddings.py --index-metric l2
+
     # Build with filter (for testing)
     python scripts/build_embeddings.py --filter-instance "^(astropy__astropy-12907)$"
 
@@ -96,6 +99,13 @@ def parse_args():
         type=int,
         default=8,
         help="Batch size for embedding encoding",
+    )
+    parser.add_argument(
+        "--index-metric",
+        type=str,
+        default="ip",
+        choices=["ip", "l2"],
+        help="Distance metric for FAISS index (ip: inner product, l2: L2 distance)",
     )
 
     # Repository processing configuration
@@ -241,6 +251,7 @@ def build_embeddings(args):
                     embedding_model=args.embedding_model,
                     embedding_provider=args.embedding_provider,
                     dimension=args.embedding_dimension,
+                    index_metric=args.index_metric,
                     store_path=str(instance_final_dir),
                     profiler=instance_profiler,
                     **embedding_kwargs,

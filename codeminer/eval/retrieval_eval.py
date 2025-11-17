@@ -55,6 +55,31 @@ def build_symbol_prediction(node: QueriedNode) -> Optional[str]:
     return None
 
 
+def extract_predictions(
+    nodes: Sequence[QueriedNode],
+) -> Tuple[List[str], List[str]]:
+    """Extract unique files and symbols from retrieved nodes."""
+    seen_files = set()
+    unique_files_ordered = []
+    for node in nodes:
+        if node.node_id:
+            file_path = (
+                node.node_id.split(":")[0] if ":" in node.node_id else node.node_id
+            )
+            normalized = normalize_file_path(file_path)
+            if normalized and normalized not in seen_files:
+                seen_files.add(normalized)
+                unique_files_ordered.append(normalized)
+
+    normalized_symbols = [
+        value
+        for value in (build_symbol_prediction(node) for node in nodes)
+        if value is not None
+    ]
+
+    return unique_files_ordered, normalized_symbols
+
+
 def compute_metrics(
     predictions: Sequence[str],
     targets: Sequence[str],
@@ -79,27 +104,13 @@ def evaluate_predictions(
     ks: Sequence[int],
 ) -> Dict[str, Dict[int, Dict[str, float]]]:
     """Evaluate retrieved nodes against targets for multiple cutoffs."""
-    # Extract file paths directly from node_id (format: "file.py" or "file.py:symbol")
-    normalized_files = []
-    for node in nodes:
-        if node.node_id:
-            file_path = (
-                node.node_id.split(":")[0] if ":" in node.node_id else node.node_id
-            )
-            normalized = normalize_file_path(file_path)
-            if normalized:
-                normalized_files.append(normalized)
-
-    # Build symbol predictions from node_id
-    normalized_symbols = [
-        value
-        for value in (build_symbol_prediction(node) for node in nodes)
-        if value is not None
-    ]
+    unique_files_ordered, normalized_symbols = extract_predictions(nodes)
 
     metrics = {"files": {}, "symbols": {}}
     for k in ks:
-        metrics["files"][k] = compute_metrics(normalized_files[:k], target_files)
+        # File-level: evaluate against top-k unique files
+        metrics["files"][k] = compute_metrics(unique_files_ordered[:k], target_files)
+        # Symbol-level: evaluate against top-k nodes/symbols
         metrics["symbols"][k] = compute_metrics(normalized_symbols[:k], target_symbols)
     return metrics
 
