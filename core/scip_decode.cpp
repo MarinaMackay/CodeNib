@@ -7,9 +7,10 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
-#include <regex>
 #include <sstream>
 #include <stdexcept>
+#include <chrono>
+#include <re2/re2.h>
 
 namespace codeminer::core {
 
@@ -26,12 +27,12 @@ void log_debug(const std::string& message) {
     }
 }
 
-std::vector<int> extract_integers(const std::string& text, const std::regex& pattern) {
+std::vector<int> extract_integers(const std::string& text, const re2::RE2& pattern) {
     std::vector<int> results;
-    auto begin = std::sregex_iterator(text.begin(), text.end(), pattern);
-    auto end = std::sregex_iterator();
-    for (auto it = begin; it != end; ++it) {
-        results.push_back(std::stoi((*it)[1].str()));
+    re2::StringPiece input(text);
+    int value = 0;
+    while (re2::RE2::FindAndConsume(&input, pattern, &value)) {
+        results.push_back(value);
     }
     return results;
 }
@@ -134,16 +135,23 @@ SCIPGraphDecoder::SCIPGraphDecoder(std::string index_file_path,
       code_graph_(project_root_ ? *project_root_ : std::string{}) {}
 
 CodeGraph SCIPGraphDecoder::decode() {
+    auto start = std::chrono::high_resolution_clock::now();
     std::ifstream input(index_file_path_);
     if (!input.is_open()) {
         throw std::runtime_error("Failed to open SCIP index file at " + index_file_path_);
     }
+    
     log_debug("Starting decode for index: " + index_file_path_);
 
     std::ostringstream buffer;
-   buffer << input.rdbuf();
-   std::string content = buffer.str();
+    buffer << input.rdbuf();
+    std::string content = buffer.str();
 
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(end-start);
+    std::cout << "Duration of reading: " << duration.count() << "s\n";
+
+    start = std::chrono::high_resolution_clock::now();
     code_graph_.add_root_node(ROOT_NODE);
     log_debug("Added root node");
 
@@ -152,19 +160,20 @@ CodeGraph SCIPGraphDecoder::decode() {
         log_debug("Processing document block");
         process_document(block);
     }
+    end = std::chrono::high_resolution_clock::now();
+    duration = std::chrono::duration_cast<std::chrono::seconds>(end-start);
+    std::cout << "Duration of decoding: " << duration.count() << "s\n";
 
     log_debug("Finished decode");
     return std::move(code_graph_);
 }
 
 void SCIPGraphDecoder::process_document(const std::string& document_block) {
-    static const std::regex relative_path_regex(R"regex(relative_path:\s*"([^"]+)")regex");
-    std::smatch match;
-    if (!std::regex_search(document_block, match, relative_path_regex)) {
+    static const re2::RE2 relative_path_regex(R"re2(relative_path:\s*"([^"]+)")re2");
+    std::string file_path;
+    if (!re2::RE2::PartialMatch(document_block, relative_path_regex, &file_path)) {
         return;
     }
-
-    std::string file_path = match[1].str();
     log_debug("Processing file: " + file_path);
     std::filesystem::path file_fs_path(file_path);
 
@@ -208,10 +217,10 @@ void SCIPGraphDecoder::process_occurrence(const std::string& occurrence_block) {
         return;
     }
 
-    static const std::regex range_regex(R"regex(range:\s*(\d+))regex");
-    static const std::regex symbol_regex(R"regex(symbol:\s*"([^"]+)")regex");
-    static const std::regex symbol_roles_regex(R"regex(symbol_roles:\s*(\d+))regex");
-    static const std::regex enclosing_range_regex(R"regex(enclosing_range:\s*(\d+))regex");
+    static const re2::RE2 range_regex(R"re2(range:\s*(\d+))re2");
+    static const re2::RE2 symbol_regex(R"re2(symbol:\s*"([^"]+)")re2");
+    static const re2::RE2 symbol_roles_regex(R"re2(symbol_roles:\s*(\d+))re2");
+    static const re2::RE2 enclosing_range_regex(R"re2(enclosing_range:\s*(\d+))re2");
 
     auto ranges = extract_integers(occurrence_block, range_regex);
     if (ranges.size() < 3) {
@@ -219,18 +228,17 @@ void SCIPGraphDecoder::process_occurrence(const std::string& occurrence_block) {
     }
     int line = ranges[0];
 
-    std::smatch match;
-    if (!std::regex_search(occurrence_block, match, symbol_regex)) {
+    std::string symbol;
+    if (!re2::RE2::PartialMatch(occurrence_block, symbol_regex, &symbol)) {
         log_debug("Occurrence missing symbol");
         return;
     }
-    std::string symbol = match[1].str();
 
-    if (!std::regex_search(occurrence_block, match, symbol_roles_regex)) {
+    int symbol_roles = 0;
+    if (!re2::RE2::PartialMatch(occurrence_block, symbol_roles_regex, &symbol_roles)) {
         log_debug("Occurrence missing symbol_roles");
         return;
     }
-    int symbol_roles = std::stoi(match[1].str());
 
     auto enclosing_ranges = extract_integers(occurrence_block, enclosing_range_regex);
     log_debug("Processing symbol '" + symbol + "' at line " + std::to_string(line) +
@@ -299,20 +307,19 @@ void SCIPGraphDecoder::process_symbol(const std::string& symbol,
                                       int line,
                                       int symbol_roles,
                                       const std::vector<int>& enclosing_ranges) {
-    static const std::regex arg_regex(R"(\.\([^)]+\)$)");
-    if (std::regex_search(symbol, arg_regex)) {
+    static const re2::RE2 arg_regex(R"re2(\.\([^)]+\)$)re2");
+    if (re2::RE2::PartialMatch(symbol, arg_regex)) {
         return;
     }
 
     code_graph_.exit_scopes_by_line(line);
 
-    static const std::regex module_regex(R"regex(`?([^`]+)`?/([^.]+)(?:\.|\(|#))regex");
-    std::smatch module_match;
-    if (!std::regex_search(symbol, module_match, module_regex)) {
+    static const re2::RE2 module_regex(R"re2(`?([^`]+)`?/[^.]+(?:\.|\(|#))re2");
+    std::string module_path;
+    if (!re2::RE2::PartialMatch(symbol, module_regex, &module_path)) {
         log_debug("Failed to match module for symbol: " + symbol);
         return;
     }
-    std::string module_path = module_match[1].str();
 
     std::string cleaned_symbol = symbol;
     if (auto last_space = cleaned_symbol.find_last_of(' '); last_space != std::string::npos) {
@@ -327,10 +334,9 @@ void SCIPGraphDecoder::process_symbol(const std::string& symbol,
     const bool is_reference = symbol_roles == 8;
 
     if (unified_symbol.find("/__init__") != std::string::npos) {
-        std::regex init_regex(R"regex((.+)/(?:__init__))regex");
-        std::smatch init_match;
-        if (std::regex_search(unified_symbol, init_match, init_regex)) {
-            std::string module_dir = init_match[1].str();
+        re2::RE2 init_regex(R"re2((.+)/(?:__init__))re2");
+        std::string module_dir;
+        if (re2::RE2::PartialMatch(unified_symbol, init_regex, &module_dir)) {
             std::replace(module_dir.begin(), module_dir.end(), '.', '/');
             std::string file_path = module_dir + ".py";
             if (is_reference) {
