@@ -129,17 +129,23 @@ def parse_args():
 
     # Rerank configuration
     parser.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        default=False,
+        help="Run retrieval only without reranking (for evaluating retrieval performance)",
+    )
+    parser.add_argument(
         "--rerank-model",
         type=str,
         default="Qwen/Qwen2.5-Coder-7B",
-        help="Rerank model name",
+        help="Rerank model name (ignored if --retrieval-only is set)",
     )
     parser.add_argument(
         "--rerank-provider",
         type=str,
         default="vllm_openai",
         choices=[pv.value for pv in LLMProvider],
-        help="Rerank provider",
+        help="Rerank provider (ignored if --retrieval-only is set)",
     )
     parser.add_argument(
         "--rerank-window-size",
@@ -315,6 +321,7 @@ def run_pipeline(args):
             retrieval_plan=retrieve_plan,
             rerank_window_size=args.rerank_window_size,
             rerank_window_step=args.rerank_window_step,
+            enable_rerank=not args.retrieval_only,
         )
 
         # Query the pipeline
@@ -379,9 +386,7 @@ def run_pipeline(args):
 
     if aggregate and eval_count:
         averaged = average_metrics(aggregate, eval_count)
-        logger.info(
-            "=== Aggregate Retrieval Rerank Metrics (over %d instances) ===", eval_count
-        )
+        logger.info("=== Aggregate Metrics (over %d instances) ===", eval_count)
         for scope, per_k in averaged.items():
             for k, stats in per_k.items():
                 logger.info(
@@ -410,7 +415,12 @@ def main():
     args = parse_args()
     logger.info(f"Dataset type: {args.dataset}")
     logger.info(f"Embedding model: {args.embedding_model}")
-    logger.info(f"Rerank model: {args.rerank_model}")
+    logger.info(f"Retrieval mode: {args.retrieval_mode}")
+    if args.retrieval_only:
+        logger.info("Mode: Retrieval-only (reranking disabled)")
+    else:
+        logger.info(f"Mode: Retrieval + Rerank")
+        logger.info(f"Rerank model: {args.rerank_model}")
     logger.info(f"Top-K: {args.top_k}")
 
     run_pipeline(args)
