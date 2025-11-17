@@ -32,6 +32,12 @@ add_executable(scip_decode_test
 
 target_link_libraries(scip_decode_test PRIVATE codeminer_core)
 
+add_executable(scip_decode_repo
+    tests/scip_decode_repo.cpp
+)
+
+target_link_libraries(scip_decode_repo PRIVATE codeminer_core)
+
 if(CODEMINER_ENABLE_DEBUG)
     if(MSVC)
         set(_codeminer_debug_flags /Zi /Od)
@@ -45,5 +51,10 @@ if(CODEMINER_ENABLE_DEBUG)
     if(TARGET scip_decode_test)
         target_compile_definitions(scip_decode_test PRIVATE CODEMINER_DEBUG=1)
         target_compile_options(scip_decode_test PRIVATE ${_codeminer_debug_flags})
+    endif()
+
+    if(TARGET scip_decode_repo)
+        target_compile_definitions(scip_decode_repo PRIVATE CODEMINER_DEBUG=1)
+        target_compile_options(scip_decode_repo PRIVATE ${_codeminer_debug_flags})
     endif()
 endif()

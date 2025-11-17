@@ -212,8 +212,10 @@ void CodeGraph::add_symbol_node(const std::string& symbol,
 void CodeGraph::add_symbol_reference(const std::string& symbol,
                                      const std::optional<std::string>& module_path,
                                      const std::string& symbol_type) {
+    const bool already_exists = name_to_vertex_.find(symbol) != name_to_vertex_.end();
     VertexId id = ensure_vertex(symbol);
-    apply_vertex_update(id, symbol_type, module_path, std::nullopt, std::nullopt);
+    std::optional<std::string> file_attr = already_exists ? std::nullopt : module_path;
+    apply_vertex_update(id, symbol_type, file_attr, std::nullopt, std::nullopt);
     add_edge(current_scope_, symbol, EDGE_TYPE_REFERENCE);
 }
 
@@ -264,11 +266,7 @@ igraph_integer_t CodeGraph::add_edge(const std::string& source,
     igraph_integer_t eid = -1;
     if (igraph_get_eid(&graph_, &eid, source_id, target_id, /*directed=*/1, /*error=*/0) == IGRAPH_SUCCESS &&
         eid >= 0) {
-        log_debug("Edge already exists; updating eid " + std::to_string(eid));
-        if (static_cast<std::size_t>(eid) >= edges_.size()) {
-            edges_.resize(static_cast<std::size_t>(igraph_ecount(&graph_)));
-        }
-        edges_[eid] = EdgeData{source_id, target_id, edge_type};
+        log_debug("Edge already exists; returning eid " + std::to_string(eid) + " without updating type");
         return eid;
     }
 
