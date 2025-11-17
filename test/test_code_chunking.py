@@ -45,8 +45,8 @@ def test_python_chunking():
     chunker.save_chunks_to_json(chunks, str(output_file))
 
     # Verify expected chunks - now includes methods within classes
+    # Note: header and epilogue are excluded by default (include_header_epilogue=False)
     expected_types = [
-        "header",  # imports and globals
         "function",  # hello_world
         "class",  # Calculator class
         "method",  # Calculator.__init__
@@ -57,7 +57,6 @@ def test_python_chunking():
         "method",  # DataProcessor.__init__
         "method",  # DataProcessor.process
         "function",  # async_function
-        "epilogue",  # if __name__ == "__main__" block
     ]
     actual_types = [chunk.chunk_type for chunk in chunks]
 
@@ -65,19 +64,18 @@ def test_python_chunking():
     print(f"Actual chunk types: {actual_types}")
 
     # Also show chunk names for better debugging
+    # Note: method names now include class prefix (e.g., Calculator.__init__)
     expected_names = [
-        "header",
         "hello_world",
         "Calculator",
-        "__init__",
-        "add",
-        "subtract",
+        "Calculator.__init__",
+        "Calculator.add",
+        "Calculator.subtract",
         "fibonacci",
         "DataProcessor",
-        "__init__",
-        "process",
+        "DataProcessor.__init__",
+        "DataProcessor.process",
         "async_function",
-        "epilogue",
     ]
     actual_names = [chunk.name for chunk in chunks]
 

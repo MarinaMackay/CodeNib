@@ -13,9 +13,10 @@ class PythonCodeChunker(BaseCodeChunker):
 
     def __init__(
         self,
-        max_lines_per_chunk: Optional[int] = 200,
+        max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
         enable_max_split: bool = True,
+        include_header_epilogue: bool = False,
     ):
         """Initialize the Python code chunker."""
         super().__init__(
@@ -23,6 +24,7 @@ class PythonCodeChunker(BaseCodeChunker):
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
             enable_max_split=enable_max_split,
+            include_header_epilogue=include_header_epilogue,
         )
 
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:

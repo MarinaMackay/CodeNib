@@ -30,9 +30,10 @@ class BaseCodeChunker(ABC):
     def __init__(
         self,
         language: str,
-        max_lines_per_chunk: Optional[int] = 200,
+        max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
         enable_max_split: bool = True,
+        include_header_epilogue: bool = False,
     ):
         """
         Initialize the code chunker for a specific language.
@@ -40,19 +41,22 @@ class BaseCodeChunker(ABC):
         Args:
             language: Programming language to parse ('python', 'cpp', 'java', etc.)
             max_lines_per_chunk: Maximum number of lines per emitted chunk. When set,
-                large logical chunks (header/function/class/epilogue) will be split into
+                large logical chunks (function/class) will be split into
                 multiple sequential chunks of at most this many lines. node_id and name remain
-                the same across the split pieces. Default: 200. Set to None to disable.
+                the same across the split pieces. Default: None (no splitting). Set to a number to enable.
             chunk_depth: Depth of AST traversal for chunking:
                 1 = Top-level only (classes and top-level functions, no methods)
                 2 = Method-level (classes, functions, and methods) [default]
             enable_max_split: Whether to apply max_lines_per_chunk splitting. When False,
                 keeps logical units (functions/classes/methods) intact regardless of size.
+            include_header_epilogue: Whether to include file header (imports, module docstrings)
+                and epilogue (trailing code) in chunks. Default: False (skip them to reduce noise).
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
         self.chunk_depth = chunk_depth
         self.enable_max_split = enable_max_split
+        self.include_header_epilogue = include_header_epilogue
         try:
             self.parser = get_parser(language)
             self.tree_sitter_language = get_language(language)
@@ -129,7 +133,14 @@ class BaseCodeChunker(ABC):
             or not self.max_lines_per_chunk
             or self.max_lines_per_chunk <= 0
         ):
-            content = "\n".join(lines[start_line : end_line + 1])
+            # Build prefix with node_id and class context for methods
+            prefix_lines = [node_id]
+            if chunk_type == "method" and "." in name:
+                class_name = name.split(".")[0]
+                prefix_lines.append(f"class {class_name}:")
+            prefix = "\n".join(prefix_lines) + "\n"
+
+            content = prefix + "\n".join(lines[start_line : end_line + 1])
             return [
                 CodeChunk(
                     content=content,
@@ -144,7 +155,14 @@ class BaseCodeChunker(ABC):
 
         total_lines = end_line - start_line + 1
         if total_lines <= self.max_lines_per_chunk:
-            content = "\n".join(lines[start_line : end_line + 1])
+            # Build prefix with node_id and class context for methods
+            prefix_lines = [node_id]
+            if chunk_type == "method" and "." in name:
+                class_name = name.split(".")[0]
+                prefix_lines.append(f"class {class_name}:")
+            prefix = "\n".join(prefix_lines) + "\n"
+
+            content = prefix + "\n".join(lines[start_line : end_line + 1])
             return [
                 CodeChunk(
                     content=content,
@@ -168,11 +186,18 @@ class BaseCodeChunker(ABC):
         pieces: List[CodeChunk] = []
         current_start = start_line
 
+        # Build prefix with node_id and class context for methods
+        prefix_lines = [node_id]
+        if chunk_type == "method" and "." in name:
+            class_name = name.split(".")[0]
+            prefix_lines.append(f"class {class_name}:")
+        prefix = "\n".join(prefix_lines) + "\n"
+
         for i in range(num_chunks):
             chunk_size = base_chunk_size + (1 if i < extra_lines else 0)
             current_end = current_start + chunk_size - 1
 
-            piece_content = "\n".join(lines[current_start : current_end + 1])
+            piece_content = prefix + "\n".join(lines[current_start : current_end + 1])
             pieces.append(
                 CodeChunk(
                     content=piece_content,
@@ -215,7 +240,7 @@ class BaseCodeChunker(ABC):
             end_line = node.end_point[0]  # 0-based
 
             # Create chunk for code before this definition (only for the first one)
-            if i == 0 and start_line > current_line:
+            if i == 0 and start_line > current_line and self.include_header_epilogue:
                 header_content_lines = lines[current_line:start_line]
                 if "\n".join(header_content_lines).strip():  # Only add if not empty
                     # node_id for headers is file path (no symbol)
@@ -249,7 +274,7 @@ class BaseCodeChunker(ABC):
             current_line = end_line + 1
 
         # Handle any remaining code after the last definition
-        if current_line < len(lines):
+        if current_line < len(lines) and self.include_header_epilogue:
             remaining_content_lines = lines[current_line:]
             if "\n".join(remaining_content_lines).strip():  # Only add if not empty
                 chunks.extend(
