@@ -29,12 +29,24 @@ def normalize_symbol_identifier(value: Optional[str]) -> Optional[str]:
     return value
 
 
-def collect_targets(instance: Mapping[str, object]) -> Tuple[List[str], List[str]]:
-    """Aggregate and normalize file + symbol labels from a dataset instance."""
+def collect_targets(
+    instance: Mapping[str, object], simplified_symbols: bool = True
+) -> Tuple[List[str], List[str]]:
+    """Aggregate and normalize file + symbol labels from a dataset instance.
+    If simplified_symbols is True, only use symbols_modified, exclude symbols_added and symbols_deleted.
+    If simplified_symbols is False, use all symbols_modified, symbols_added and symbols_deleted.
+    """
     target_files = instance.get("target_files") or []
-    target_symbols: List[str] = []
-    for key in ("symbols_modified", "symbols_added", "symbols_deleted"):
-        target_symbols.extend(instance.get(key) or [])
+
+    if simplified_symbols:
+        # Only use symbols_modified, exclude symbols_added and symbols_deleted
+        target_symbols_raw = instance.get("symbols_modified") or []
+        # Filter out class nodes (symbols without parentheses)
+        target_symbols = [s for s in target_symbols_raw if "(" in s]
+    else:
+        target_symbols: List[str] = []
+        for key in ("symbols_modified", "symbols_added", "symbols_deleted"):
+            target_symbols.extend(instance.get(key) or [])
 
     normalized_files = [
         path for path in (normalize_file_path(value) for value in target_files) if path
@@ -86,7 +98,8 @@ def compute_metrics(
 ) -> Dict[str, float]:
     """Compute accuracy (hit@K), precision, recall, and hit counts for a single scope."""
     hits = sum(1 for value in predictions if value in targets)
-    accuracy = 1.0 if hits > 0 else 0.0
+    # Use issubset logic: accuracy=1.0 only if ALL targets are in predictions
+    accuracy = 1.0 if targets and set(targets).issubset(set(predictions)) else 0.0
     precision = hits / max(len(predictions), 1)
     recall = hits / max(len(targets), 1) if targets else 0.0
     return {

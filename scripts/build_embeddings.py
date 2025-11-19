@@ -18,6 +18,9 @@ Usage:
 
     # Force rebuild even if embeddings already exist
     python scripts/build_embeddings.py --force-rebuild
+
+    # Enable max lines splitting (disabled by default to preserve function integrity)
+    python scripts/build_embeddings.py --max-lines-per-chunk 300
 """
 
 import argparse
@@ -119,8 +122,8 @@ def parse_args():
     parser.add_argument(
         "--max-lines-per-chunk",
         type=int,
-        default=300,
-        help="Maximum lines per code chunk",
+        default=None,
+        help="Maximum lines per code chunk (default: None, no splitting to preserve function integrity)",
     )
 
     # Storage configuration
