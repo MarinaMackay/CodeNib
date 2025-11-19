@@ -291,11 +291,21 @@ def run_pipeline(args):
 
     # Process each instance
     for _, instance in enumerate(dataset_instances):
+        instance_id = instance["instance_id"]
+        metadata = eval_metadata.get(instance_id)
+        if metadata:
+            target_files, target_symbols = collect_targets(metadata)
+            if not target_symbols:
+                logger.info(f"Skipping {instance_id} - no valid target symbols")
+                continue
+        else:
+            logger.info(f"Skipping {instance_id} - no eval metadata")
+            continue
+
         # Process instance to get repo path
         repo_path = dataset_config["processor"](instance, cache_dir=args.repo_cache_dir)
 
         # Compute index path
-        instance_id = instance["instance_id"]
         instance_dir_name = instance_id.replace("/", "__")
         index_path = Path(args.index_cache_dir) / instance_dir_name
 
@@ -328,33 +338,26 @@ def run_pipeline(args):
         query = instance["problem_statement"]
         results = pipeline.query(query=query, top_k=max(max(metrics_k), args.top_k))
 
-        metadata = eval_metadata.get(instance_id)
-        if metadata:
-            target_files, target_symbols = collect_targets(metadata)
-            metrics = evaluate_predictions(
-                nodes=results,
-                target_files=target_files,
-                target_symbols=target_symbols,
-                ks=metrics_k,
-            )
-            aggregate_metrics(aggregate, metrics)
-            eval_count += 1
-            logger.info("Evaluation metrics for %s:", instance_id)
-            for scope, per_k in metrics.items():
-                for k, stats in per_k.items():
-                    logger.info(
-                        "  [%s] k=%d acc=%.3f prec=%.3f recall=%.3f hits=%d",
-                        scope,
-                        k,
-                        stats["accuracy"],
-                        stats["precision"],
-                        stats["recall"],
-                        int(stats["hits"]),
-                    )
-        else:
-            metrics = None
-            target_files = []
-            target_symbols = []
+        metrics = evaluate_predictions(
+            nodes=results,
+            target_files=target_files,
+            target_symbols=target_symbols,
+            ks=metrics_k,
+        )
+        aggregate_metrics(aggregate, metrics)
+        eval_count += 1
+        logger.info("Evaluation metrics for %s:", instance_id)
+        for scope, per_k in metrics.items():
+            for k, stats in per_k.items():
+                logger.info(
+                    "  [%s] k=%d acc=%.3f prec=%.3f recall=%.3f hits=%d",
+                    scope,
+                    k,
+                    stats["accuracy"],
+                    stats["precision"],
+                    stats["recall"],
+                    int(stats["hits"]),
+                )
 
         # Collect results if result_path is provided
         if all_results is not None:
