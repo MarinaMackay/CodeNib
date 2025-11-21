@@ -74,7 +74,7 @@ if __name__ == "__main__":
         # get filtered subgraph nodes
         filtered_nodes = roi_subgraph.get_filtered_subgraph_nodes(subgraph)
 
-        # Print filtered nodes (sample 3 nodes), return type is NodeWithContent
+        # Print filtered nodes (sample 3 nodes), return type is NodeInfo
         for i, node in enumerate(filtered_nodes[:3]):
             print(f"Filtered node {i+1}")
             print(f"Node Name: {node.node_name}")

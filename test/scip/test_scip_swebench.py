@@ -8,7 +8,7 @@ args_dict = {
     "model": "gpt-4o",
     "dataset": "princeton-nlp/SWE-bench_Lite",
     "split": "test",
-    "filter_instance": "^(matplotlib__matplotlib-18869)$",
+    "filter_instance": "^(sympy__sympy-21847)$",
 }
 
 

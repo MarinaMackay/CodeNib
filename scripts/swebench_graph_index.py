@@ -195,7 +195,7 @@ def main():
             profile_file.write_text(json.dumps(profile_payload, indent=2))
             logger.info(f"Saved profiler results to {profile_file}")
 
-            indexer.clear_cache(level="graph")
+            # indexer.clear_cache(level="decode")
 
             if graph:
                 logger.info(f"  Successfully created graph index for {instance_id}")
