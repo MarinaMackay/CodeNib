@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from contextlib import contextmanager
 from typing import List, Optional
 
 from langchain_community.retrievers import BM25Retriever
@@ -248,6 +249,16 @@ class BM25CodeIndexer:
         metadata["doc_id"] = doc_id
         return Document(page_content=content, metadata=metadata)
 
+    @contextmanager
+    def _temporary_k(self, k: int):
+        """Context manager for temporarily setting retriever's k value."""
+        original_k = self.retriever.k
+        self.retriever.k = k
+        try:
+            yield
+        finally:
+            self.retriever.k = original_k
+
     def _apply_stemming(self, text: str) -> str:
         """
         Apply custom text processing for code-specific tokenization.
@@ -317,7 +328,12 @@ class BM25CodeIndexer:
         if top_k is None:
             top_k = self.max_k
 
-        results = self.retriever.invoke(query)
+        logger.debug(f"BM25 search with k={top_k}, num_documents={len(self.documents)}")
+
+        # Retrieve results with temporary k value
+        with self._temporary_k(top_k):
+            results = self.retriever.invoke(query)
+            logger.info(f"BM25 retrieval returned {len(results)} results")
 
         # Convert results to NodeWithContent objects and apply filtering
         processed_results = []
@@ -400,6 +416,7 @@ class BM25CodeIndexer:
             result = NodeWithContent(
                 score=0.0,  # LangChain BM25Retriever doesn't provide scores
                 node_name=node_name,
+                node_id=node_name,  # Set node_id to the same value as node_name
                 type=node_type,
                 file=file_path,
                 start_line=start_line,
