@@ -15,7 +15,6 @@ class PythonCodeChunker(BaseCodeChunker):
         self,
         max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
-        enable_max_split: bool = True,
         include_header_epilogue: bool = False,
         include_class_level: bool = False,
     ):
@@ -24,7 +23,6 @@ class PythonCodeChunker(BaseCodeChunker):
             "python",
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
-            enable_max_split=enable_max_split,
             include_header_epilogue=include_header_epilogue,
             include_class_level=include_class_level,
         )
