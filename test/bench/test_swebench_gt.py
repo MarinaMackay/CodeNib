@@ -14,11 +14,12 @@ import os
 import sys
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add project root directory to path
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 from codeminer.log_utils import get_logger  # noqa: E402
-from scripts.swebench_gt_locate import GTLocator, load_swebench_verified  # noqa: E402
+from scripts.swebench_gt_locate import GTLocator, load_swebench  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -223,8 +224,11 @@ def main():
     print(
         f"Loading SWE-bench Verified dataset (filter: {args.filter}, limit: {args.limit})..."
     )
-    dataset = load_swebench_verified(
-        split="test", filter_pattern=args.filter, limit=args.limit
+    dataset = load_swebench(
+        split="test",
+        filter_pattern=args.filter,
+        limit=args.limit,
+        dataset_type="verified",
     )
 
     print(f"Processing {len(dataset)} instance(s)\n")

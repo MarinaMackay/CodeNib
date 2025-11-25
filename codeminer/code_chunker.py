@@ -123,9 +123,18 @@ class CodeChunker:
             []
         )  # List of node IDs in code graph format (dir/file.py:A.b(), dir/file.py:A)
 
-    def chunk_file(self, file_path: str):
-        """Chunk a code file into function/class level pieces."""
-        chunks = self._chunker.chunk_file(file_path)
+    def chunk_file(self, file_path: str, relative_path: Optional[str] = None):
+        """
+        Chunk a code file into function/class level pieces.
+
+        Args:
+            file_path: Path to the code file to chunk
+            relative_path: Relative path for node_id generation. If None, uses file_path.
+
+        Returns:
+            List of CodeChunk objects
+        """
+        chunks = self._chunker.chunk_file(file_path, relative_path)
         # Collect unique node IDs from chunks
         self._update_nodes_from_chunks(chunks)
         return chunks
