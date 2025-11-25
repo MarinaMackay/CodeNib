@@ -71,6 +71,9 @@ class CodeGraph {
                               const std::string& target,
                               const std::string& edge_type);
 
+    void batch_upsert_nodes(const std::vector<VertexData>& nodes);
+    void batch_add_edges(const std::vector<std::tuple<std::string, std::string, std::string>>& edges);
+
     std::optional<VertexData> get_node_info_by_name(const std::string& node_name) const;
     std::optional<VertexData> get_node_info_by_id(VertexId vertex_id) const;
 

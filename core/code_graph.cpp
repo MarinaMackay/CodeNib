@@ -6,8 +6,10 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace codeminer::core {
@@ -281,6 +283,165 @@ igraph_integer_t CodeGraph::add_edge(const std::string& source,
     }
     edges_[new_eid] = EdgeData{source_id, target_id, edge_type};
     return new_eid;
+}
+
+void CodeGraph::batch_upsert_nodes(const std::vector<VertexData>& nodes) {
+    if (nodes.empty()) {
+        return;
+    }
+
+    // Collect new vertices and their update data in a single pass
+    std::vector<VertexData> new_vertex_data;  // Store data for new vertices only
+    std::unordered_set<std::string> seen_in_batch;  // Track names already seen in this batch
+
+    for (const auto& data : nodes) {
+        // Check both existing vertices and already-seen names in this batch
+        if (name_to_vertex_.find(data.name) == name_to_vertex_.end() &&
+            seen_in_batch.find(data.name) == seen_in_batch.end()) {
+            new_vertex_data.push_back(data);
+            seen_in_batch.insert(data.name);
+        }
+    }
+
+    // Batch create new vertices
+    if (!new_vertex_data.empty()) {
+        igraph_integer_t n_new = static_cast<igraph_integer_t>(new_vertex_data.size());
+        if (igraph_add_vertices(&graph_, n_new, nullptr) != IGRAPH_SUCCESS) {
+            throw std::runtime_error("Failed to batch add vertices to graph");
+        }
+
+        igraph_integer_t start_id = static_cast<igraph_integer_t>(igraph_vcount(&graph_) - n_new);
+
+        // Resize vertices_ if needed
+        if (static_cast<std::size_t>(igraph_vcount(&graph_)) > vertices_.size()) {
+            vertices_.resize(static_cast<std::size_t>(igraph_vcount(&graph_)));
+        }
+
+        // Register new vertices, initialize and update their data
+        for (std::size_t i = 0; i < new_vertex_data.size(); ++i) {
+            VertexId vertex_id = start_id + static_cast<VertexId>(i);
+            const auto& data = new_vertex_data[i];
+
+            name_to_vertex_.emplace(data.name, vertex_id);
+
+            VertexData vdata{};
+            vdata.name = data.name;
+            vertices_[vertex_id] = std::move(vdata);
+
+            log_debug("Batch created vertex '" + data.name + "' with id " + std::to_string(vertex_id));
+
+            // Update vertex attributes
+            apply_vertex_update(vertex_id,
+                                std::make_optional<std::string>(data.type),
+                                data.file,
+                                data.start_line,
+                                data.end_line);
+
+            if (data.start_line.has_value() && data.end_line.has_value()) {
+                symbol_ranges_[data.name] = Range{true, *data.start_line, *data.end_line};
+            }
+        }
+    }
+}
+
+void CodeGraph::batch_add_edges(const std::vector<std::tuple<std::string, std::string, std::string>>& edges) {
+    if (edges.empty()) {
+        return;
+    }
+
+    // Build edge list for igraph, deduplicating using a set
+    struct EdgeKey {
+        VertexId source;
+        VertexId target;
+
+        bool operator==(const EdgeKey& other) const {
+            return source == other.source && target == other.target;
+        }
+    };
+
+    struct EdgeKeyHash {
+        std::size_t operator()(const EdgeKey& key) const {
+            return std::hash<VertexId>{}(key.source) ^ (std::hash<VertexId>{}(key.target) << 1);
+        }
+    };
+
+    std::unordered_set<EdgeKey, EdgeKeyHash> existing_edges;
+
+    // Collect existing edges to avoid duplicates
+    igraph_integer_t current_ecount = igraph_ecount(&graph_);
+    for (igraph_integer_t i = 0; i < current_ecount; ++i) {
+        if (i < static_cast<igraph_integer_t>(edges_.size())) {
+            existing_edges.insert(EdgeKey{edges_[i].source, edges_[i].target});
+        }
+    }
+
+    igraph_vector_int_t edge_vector;
+    igraph_vector_int_init(&edge_vector, static_cast<igraph_integer_t>(edges.size() * 2));
+
+    std::vector<EdgeData> new_edge_data;
+    new_edge_data.reserve(edges.size());
+
+    igraph_integer_t edge_idx = 0;
+    for (const auto& [source, target, type] : edges) {
+        // Verify vertices exist (they should have been created by batch_upsert_nodes)
+        auto source_it = name_to_vertex_.find(source);
+        auto target_it = name_to_vertex_.find(target);
+
+        if (source_it == name_to_vertex_.end()) {
+            log_debug("Warning: source vertex '" + source + "' not found, skipping edge");
+            continue;
+        }
+        if (target_it == name_to_vertex_.end()) {
+            log_debug("Warning: target vertex '" + target + "' not found, skipping edge");
+            continue;
+        }
+
+        VertexId source_id = source_it->second;
+        VertexId target_id = target_it->second;
+
+        EdgeKey key{source_id, target_id};
+
+        // Check if edge already exists in our local set
+        if (existing_edges.find(key) != existing_edges.end()) {
+            log_debug("Edge from '" + source + "' to '" + target + "' already exists, skipping");
+            continue;
+        }
+
+        // Mark as existing to prevent duplicates within this batch
+        existing_edges.insert(key);
+
+        // Add to edge vector
+        VECTOR(edge_vector)[edge_idx * 2] = source_id;
+        VECTOR(edge_vector)[edge_idx * 2 + 1] = target_id;
+        edge_idx++;
+
+        new_edge_data.push_back(EdgeData{source_id, target_id, type});
+        log_debug("Batch adding edge from '" + source + "' to '" + target + "' type '" + type + "'");
+    }
+
+    // Resize the vector to actual number of edges to add (excluding duplicates)
+    igraph_vector_int_resize(&edge_vector, edge_idx * 2);
+
+    // Batch add edges to igraph
+    if (edge_idx > 0) {
+        if (igraph_add_edges(&graph_, &edge_vector, nullptr) != IGRAPH_SUCCESS) {
+            igraph_vector_int_destroy(&edge_vector);
+            throw std::runtime_error("Failed to batch add edges to graph");
+        }
+
+        // Resize edges_ and store edge data
+        igraph_integer_t new_ecount = igraph_ecount(&graph_);
+        if (static_cast<std::size_t>(new_ecount) > edges_.size()) {
+            edges_.resize(static_cast<std::size_t>(new_ecount));
+        }
+
+        igraph_integer_t start_eid = new_ecount - static_cast<igraph_integer_t>(new_edge_data.size());
+        for (std::size_t i = 0; i < new_edge_data.size(); ++i) {
+            edges_[start_eid + static_cast<igraph_integer_t>(i)] = std::move(new_edge_data[i]);
+        }
+    }
+
+    igraph_vector_int_destroy(&edge_vector);
 }
 
 std::optional<CodeGraph::VertexData> CodeGraph::get_node_info_by_name(const std::string& node_name) const {
