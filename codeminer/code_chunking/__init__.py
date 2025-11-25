@@ -63,14 +63,6 @@ def create_chunker(
             include_header_epilogue=include_header_epilogue,
             include_class_level=include_class_level,
         )
-    elif language == "rust":
-        return RustCodeChunker(
-            max_lines_per_chunk=max_lines_per_chunk,
-            chunk_depth=chunk_depth,
-            enable_max_split=enable_max_split,
-            include_header_epilogue=include_header_epilogue,
-            include_class_level=include_class_level,
-        )
     else:
         raise ValueError(f"Unsupported language: {language}")
 

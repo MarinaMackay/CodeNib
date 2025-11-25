@@ -110,10 +110,8 @@ class CodeChunker:
             language: Programming language to parse ('python', 'cpp', 'java', etc.)
             repo_config: Configuration for repository-level chunking. Uses defaults if None.
             max_lines_per_chunk: Maximum number of lines per emitted chunk. Default: None (no splitting)
-            chunk_depth: Granularity level (0=file, 1=top-level, 2=include methods)
+            chunk_depth: Depth of AST traversal (1=top-level only, 2=include methods)
             enable_max_split: Whether to apply max_lines_per_chunk splitting
-            include_header_epilogue: Whether to include file headers and epilogues. Default: False
-            include_class_level: Whether to include class definitions as chunks. Default: False (align with SweRank)
             include_header_epilogue: Whether to include file headers and epilogues. Default: False
             include_class_level: Whether to include class definitions as chunks. Default: False (align with SweRank)
         """
@@ -128,8 +126,6 @@ class CodeChunker:
             max_lines_per_chunk=self.max_lines_per_chunk,
             chunk_depth=self.chunk_depth,
             enable_max_split=self.enable_max_split,
-            include_header_epilogue=self.include_header_epilogue,
-            include_class_level=self.include_class_level,
             include_header_epilogue=self.include_header_epilogue,
             include_class_level=self.include_class_level,
         )
