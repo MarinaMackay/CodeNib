@@ -26,7 +26,7 @@ import logging
 import sys
 from pathlib import Path
 
-from codeminer.code_chunker import CodeChunker
+from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
 from codeminer.env.process_swebench_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
@@ -222,14 +222,13 @@ def build_embeddings(args):
             # [Main] Chunk the repository code
             logger.info("Chunking repository code...")
             with instance_profiler.section("chunk_repository"):
+                repo_cfg = RepoChunkingConfig(languages=list(args.languages))
                 code_chunker = CodeChunker(
                     language=args.languages[0],
+                    repo_config=repo_cfg,
                     max_lines_per_chunk=args.max_lines_per_chunk,
                 )
-                chunks = code_chunker.chunk_repository(
-                    repo_path=repo_path,
-                    languages=args.languages,
-                )
+                chunks = code_chunker.chunk_repository(repo_path=repo_path)
 
             if not chunks:
                 logger.warning(f"No code chunks generated from repository, skipping...")

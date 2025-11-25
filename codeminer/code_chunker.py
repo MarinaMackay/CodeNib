@@ -5,7 +5,7 @@ This file maintains backward compatibility with the old API and adds repository 
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -21,9 +21,11 @@ logger = get_logger(__name__)
 class RepoChunkingConfig:
     """Configuration for repository chunking."""
 
+    languages: List[str] = field(default_factory=list)
     # File type configurations
     python_extensions: Set[str] = None
     cpp_extensions: Set[str] = None
+    rust_extensions: Set[str] = None
 
     # Directory filtering
     ignore_dirs: Set[str] = None
@@ -36,11 +38,17 @@ class RepoChunkingConfig:
 
     def __post_init__(self):
         """Initialize default values."""
+        if not self.languages:
+            self.languages = []
+
         if self.python_extensions is None:
             self.python_extensions = {".py", ".pyx", ".pyi"}
 
         if self.cpp_extensions is None:
             self.cpp_extensions = {".cpp", ".cxx", ".cc", ".c", ".hpp", ".h", ".hxx"}
+
+        if self.rust_extensions is None:
+            self.rust_extensions = {".rs"}
 
         if self.ignore_dirs is None:
             self.ignore_dirs = {
@@ -100,7 +108,7 @@ class CodeChunker:
             language: Programming language to parse ('python', 'cpp', 'java', etc.)
             repo_config: Configuration for repository-level chunking. Uses defaults if None.
             max_lines_per_chunk: Maximum number of lines per emitted chunk. Default: 200
-            chunk_depth: Depth of AST traversal (1=top-level only, 2=include methods)
+            chunk_depth: Granularity level (0=file, 1=top-level, 2=include methods)
             enable_max_split: Whether to apply max_lines_per_chunk splitting
         """
         self.language = language
@@ -113,7 +121,11 @@ class CodeChunker:
             chunk_depth=self.chunk_depth,
             enable_max_split=self.enable_max_split,
         )
-        self.repo_config = repo_config or RepoChunkingConfig()
+        if repo_config is None:
+            repo_config = RepoChunkingConfig()
+        if not repo_config.languages:
+            repo_config.languages = [language]
+        self.repo_config = repo_config
         self._chunkers = {language: self._chunker}  # Cache chunkers by language
         self.nodes = (
             []
@@ -135,15 +147,14 @@ class CodeChunker:
         return self._chunker.print_chunk_summary(chunks)
 
     # Repository-level methods
-    def chunk_repository(
-        self, repo_path: str, languages: Optional[List[str]] = None
-    ) -> List[CodeChunk]:
+    def chunk_repository(self, repo_path: str) -> List[CodeChunk]:
         """
         Chunk all relevant files in a repository.
 
         Args:
-            repo_path: Path to the repository root
-            languages: List of languages to process. If None, defaults to [self.language]
+            repo_path: Path to the repository root.
+                Languages come from RepoChunkingConfig; when empty they are inferred
+                from file extensions present in the repo.
 
         Returns:
             List of CodeChunk objects from all processed files
@@ -151,15 +162,14 @@ class CodeChunker:
         Raises:
             ValueError: If repo_path doesn't exist or languages are unsupported
         """
-        if languages is None:
-            languages = [self.language]
-
         repo_path = Path(repo_path).resolve()
         if not repo_path.exists():
             raise ValueError(f"Repository path does not exist: {repo_path}")
 
         if not repo_path.is_dir():
             raise ValueError(f"Repository path is not a directory: {repo_path}")
+
+        languages = self.repo_config.languages or self._detect_repo_language(repo_path)
 
         logger.info(f"Chunking repository: {repo_path}")
         logger.info(f"Target languages: {', '.join(languages)}")
@@ -193,32 +203,28 @@ class CodeChunker:
 
         return all_chunks
 
-    def get_repository_stats(
-        self, repo_path: str, languages: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+    def get_repository_stats(self, repo_path: str) -> Dict[str, Any]:
         """
         Get statistics about the repository without processing files.
 
         Args:
-            repo_path: Path to the repository root
-            languages: List of languages to analyze. If None, defaults to [self.language]
+            repo_path: Path to the repository root.
+                Languages come from RepoChunkingConfig; when empty they are inferred.
 
         Returns:
             Dictionary containing repository statistics
         """
-        if languages is None:
-            languages = [self.language]
-
         repo_path = Path(repo_path).resolve()
         if not repo_path.exists():
             raise ValueError(f"Repository path does not exist: {repo_path}")
 
+        languages = self.repo_config.languages or self._detect_repo_language(repo_path)
         files_to_process = self._discover_files(repo_path, languages)
 
         stats = {
             "repo_path": str(repo_path),
             "total_files": len(files_to_process),
-            "languages": languages,
+            "languages": list(languages),
             "files_by_language": {},
             "total_size_mb": 0.0,
         }
@@ -299,6 +305,9 @@ class CodeChunker:
             elif language.lower() in ("cpp", "c++", "cxx"):
                 for ext in self.repo_config.cpp_extensions:
                     extension_to_language[ext] = "cpp"
+            elif language.lower() == "rust":
+                for ext in self.repo_config.rust_extensions:
+                    extension_to_language[ext] = "rust"
             else:
                 logger.warning(f"Language '{language}' not supported yet")
 
@@ -435,7 +444,12 @@ class CodeChunker:
         logger.info(f"Repository path: {repo_path}")
 
         # Chunk the repository
-        chunks = self.chunk_repository(repo_path, languages)
+        previous_languages = list(self.repo_config.languages)
+        self.repo_config.languages = languages
+        try:
+            chunks = self.chunk_repository(repo_path)
+        finally:
+            self.repo_config.languages = previous_languages
 
         # Return comprehensive information
         result = {
@@ -468,6 +482,7 @@ class CodeChunker:
             "cpp": {".cpp", ".cxx", ".cc", ".c", ".hpp", ".h", ".hxx"},
             "java": {".java"},
             "javascript": {".js", ".jsx", ".ts", ".tsx"},
+            "rust": {".rs"},
         }
 
         detected_languages = set()
