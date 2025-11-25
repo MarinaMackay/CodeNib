@@ -114,6 +114,8 @@ class CodeChunker:
             enable_max_split: Whether to apply max_lines_per_chunk splitting
             include_header_epilogue: Whether to include file headers and epilogues. Default: False
             include_class_level: Whether to include class definitions as chunks. Default: False (align with SweRank)
+            include_header_epilogue: Whether to include file headers and epilogues. Default: False
+            include_class_level: Whether to include class definitions as chunks. Default: False (align with SweRank)
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
@@ -126,6 +128,8 @@ class CodeChunker:
             max_lines_per_chunk=self.max_lines_per_chunk,
             chunk_depth=self.chunk_depth,
             enable_max_split=self.enable_max_split,
+            include_header_epilogue=self.include_header_epilogue,
+            include_class_level=self.include_class_level,
             include_header_epilogue=self.include_header_epilogue,
             include_class_level=self.include_class_level,
         )

@@ -22,7 +22,7 @@ def create_chunker(
 
     Args:
         language: Programming language ('python', 'cpp', 'java', etc.)
-        max_lines_per_chunk: Maximum number of lines per emitted chunk. Default: 200
+        max_lines_per_chunk: Maximum number of lines per emitted chunk. Default: None (no splitting)
         chunk_depth: Granularity level
             0 = Entire file as a chunk
             1 = Top-level declarations only
@@ -68,6 +68,8 @@ def create_chunker(
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
             enable_max_split=enable_max_split,
+            include_header_epilogue=include_header_epilogue,
+            include_class_level=include_class_level,
         )
     else:
         raise ValueError(f"Unsupported language: {language}")
