@@ -61,7 +61,7 @@ def search(
     node_type: Optional[str] = None,
     case_sensitive: bool = False,
     use_regex: bool = True
-) -> List[NodeWithContent]
+) -> List[NodeInfo]
 ```
 
 **Parameters:**
@@ -87,4 +87,4 @@ def search(
   - `False`: Pattern treated as plain string (faster)
 
 **Returns:**
-- `List[NodeWithContent]`: List of matching nodes
+- `List[NodeInfo]`: List of matching nodes

@@ -8,6 +8,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from collections import namedtuple
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 # Import the tree-sitter-language-pack
@@ -46,6 +47,7 @@ class BaseCodeChunker(ABC):
                 multiple sequential chunks of at most this many lines. node_id and name remain
                 the same across the split pieces. Default: None (no splitting). Set to a number to enable.
             chunk_depth: Depth of AST traversal for chunking:
+                0 = Treat entire file as a single chunk
                 1 = Top-level only (classes and top-level functions, no methods)
                 2 = Method-level (classes, functions, and methods) [default]
             enable_max_split: Whether to apply max_lines_per_chunk splitting. When False,
@@ -107,6 +109,19 @@ class BaseCodeChunker(ABC):
 
         # Use relative_path for node_id generation, fallback to file_path
         path_for_node_id = relative_path if relative_path else file_path
+
+        if self.chunk_depth == 0:
+            if not lines:
+                return []
+            return self._split_by_max_lines(
+                lines=lines,
+                start_line=0,
+                end_line=len(lines) - 1,
+                chunk_type="file",
+                name=Path(file_path).name,
+                file_path=file_path,
+                node_id=path_for_node_id,
+            )
 
         # Generate chunks
         chunks = self._generate_chunks(

@@ -4,7 +4,7 @@ from typing import List, Optional, Set
 import igraph as ig
 
 from ..log_utils import get_logger
-from ..types import NodeInfo, NodeWithContent
+from ..types import NodeInfo
 from ..utils import is_test_file
 from .code_graph import CodeGraph
 
@@ -105,7 +105,7 @@ class ROISubgraph:
         exclude_nodes: Optional[List[str]] = None,
         filter_tests: bool = True,
         node_types: Optional[List[str]] = None,
-    ) -> List[NodeWithContent]:
+    ) -> List[NodeInfo]:
         """
         Extract useful nodes from a subgraph, filtering out nodes where
         start_line equals end_line (unless explicitly included).
@@ -115,7 +115,7 @@ class ROISubgraph:
             node_types: Optional list of node types to include (None for all types)
 
         Returns:
-            List of NodeWithContent objects including the node content
+            List of NodeInfo objects including the node content
         """
         filtered_nodes = []
 
@@ -144,8 +144,8 @@ class ROISubgraph:
                 # Get the node content
                 content = self.get_node_content(original_id) or ""
 
-                # Create NodeWithContent and add to the list
-                node_with_content = NodeWithContent(
+                # Create NodeInfo and add to the list
+                node_with_content = NodeInfo(
                     node_name=node_attrs.node_name,
                     type=node_attrs.type,
                     file=node_attrs.file,
