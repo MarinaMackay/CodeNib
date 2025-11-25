@@ -129,17 +129,23 @@ def parse_args():
 
     # Rerank configuration
     parser.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        default=False,
+        help="Run retrieval only without reranking (for evaluating retrieval performance)",
+    )
+    parser.add_argument(
         "--rerank-model",
         type=str,
         default="Qwen/Qwen2.5-Coder-7B",
-        help="Rerank model name",
+        help="Rerank model name (ignored if --retrieval-only is set)",
     )
     parser.add_argument(
         "--rerank-provider",
         type=str,
         default="vllm_openai",
         choices=[pv.value for pv in LLMProvider],
-        help="Rerank provider",
+        help="Rerank provider (ignored if --retrieval-only is set)",
     )
     parser.add_argument(
         "--rerank-window-size",
@@ -285,11 +291,21 @@ def run_pipeline(args):
 
     # Process each instance
     for _, instance in enumerate(dataset_instances):
+        instance_id = instance["instance_id"]
+        metadata = eval_metadata.get(instance_id)
+        if metadata:
+            target_files, target_symbols = collect_targets(metadata)
+            if not target_symbols:
+                logger.info(f"Skipping {instance_id} - no valid target symbols")
+                continue
+        else:
+            logger.info(f"Skipping {instance_id} - no eval metadata")
+            continue
+
         # Process instance to get repo path
         repo_path = dataset_config["processor"](instance, cache_dir=args.repo_cache_dir)
 
         # Compute index path
-        instance_id = instance["instance_id"]
         instance_dir_name = instance_id.replace("/", "__")
         index_path = Path(args.index_cache_dir) / instance_dir_name
 
@@ -315,39 +331,33 @@ def run_pipeline(args):
             retrieval_plan=retrieve_plan,
             rerank_window_size=args.rerank_window_size,
             rerank_window_step=args.rerank_window_step,
+            enable_rerank=not args.retrieval_only,
         )
 
         # Query the pipeline
         query = instance["problem_statement"]
         results = pipeline.query(query=query, top_k=max(max(metrics_k), args.top_k))
 
-        metadata = eval_metadata.get(instance_id)
-        if metadata:
-            target_files, target_symbols = collect_targets(metadata)
-            metrics = evaluate_predictions(
-                nodes=results,
-                target_files=target_files,
-                target_symbols=target_symbols,
-                ks=metrics_k,
-            )
-            aggregate_metrics(aggregate, metrics)
-            eval_count += 1
-            logger.info("Evaluation metrics for %s:", instance_id)
-            for scope, per_k in metrics.items():
-                for k, stats in per_k.items():
-                    logger.info(
-                        "  [%s] k=%d acc=%.3f prec=%.3f recall=%.3f hits=%d",
-                        scope,
-                        k,
-                        stats["accuracy"],
-                        stats["precision"],
-                        stats["recall"],
-                        int(stats["hits"]),
-                    )
-        else:
-            metrics = None
-            target_files = []
-            target_symbols = []
+        metrics = evaluate_predictions(
+            nodes=results,
+            target_files=target_files,
+            target_symbols=target_symbols,
+            ks=metrics_k,
+        )
+        aggregate_metrics(aggregate, metrics)
+        eval_count += 1
+        logger.info("Evaluation metrics for %s:", instance_id)
+        for scope, per_k in metrics.items():
+            for k, stats in per_k.items():
+                logger.info(
+                    "  [%s] k=%d acc=%.3f prec=%.3f recall=%.3f hits=%d",
+                    scope,
+                    k,
+                    stats["accuracy"],
+                    stats["precision"],
+                    stats["recall"],
+                    int(stats["hits"]),
+                )
 
         # Collect results if result_path is provided
         if all_results is not None:
@@ -379,9 +389,7 @@ def run_pipeline(args):
 
     if aggregate and eval_count:
         averaged = average_metrics(aggregate, eval_count)
-        logger.info(
-            "=== Aggregate Retrieval Rerank Metrics (over %d instances) ===", eval_count
-        )
+        logger.info("=== Aggregate Metrics (over %d instances) ===", eval_count)
         for scope, per_k in averaged.items():
             for k, stats in per_k.items():
                 logger.info(
@@ -410,7 +418,12 @@ def main():
     args = parse_args()
     logger.info(f"Dataset type: {args.dataset}")
     logger.info(f"Embedding model: {args.embedding_model}")
-    logger.info(f"Rerank model: {args.rerank_model}")
+    logger.info(f"Retrieval mode: {args.retrieval_mode}")
+    if args.retrieval_only:
+        logger.info("Mode: Retrieval-only (reranking disabled)")
+    else:
+        logger.info(f"Mode: Retrieval + Rerank")
+        logger.info(f"Rerank model: {args.rerank_model}")
     logger.info(f"Top-K: {args.top_k}")
 
     run_pipeline(args)

@@ -13,9 +13,11 @@ class PythonCodeChunker(BaseCodeChunker):
 
     def __init__(
         self,
-        max_lines_per_chunk: Optional[int] = 200,
+        max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
         enable_max_split: bool = True,
+        include_header_epilogue: bool = False,
+        include_class_level: bool = False,
     ):
         """Initialize the Python code chunker."""
         super().__init__(
@@ -23,6 +25,8 @@ class PythonCodeChunker(BaseCodeChunker):
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
             enable_max_split=enable_max_split,
+            include_header_epilogue=include_header_epilogue,
+            include_class_level=include_class_level,
         )
 
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:
@@ -54,7 +58,8 @@ class PythonCodeChunker(BaseCodeChunker):
                         name = self._extract_class_name(actual_def)
                         if name:
                             # Use the decorated_definition node (includes decorators)
-                            definitions.append((child, name, "class"))
+                            if self.include_class_level:
+                                definitions.append((child, name, "class"))
                             # Extract methods only if chunk_depth >= 2
                             if self.chunk_depth >= 2:
                                 methods = self._find_class_methods(actual_def)
@@ -66,7 +71,8 @@ class PythonCodeChunker(BaseCodeChunker):
             elif child.type == "class_definition":
                 name = self._extract_class_name(child)
                 if name:
-                    definitions.append((child, name, "class"))
+                    if self.include_class_level:
+                        definitions.append((child, name, "class"))
                     # Extract methods only if chunk_depth >= 2
                     if self.chunk_depth >= 2:
                         methods = self._find_class_methods(child)

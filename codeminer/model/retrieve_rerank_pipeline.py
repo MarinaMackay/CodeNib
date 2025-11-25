@@ -105,6 +105,7 @@ class RetrieveRerankPipeline:
         sparse_max_k: int = 128,
         rerank_window_size: Optional[int] = None,
         rerank_window_step: Optional[int] = None,
+        enable_rerank: bool = True,
     ) -> None:
         self.repo_path = self._validate_repo(repo_path)
         self.index_path = Path(index_path)
@@ -112,6 +113,7 @@ class RetrieveRerankPipeline:
         self.languages = languages or ["python"]
         self.max_lines_per_chunk = max_lines_per_chunk
         self._chunks = None
+        self.enable_rerank = enable_rerank
 
         plan = (
             list(retrieval_plan)
@@ -176,12 +178,15 @@ class RetrieveRerankPipeline:
         )
         register_retrieve_ops(self.engine, self.retrieve_context)
 
-        self.rerank_context = RerankContext(
-            llm_config=llm_config,
-            window_size=rerank_window_size,
-            window_step=rerank_window_step,
-        )
-        register_rerank_ops(self.engine, self.rerank_context)
+        if self.enable_rerank:
+            self.rerank_context = RerankContext(
+                llm_config=llm_config,
+                window_size=rerank_window_size,
+                window_step=rerank_window_step,
+            )
+            register_rerank_ops(self.engine, self.rerank_context)
+        else:
+            self.rerank_context = None
 
         logger.info(
             "RetrieveRerankPipeline initialized",
@@ -191,15 +196,16 @@ class RetrieveRerankPipeline:
                 "retrieval_plan": [stage.engine for stage in self.retrieve_plan],
                 "dense_index": bool(self.vector_store),
                 "sparse_index": bool(self.bm25_index),
-                "rerank_model": rerank_model,
+                "rerank_model": rerank_model if self.enable_rerank else "disabled",
+                "enable_rerank": self.enable_rerank,
             },
         )
 
     def query(self, query: str, top_k: int = 10) -> List[QueriedNode]:
         """Execute retrieve + rerank plan for the provided query."""
-        graph, rerank_node_id = self._build_execution_graph(query, top_k)
+        graph, final_node_id = self._build_execution_graph(query, top_k)
         state = self.engine.execute(graph)
-        results = state.get(rerank_node_id, [])
+        results = state.get(final_node_id, [])
         if not isinstance(results, list):
             return []
         nodes: List[QueriedNode] = []
@@ -334,6 +340,10 @@ class RetrieveRerankPipeline:
                     deps=retrieve_nodes,
                 )
             )
+
+        # If rerank is disabled, return the retrieval results directly
+        if not self.enable_rerank:
+            return graph, aggregate_node_id
 
         rerank_node_id = "rerank_0"
         rerank_params = {"query": query, "top_k": top_k, "return_content": True}
