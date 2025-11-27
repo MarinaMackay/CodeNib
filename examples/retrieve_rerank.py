@@ -188,30 +188,22 @@ def parse_args():
     )
 
     # Evaluation configuration
-    default_eval_path = Path.home() / ".codeminer" / "swebench_verified_gt.json"
+    default_eval_path = Path.home() / ".codeminer" / "swebench_lite_gt.json"
     parser.add_argument(
         "--eval-instances",
         type=str,
         default=str(default_eval_path),
         help=(
             "Path to JSON file containing evaluation annotations (target_files, symbols_*). "
-            "Defaults to ~/.codeminer/swebench_verified_gt.json."
+            "Defaults to ~/.codeminer/swebench_lite_gt.json."
         ),
     )
     parser.add_argument(
         "--metrics-k",
         type=int,
         nargs="+",
-        default=[10],
+        default=[1, 3, 5, 10],
         help="Cutoffs for accuracy/precision/recall reporting",
-    )
-
-    # Retrieval configuration
-    parser.add_argument(
-        "--top-k",
-        type=int,
-        default=5,
-        help="Number of top results to return",
     )
 
     # Cache configuration
@@ -280,17 +272,18 @@ def run_pipeline(args):
     if len(dataset_instances) == 0:
         raise ValueError(f"No instances found in {dataset} dataset")
 
-    logger.info(f"Loaded {len(dataset_instances)} instance(s)")
+    logger.info("Loaded %d instance(s)", len(dataset_instances))
 
     eval_metadata = load_eval_metadata(args.eval_instances)
     retrieve_plan = build_retrieve_plan(args.retrieval_mode)
     aggregate = {}
     metrics_k = sorted(set(args.metrics_k))
+    max_k = max(metrics_k)
     eval_count = 0
     all_results = [] if args.result_path else None
 
     # Process each instance
-    for _, instance in enumerate(dataset_instances):
+    for instance in dataset_instances:
         instance_id = instance["instance_id"]
         metadata = eval_metadata.get(instance_id)
         if metadata:
@@ -336,7 +329,7 @@ def run_pipeline(args):
 
         # Query the pipeline
         query = instance["problem_statement"]
-        results = pipeline.query(query=query, top_k=max(max(metrics_k), args.top_k))
+        results = pipeline.query(query=query, top_k=max_k)
 
         metrics = evaluate_predictions(
             nodes=results,
@@ -361,8 +354,6 @@ def run_pipeline(args):
 
         # Collect results if result_path is provided
         if all_results is not None:
-            max_k = max(metrics_k)
-
             unique_files_ordered, normalized_symbols = extract_predictions(results)
             metric_k_files = unique_files_ordered[:max_k]
             metric_k_node_ids = normalized_symbols[:max_k]
@@ -410,21 +401,20 @@ def run_pipeline(args):
         with open(result_path, "w", encoding="utf-8") as f:
             json.dump(all_results, f, indent=2, ensure_ascii=False)
 
-        logger.info(f"Results saved to {result_path} ({len(all_results)} instances)")
+        logger.info("Results saved to %s (%d instances)", result_path, len(all_results))
 
 
 def main():
     """Main entry point."""
     args = parse_args()
-    logger.info(f"Dataset type: {args.dataset}")
-    logger.info(f"Embedding model: {args.embedding_model}")
-    logger.info(f"Retrieval mode: {args.retrieval_mode}")
+    logger.info("Dataset type: %s", args.dataset)
+    logger.info("Embedding model: %s", args.embedding_model)
+    logger.info("Retrieval mode: %s", args.retrieval_mode)
     if args.retrieval_only:
         logger.info("Mode: Retrieval-only (reranking disabled)")
     else:
-        logger.info(f"Mode: Retrieval + Rerank")
-        logger.info(f"Rerank model: {args.rerank_model}")
-    logger.info(f"Top-K: {args.top_k}")
+        logger.info("Mode: Retrieval + Rerank")
+        logger.info("Rerank model: %s", args.rerank_model)
 
     run_pipeline(args)
 
