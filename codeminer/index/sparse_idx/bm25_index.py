@@ -314,7 +314,7 @@ class BM25CodeIndexer:
         logger.debug(f"BM25 search with k={top_k}, num_documents={len(self.documents)}")
 
         # Retrieve results and truncate to requested top_k
-        results = self.retriever.invoke(query)[:top_k]
+        results = self.retriever.invoke(query)
         logger.info(f"BM25 retrieval returned {len(results)} results")
 
         # Convert results to NodeInfo objects and apply filtering
