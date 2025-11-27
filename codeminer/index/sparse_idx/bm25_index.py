@@ -9,12 +9,7 @@ from langchain_core.documents import Document
 from ...code_chunker import CodeChunk
 from ...graph.code_graph import CodeGraph
 from ...log_utils import get_logger
-from ...types import (
-    NODE_TYPE_DIRECTORY,
-    NODE_TYPE_FILE,
-    NodeWithContent,
-    is_symbol_node,
-)
+from ...types import NODE_TYPE_DIRECTORY, NODE_TYPE_FILE, NodeInfo, is_symbol_node
 from ...utils import is_test_file, wrap_code_snippet
 
 logger = get_logger(__name__)
@@ -291,7 +286,7 @@ class BM25CodeIndexer:
         return_code_content: bool = False,
         wrap_with_ln: bool = True,
         filter_test: bool = False,
-    ) -> List[NodeWithContent]:
+    ) -> List[NodeInfo]:
         """
         Search the index for nodes matching the query.
 
@@ -303,7 +298,7 @@ class BM25CodeIndexer:
             filter_test: Whether to filter out test files from the results
 
         Returns:
-            List of NodeWithContent objects containing matched nodes with optional content
+            List of NodeInfo objects containing matched nodes with optional content
         """
         if self.retriever is None:
             raise ValueError(
@@ -322,7 +317,7 @@ class BM25CodeIndexer:
         results = self.retriever.invoke(query)[:top_k]
         logger.info(f"BM25 retrieval returned {len(results)} results")
 
-        # Convert results to NodeWithContent objects and apply filtering
+        # Convert results to NodeInfo objects and apply filtering
         processed_results = []
         for doc in results:
             # Extract all metadata directly from the document
@@ -399,8 +394,8 @@ class BM25CodeIndexer:
                     # If file reading fails, content remains None
                     pass
 
-            # Create NodeWithContent object (LangChain BM25 doesn't provide scores)
-            result = NodeWithContent(
+            # Create NodeInfo object (LangChain BM25Retriever doesn't provide scores)
+            result = NodeInfo(
                 score=0.0,  # LangChain BM25Retriever doesn't provide scores
                 node_name=node_name,
                 node_id=node_name,  # Set node_id to the same value as node_name

@@ -9,7 +9,7 @@ from ..log_utils import get_logger
 from ..plans.execution import ExecutionEngine
 from ..plans.ir_exec import ExecutionNode
 from ..plans.ir_physical import PhysicalOperator
-from ..types import NodeWithContent, QueriedNode
+from ..types import NodeInfo, QueriedNode
 
 logger = get_logger(__name__)
 
@@ -88,15 +88,15 @@ def _extract_query(params: Dict[str, object], inputs: List[object]) -> str:
     raise ValueError("Rerank operator requires the original query text.")
 
 
-def _collect_candidates(inputs: List[object]) -> List[NodeWithContent]:
-    collected: List[NodeWithContent] = []
+def _collect_candidates(inputs: List[object]) -> List[NodeInfo]:
+    collected: List[NodeInfo] = []
     for payload in inputs:
-        if isinstance(payload, NodeWithContent):
+        if isinstance(payload, NodeInfo) and not isinstance(payload, QueriedNode):
             collected.append(payload)
             continue
         if isinstance(payload, QueriedNode):
             collected.append(
-                NodeWithContent(
+                NodeInfo(
                     node_name=payload.node_name,
                     type=payload.type,
                     file=payload.file,

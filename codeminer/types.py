@@ -37,21 +37,11 @@ class NodeInfo(BaseModel):
     node_id: Optional[str] = None
     start_line: Optional[int] = None
     end_line: Optional[int] = None
-
-
-class NodeWithContent(NodeInfo):
-    """Node attributes with content."""
-
+    score: Optional[float] = None
     content: Optional[str] = None
 
 
-class NodeWithScore(NodeInfo):
-    """Node attributes with relevance score."""
-
-    score: float = 0.0
-
-
-class QueriedNode(NodeWithScore, NodeWithContent):
-    """Node attributes representing ranked nodes that keep content."""
+class QueriedNode(NodeInfo):
+    """Node attributes representing ranked nodes that keep optional content."""
 
     pass

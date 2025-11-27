@@ -20,7 +20,7 @@ from langchain_openai import OpenAIEmbeddings
 
 from ...log_utils import get_logger
 from ...profiler import Profiler
-from ...types import NodeWithContent, NodeWithScore
+from ...types import NodeInfo
 
 logger = get_logger(__name__)
 
@@ -211,12 +211,12 @@ class CodeVectorStore:
 
         logger.info(f"Successfully added {len(documents)} documents to vector store")
 
-    def add_nodes_with_content(self, nodes: List[NodeWithContent]) -> None:
+    def add_nodes_with_content(self, nodes: List[NodeInfo]) -> None:
         """
-        Add NodeWithContent objects to the vector store.
+        Add NodeInfo objects (with content) to the vector store.
 
         Args:
-            nodes: List of NodeWithContent objects
+            nodes: List of NodeInfo objects
         """
         chunks = []
         for node in nodes:
@@ -234,7 +234,7 @@ class CodeVectorStore:
 
     def search(
         self, query: str, top_k: int = 10, score_threshold: Optional[float] = None
-    ) -> List[NodeWithScore]:
+    ) -> List[NodeInfo]:
         """
         Search for similar code chunks using semantic similarity.
 
@@ -244,7 +244,7 @@ class CodeVectorStore:
             score_threshold: Minimum similarity score threshold
 
         Returns:
-            List of NodeWithScore objects
+            List of NodeInfo objects with scores populated
         """
         if self.vector_store is None:
             logger.warning("No vector store available. Add code chunks first.")
@@ -257,7 +257,7 @@ class CodeVectorStore:
             query, k=top_k
         )
 
-        # Convert to NodeWithScore objects
+        # Convert to NodeInfo objects
         results = []
         for doc, score in docs_with_scores:
             metadata = doc.metadata
@@ -270,7 +270,7 @@ class CodeVectorStore:
             ):
                 continue
 
-            node_with_score = NodeWithScore(
+            node_with_score = NodeInfo(
                 node_name=metadata.get("name", "unknown"),
                 type=metadata.get("chunk_type", "unknown"),
                 file=metadata.get("file", ""),
@@ -286,7 +286,7 @@ class CodeVectorStore:
 
     def search_with_content(
         self, query: str, top_k: int = 10, score_threshold: Optional[float] = None
-    ) -> List[NodeWithContent]:
+    ) -> List[NodeInfo]:
         """
         Search and return results with content included.
 
@@ -296,7 +296,7 @@ class CodeVectorStore:
             score_threshold: Minimum similarity score threshold
 
         Returns:
-            List of NodeWithContent objects
+            List of NodeInfo objects with content populated
         """
         if self.vector_store is None:
             logger.warning("No vector store available. Add code chunks first.")
@@ -307,7 +307,7 @@ class CodeVectorStore:
             query, k=top_k
         )
 
-        # Convert to NodeWithContent objects
+        # Convert to NodeInfo objects
         results = []
         for doc, score in docs_with_scores:
             metadata = doc.metadata
@@ -320,13 +320,14 @@ class CodeVectorStore:
             ):
                 continue
 
-            node_with_content = NodeWithContent(
+            node_with_content = NodeInfo(
                 node_name=metadata.get("name", "unknown"),
                 type=metadata.get("chunk_type", "unknown"),
                 file=metadata.get("file", ""),
                 node_id=metadata.get("node_id", ""),
                 start_line=metadata.get("start_line", 0),
                 end_line=metadata.get("end_line", 0),
+                score=float(score),
                 content=doc.page_content,
             )
             results.append(node_with_content)

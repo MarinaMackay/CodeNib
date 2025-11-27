@@ -10,7 +10,7 @@ from ..log_utils import get_logger
 from ..plans.execution import ExecutionEngine
 from ..plans.ir_exec import ExecutionNode
 from ..plans.ir_physical import PhysicalOperator
-from ..types import NodeWithContent, NodeWithScore, QueriedNode
+from ..types import NodeInfo, QueriedNode
 
 logger = get_logger(__name__)
 
@@ -243,12 +243,7 @@ def _to_score_content(results: Sequence[object]) -> List[QueriedNode]:
         if isinstance(item, QueriedNode):
             converted.append(item)
             continue
-        if isinstance(item, NodeWithScore):
-            data = _dump_model(item)
-            data.setdefault("content", None)
-            converted.append(QueriedNode(**data))
-            continue
-        if isinstance(item, NodeWithContent):
+        if isinstance(item, NodeInfo):
             data = _dump_model(item)
             score = data.get("score") or 0.0
             if not score:

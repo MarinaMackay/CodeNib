@@ -1,6 +1,6 @@
 """
 Rerank agent for ranking code nodes based on relevance to a query.
-This module uses LLM APIs to rank NodeWithContent objects and return QueriedNode objects.
+This module uses LLM APIs to rank NodeInfo objects and return QueriedNode objects.
 """
 
 from collections import defaultdict
@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from ..llm.llm_config import LLMConfig, create_llm
 from ..log_utils import get_logger
-from ..types import NodeWithContent, QueriedNode
+from ..types import NodeInfo, QueriedNode
 
 logger = get_logger(__name__)
 
@@ -57,7 +57,7 @@ class RerankAgent:
     def rerank_nodes(
         self,
         query: str,
-        nodes: List[NodeWithContent],
+        nodes: List[NodeInfo],
         top_k: Optional[int] = None,
         window_size: Optional[int] = None,
         window_step: Optional[int] = None,
@@ -68,7 +68,7 @@ class RerankAgent:
 
         Args:
             query (str): The query to rank nodes against
-            nodes (List[NodeWithContent]): List of nodes with content to rank
+            nodes (List[NodeInfo]): List of nodes with content to rank
             top_k (Optional[int]): Maximum number of results to return (None for all)
             window_size (Optional[int]): Number of nodes per rerank window. None -> all nodes.
             window_step (Optional[int]): Step size between sliding windows. Defaults to window_size.
@@ -91,7 +91,7 @@ class RerankAgent:
 
         try:
             # Filter nodes with content
-            valid_nodes: List[Tuple[int, NodeWithContent]] = []
+            valid_nodes: List[Tuple[int, NodeInfo]] = []
             for i, node in enumerate(nodes):
                 if node.content and node.content.strip():
                     valid_nodes.append((i, node))
@@ -104,7 +104,7 @@ class RerankAgent:
                 f"Reranking {len(valid_nodes)} nodes with query: {query[:100]}..."
             )
 
-            node_lookup: Dict[int, NodeWithContent] = {
+            node_lookup: Dict[int, NodeInfo] = {
                 original_idx: node for original_idx, node in valid_nodes
             }
 
@@ -191,7 +191,7 @@ class RerankAgent:
             return []
 
     def _rerank_window(
-        self, query: str, window_nodes: Sequence[Tuple[int, NodeWithContent]]
+        self, query: str, window_nodes: Sequence[Tuple[int, NodeInfo]]
     ) -> List[Tuple[int, float]]:
         """Invoke the LLM to rerank a specific window of nodes."""
         if not window_nodes:
@@ -258,7 +258,7 @@ class RerankAgent:
 
 def rerank_nodes_with_query(
     query: str,
-    nodes: List[NodeWithContent],
+    nodes: List[NodeInfo],
     llm_config: LLMConfig,
     top_k: Optional[int] = None,
     window_size: Optional[int] = None,
@@ -271,7 +271,7 @@ def rerank_nodes_with_query(
 
     Args:
         query (str): The query to rank nodes against
-        nodes (List[NodeWithContent]): List of nodes with content to rank
+        nodes (List[NodeInfo]): List of nodes with content to rank
         llm_config (LLMConfig): LLM configuration containing model, provider, and other settings.
         top_k (Optional[int]): Maximum number of results to return (None for all)
         window_size (Optional[int]): Optional sliding window size for reranking.

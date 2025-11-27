@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from ...graph.code_graph import CodeGraph
 from ...log_utils import get_logger
-from ...types import NodeWithContent
+from ...types import NodeInfo
 
 logger = get_logger(__name__)
 
@@ -29,7 +29,7 @@ class RegexNodeIndex:
             code_graph: CodeGraph instance containing nodes to index
         """
         self.code_graph = code_graph
-        self.nodes: List[NodeWithContent] = []
+        self.nodes: List[NodeInfo] = []
         self._build_index()
 
         logger.info(f"RegexNodeIndex initialized with {len(self.nodes)} nodes")
@@ -52,8 +52,8 @@ class RegexNodeIndex:
                 logger.debug(f"Failed to get content for node {vid}: {e}")
                 content = None
 
-            # Create NodeWithContent object
-            node = NodeWithContent(
+            # Create NodeInfo object
+            node = NodeInfo(
                 node_name=v["name"],
                 type=attrs.get("type") or "",
                 file=attrs.get("file"),
@@ -72,7 +72,7 @@ class RegexNodeIndex:
         node_type: Optional[str] = None,
         case_sensitive: bool = False,
         use_regex: bool = True,
-    ) -> List[NodeWithContent]:
+    ) -> List[NodeInfo]:
         r"""
         Search for pattern in node content (grep-like functionality).
 
@@ -84,7 +84,7 @@ class RegexNodeIndex:
             use_regex: Whether to use regex (default: True) or plain string matching
 
         Returns:
-            List of NodeWithContent objects matching the pattern
+            List of NodeInfo objects matching the pattern
 
         Examples:
             >>> idx.search(r'def\s+\w+', file_glob='*.py')  # Find function definitions in Python files
