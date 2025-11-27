@@ -13,7 +13,6 @@ def create_chunker(
     language: str,
     max_lines_per_chunk: int | None = None,
     chunk_depth: int = 2,
-    enable_max_split: bool = True,
     include_header_epilogue: bool = False,
     include_class_level: bool = False,
 ) -> BaseCodeChunker:
@@ -27,7 +26,6 @@ def create_chunker(
             0 = Entire file as a chunk
             1 = Top-level declarations only
             2 = Include methods/impl members
-        enable_max_split: Whether to apply max_lines_per_chunk splitting
         include_header_epilogue: Whether to include file headers and epilogues. Default: False
         include_class_level: Whether to include class definitions as chunks. Default: False (align with SweRank)
 
@@ -43,7 +41,6 @@ def create_chunker(
         return PythonCodeChunker(
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
-            enable_max_split=enable_max_split,
             include_header_epilogue=include_header_epilogue,
             include_class_level=include_class_level,
         )
@@ -51,7 +48,6 @@ def create_chunker(
         return CppCodeChunker(
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
-            enable_max_split=enable_max_split,
             include_header_epilogue=include_header_epilogue,
             include_class_level=include_class_level,
         )
@@ -59,7 +55,6 @@ def create_chunker(
         return RustCodeChunker(
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
-            enable_max_split=enable_max_split,
             include_header_epilogue=include_header_epilogue,
             include_class_level=include_class_level,
         )

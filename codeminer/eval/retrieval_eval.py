@@ -33,14 +33,15 @@ def collect_targets(
     instance: Mapping[str, object], simplified_symbols: bool = True
 ) -> Tuple[List[str], List[str]]:
     """Aggregate and normalize file + symbol labels from a dataset instance.
-    If simplified_symbols is True, only use symbols_modified, exclude symbols_added and symbols_deleted.
+    If simplified_symbols is True, use symbols_modified and symbols_deleted, exclude symbols_added.
     If simplified_symbols is False, use all symbols_modified, symbols_added and symbols_deleted.
     """
     target_files = instance.get("target_files") or []
 
     if simplified_symbols:
-        # Only use symbols_modified, exclude symbols_added and symbols_deleted
-        target_symbols_raw = instance.get("symbols_modified") or []
+        # Use symbols_modified and symbols_deleted, exclude symbols_added
+        target_symbols_raw = list(instance.get("symbols_modified") or [])
+        target_symbols_raw.extend(instance.get("symbols_deleted") or [])
         # Filter out class nodes (symbols without parentheses)
         target_symbols = [s for s in target_symbols_raw if "(" in s]
     else:
