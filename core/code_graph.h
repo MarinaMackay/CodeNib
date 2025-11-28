@@ -20,13 +20,6 @@ constexpr const char* EDGE_TYPE_CONTAIN = "contain";
 constexpr const char* EDGE_TYPE_REFERENCE = "reference";
 constexpr const char* ROOT_NODE = ".";
 
-constexpr const char* ATTR_VERTEX_NAME = "name";
-constexpr const char* ATTR_VERTEX_TYPE = "type";
-constexpr const char* ATTR_VERTEX_FILE = "file";
-constexpr const char* ATTR_VERTEX_START_LINE = "start_line";
-constexpr const char* ATTR_VERTEX_END_LINE = "end_line";
-constexpr const char* ATTR_EDGE_TYPE = "type";
-
 class CodeGraph {
   public:
     using VertexId = igraph_integer_t;
@@ -37,6 +30,12 @@ class CodeGraph {
         std::optional<std::string> file;
         std::optional<int> start_line;
         std::optional<int> end_line;
+    };
+
+    struct EdgeData {
+        VertexId source;
+        VertexId target;
+        std::string type;
     };
 
     CodeGraph();
@@ -110,15 +109,12 @@ class CodeGraph {
                              const std::optional<std::string>& file,
                              const std::optional<int>& start_line,
                              const std::optional<int>& end_line);
-    void set_vertex_string(VertexId vertex_id, const char* attribute, const std::string& value);
-    void set_vertex_string(VertexId vertex_id, const char* attribute, const std::optional<std::string>& value);
-    void set_vertex_numeric(VertexId vertex_id, const char* attribute, std::optional<int> value);
-    std::optional<std::string> get_vertex_string(VertexId vertex_id, const char* attribute) const;
-    std::optional<int> get_vertex_int(VertexId vertex_id, const char* attribute) const;
 
     void reset_scope_to_file(const std::string& file_symbol);
 
     igraph_t graph_{};
+    std::vector<VertexData> vertices_;
+    std::vector<EdgeData> edges_;
     std::unordered_map<std::string, VertexId> name_to_vertex_;
     std::unordered_map<std::string, Range> symbol_ranges_;
     std::vector<ScopeEntry> scope_stack_;

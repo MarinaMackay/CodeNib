@@ -1,15 +1,12 @@
 #include "code_graph.h"
-#include <igraph/igraph_attributes.h>
 
 #include <algorithm>
-#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <optional>
-#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
@@ -18,13 +15,6 @@
 namespace codeminer::core {
 
 namespace {
-
-bool initialize_attribute_table() {
-    igraph_i_set_attribute_table(&igraph_cattribute_table);
-    return true;
-}
-
-[[maybe_unused]] const bool ATTRIBUTE_TABLE_READY = initialize_attribute_table();
 
 bool debug_enabled() {
     static const bool enabled = std::getenv("CODEMINER_SCIP_DEBUG") != nullptr;
@@ -91,6 +81,8 @@ CodeGraph::CodeGraph(std::string project_root) : project_root_(std::move(project
     if (igraph_empty(&graph_, /*n=*/0, /*directed=*/1) != IGRAPH_SUCCESS) {
         throw std::runtime_error("Failed to initialize igraph instance");
     }
+    vertices_.reserve(128);
+    edges_.reserve(256);
 }
 
 CodeGraph::~CodeGraph() {
@@ -99,6 +91,8 @@ CodeGraph::~CodeGraph() {
 
 CodeGraph::CodeGraph(CodeGraph&& other) noexcept : CodeGraph() {
     std::swap(graph_, other.graph_);
+    vertices_ = std::move(other.vertices_);
+    edges_ = std::move(other.edges_);
     name_to_vertex_ = std::move(other.name_to_vertex_);
     symbol_ranges_ = std::move(other.symbol_ranges_);
     scope_stack_ = std::move(other.scope_stack_);
@@ -114,6 +108,8 @@ CodeGraph& CodeGraph::operator=(CodeGraph&& other) noexcept {
 
     CodeGraph tmp(std::move(other));
     std::swap(graph_, tmp.graph_);
+    vertices_ = std::move(tmp.vertices_);
+    edges_ = std::move(tmp.edges_);
     name_to_vertex_ = std::move(tmp.name_to_vertex_);
     symbol_ranges_ = std::move(tmp.symbol_ranges_);
     scope_stack_ = std::move(tmp.scope_stack_);
@@ -144,11 +140,13 @@ CodeGraph::VertexId CodeGraph::ensure_vertex(const std::string& name) {
     name_to_vertex_.emplace(name, vertex_id);
     log_debug("Created vertex '" + name + "' with id " + std::to_string(vertex_id));
 
-    set_vertex_string(vertex_id, ATTR_VERTEX_NAME, name);
-    set_vertex_string(vertex_id, ATTR_VERTEX_TYPE, std::string{});
-    set_vertex_string(vertex_id, ATTR_VERTEX_FILE, std::nullopt);
-    set_vertex_numeric(vertex_id, ATTR_VERTEX_START_LINE, std::nullopt);
-    set_vertex_numeric(vertex_id, ATTR_VERTEX_END_LINE, std::nullopt);
+    VertexData data{};
+    data.name = name;
+
+    if (static_cast<std::size_t>(igraph_vcount(&graph_)) > vertices_.size()) {
+        vertices_.resize(static_cast<std::size_t>(igraph_vcount(&graph_)));
+    }
+    vertices_[vertex_id] = std::move(data);
 
     return vertex_id;
 }
@@ -158,73 +156,28 @@ void CodeGraph::apply_vertex_update(VertexId vertex_id,
                                     const std::optional<std::string>& file,
                                     const std::optional<int>& start_line,
                                     const std::optional<int>& end_line) {
+    if (vertex_id < 0 || static_cast<std::size_t>(vertex_id) >= vertices_.size()) {
+        throw std::out_of_range("Vertex id out of range when updating attributes");
+    }
+
+    VertexData& data = vertices_[vertex_id];
+
     if (type.has_value()) {
-        set_vertex_string(vertex_id, ATTR_VERTEX_TYPE, *type);
+        data.type = *type;
     }
     if (file.has_value()) {
-        set_vertex_string(vertex_id, ATTR_VERTEX_FILE, file);
+        if (file->empty()) {
+            data.file.reset();
+        } else {
+            data.file = *file;
+        }
     }
     if (start_line.has_value()) {
-        set_vertex_numeric(vertex_id, ATTR_VERTEX_START_LINE, start_line);
+        data.start_line = *start_line;
     }
     if (end_line.has_value()) {
-        set_vertex_numeric(vertex_id, ATTR_VERTEX_END_LINE, end_line);
+        data.end_line = *end_line;
     }
-}
-
-void CodeGraph::set_vertex_string(VertexId vertex_id, const char* attribute, const std::string& value) {
-    if (vertex_id < 0 || vertex_id >= igraph_vcount(&graph_)) {
-        throw std::out_of_range("Vertex id out of range when setting attribute '" + std::string(attribute) + "'");
-    }
-    if (igraph_cattribute_VAS_set(&graph_, attribute, vertex_id, value.c_str()) != IGRAPH_SUCCESS) {
-        throw std::runtime_error("Failed to set vertex attribute '" + std::string(attribute) + "'");
-    }
-}
-
-void CodeGraph::set_vertex_string(VertexId vertex_id,
-                                  const char* attribute,
-                                  const std::optional<std::string>& value) {
-    if (value.has_value()) {
-        set_vertex_string(vertex_id, attribute, *value);
-    } else {
-        set_vertex_string(vertex_id, attribute, std::string{});
-    }
-}
-
-void CodeGraph::set_vertex_numeric(VertexId vertex_id,
-                                   const char* attribute,
-                                   std::optional<int> value) {
-    if (vertex_id < 0 || vertex_id >= igraph_vcount(&graph_)) {
-        throw std::out_of_range("Vertex id out of range when setting numeric attribute '" +
-                                std::string(attribute) + "'");
-    }
-    igraph_real_t attr_value =
-        value.has_value() ? static_cast<igraph_real_t>(*value) : std::numeric_limits<igraph_real_t>::quiet_NaN();
-    if (igraph_cattribute_VAN_set(&graph_, attribute, vertex_id, attr_value) != IGRAPH_SUCCESS) {
-        throw std::runtime_error("Failed to set vertex numeric attribute '" + std::string(attribute) + "'");
-    }
-}
-
-std::optional<std::string> CodeGraph::get_vertex_string(VertexId vertex_id, const char* attribute) const {
-    if (vertex_id < 0 || vertex_id >= igraph_vcount(&graph_)) {
-        return std::nullopt;
-    }
-    const char* value = igraph_cattribute_VAS(&graph_, attribute, vertex_id);
-    if (value == nullptr || value[0] == '\0') {
-        return std::nullopt;
-    }
-    return std::string(value);
-}
-
-std::optional<int> CodeGraph::get_vertex_int(VertexId vertex_id, const char* attribute) const {
-    if (vertex_id < 0 || vertex_id >= igraph_vcount(&graph_)) {
-        return std::nullopt;
-    }
-    igraph_real_t numeric = igraph_cattribute_VAN(&graph_, attribute, vertex_id);
-    if (std::isnan(numeric)) {
-        return std::nullopt;
-    }
-    return static_cast<int>(numeric);
 }
 
 void CodeGraph::add_root_node(const std::string& root_name) {
@@ -325,9 +278,10 @@ igraph_integer_t CodeGraph::add_edge(const std::string& source,
     }
 
     igraph_integer_t new_eid = static_cast<igraph_integer_t>(igraph_ecount(&graph_) - 1);
-    if (igraph_cattribute_EAS_set(&graph_, ATTR_EDGE_TYPE, new_eid, edge_type.c_str()) != IGRAPH_SUCCESS) {
-        throw std::runtime_error("Failed to set edge attribute 'type'");
+    if (static_cast<std::size_t>(igraph_ecount(&graph_)) > edges_.size()) {
+        edges_.resize(static_cast<std::size_t>(igraph_ecount(&graph_)));
     }
+    edges_[new_eid] = EdgeData{source_id, target_id, edge_type};
     return new_eid;
 }
 
@@ -499,16 +453,10 @@ std::optional<CodeGraph::VertexData> CodeGraph::get_node_info_by_name(const std:
 }
 
 std::optional<CodeGraph::VertexData> CodeGraph::get_node_info_by_id(VertexId vertex_id) const {
-    if (vertex_id < 0 || vertex_id >= igraph_vcount(&graph_)) {
+    if (vertex_id < 0 || static_cast<std::size_t>(vertex_id) >= vertices_.size()) {
         return std::nullopt;
     }
-    VertexData data{};
-    data.name = get_vertex_string(vertex_id, ATTR_VERTEX_NAME).value_or(std::string{});
-    data.type = get_vertex_string(vertex_id, ATTR_VERTEX_TYPE).value_or(std::string{});
-    data.file = get_vertex_string(vertex_id, ATTR_VERTEX_FILE);
-    data.start_line = get_vertex_int(vertex_id, ATTR_VERTEX_START_LINE);
-    data.end_line = get_vertex_int(vertex_id, ATTR_VERTEX_END_LINE);
-    return data;
+    return vertices_[vertex_id];
 }
 
 std::vector<CodeGraph::VertexId> CodeGraph::get_neighbors(const std::string& node_name) const {
@@ -590,38 +538,36 @@ void CodeGraph::save_graph(const std::string& output_path) const {
 
     out << "{\n";
     out << "  \"project_root\": " << escape_json(project_root_) << ",\n";
-    igraph_integer_t vertex_count = igraph_vcount(&graph_);
     out << "  \"vertices\": [\n";
-    for (igraph_integer_t vid = 0; vid < vertex_count; ++vid) {
-        auto info_opt = get_node_info_by_id(vid);
-        VertexData data = info_opt.value_or(VertexData{});
+    for (std::size_t i = 0; i < vertices_.size(); ++i) {
+        const auto& v = vertices_[i];
         out << "    {\n";
-        out << "      \"id\": " << vid << ",\n";
-        out << "      \"name\": " << escape_json(data.name) << ",\n";
-        out << "      \"type\": " << escape_json(data.type) << ",\n";
+        out << "      \"id\": " << i << ",\n";
+        out << "      \"name\": " << escape_json(v.name) << ",\n";
+        out << "      \"type\": " << escape_json(v.type) << ",\n";
         out << "      \"file\": ";
-        if (data.file.has_value()) {
-            out << escape_json(*data.file);
+        if (v.file.has_value()) {
+            out << escape_json(*v.file);
         } else {
             out << "null";
         }
         out << ",\n";
         out << "      \"start_line\": ";
-        if (data.start_line.has_value()) {
-            out << *data.start_line;
+        if (v.start_line.has_value()) {
+            out << *v.start_line;
         } else {
             out << "null";
         }
         out << ",\n";
         out << "      \"end_line\": ";
-        if (data.end_line.has_value()) {
-            out << *data.end_line;
+        if (v.end_line.has_value()) {
+            out << *v.end_line;
         } else {
             out << "null";
         }
         out << "\n";
         out << "    }";
-        if (vid + 1 < vertex_count) {
+        if (i + 1 < vertices_.size()) {
             out << ",";
         }
         out << "\n";
@@ -629,20 +575,15 @@ void CodeGraph::save_graph(const std::string& output_path) const {
     out << "  ],\n";
 
     out << "  \"edges\": [\n";
-    igraph_integer_t edge_count = igraph_ecount(&graph_);
-    for (igraph_integer_t eid = 0; eid < edge_count; ++eid) {
-        igraph_integer_t source = 0;
-        igraph_integer_t target = 0;
-        igraph_edge(&graph_, eid, &source, &target);
-        const char* type_attr = igraph_cattribute_EAS(&graph_, ATTR_EDGE_TYPE, eid);
-        std::string type_str = type_attr != nullptr ? type_attr : "";
+    for (std::size_t i = 0; i < edges_.size(); ++i) {
+        const auto& e = edges_[i];
         out << "    {\n";
-        out << "      \"id\": " << eid << ",\n";
-        out << "      \"source\": " << source << ",\n";
-        out << "      \"target\": " << target << ",\n";
-        out << "      \"type\": " << escape_json(type_str) << "\n";
+        out << "      \"id\": " << i << ",\n";
+        out << "      \"source\": " << e.source << ",\n";
+        out << "      \"target\": " << e.target << ",\n";
+        out << "      \"type\": " << escape_json(e.type) << "\n";
         out << "    }";
-        if (eid + 1 < edge_count) {
+        if (i + 1 < edges_.size()) {
             out << ",";
         }
         out << "\n";
