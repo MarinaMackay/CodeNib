@@ -99,7 +99,6 @@ class CodeChunker:
         repo_config: Optional[RepoChunkingConfig] = None,
         max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
-        enable_max_split: bool = True,
         include_header_epilogue: bool = False,
         l2_level_exclusive: bool = True,
     ):
@@ -111,7 +110,6 @@ class CodeChunker:
             repo_config: Configuration for repository-level chunking. Uses defaults if None.
             max_lines_per_chunk: Maximum number of lines per emitted chunk. Default: None (no splitting)
             chunk_depth: Depth of AST traversal (1=top-level only, 2=include methods)
-            enable_max_split: Whether to apply max_lines_per_chunk splitting
             include_header_epilogue: Whether to include file headers and epilogues. Default: False
             l2_level_exclusive: When chunk_depth is 2, whether to omit L1 container nodes
                 (classes/structs/impls) and emit only L2 members. Default: True.
@@ -119,14 +117,12 @@ class CodeChunker:
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
         self.chunk_depth = chunk_depth
-        self.enable_max_split = enable_max_split
         self.include_header_epilogue = include_header_epilogue
         self.l2_level_exclusive = l2_level_exclusive
         self._chunker = create_chunker(
             language,
             max_lines_per_chunk=self.max_lines_per_chunk,
             chunk_depth=self.chunk_depth,
-            enable_max_split=self.enable_max_split,
             include_header_epilogue=self.include_header_epilogue,
             l2_level_exclusive=self.l2_level_exclusive,
         )
@@ -140,9 +136,18 @@ class CodeChunker:
             []
         )  # List of node IDs in code graph format (dir/file.py:A.b(), dir/file.py:A)
 
-    def chunk_file(self, file_path: str):
-        """Chunk a code file into function/class level pieces."""
-        chunks = self._chunker.chunk_file(file_path)
+    def chunk_file(self, file_path: str, relative_path: Optional[str] = None):
+        """
+        Chunk a code file into function/class level pieces.
+
+        Args:
+            file_path: Path to the code file to chunk
+            relative_path: Relative path for node_id generation. If None, uses file_path.
+
+        Returns:
+            List of CodeChunk objects
+        """
+        chunks = self._chunker.chunk_file(file_path, relative_path)
         # Collect unique node IDs from chunks
         self._update_nodes_from_chunks(chunks)
         return chunks
@@ -405,7 +410,6 @@ class CodeChunker:
                 language,
                 max_lines_per_chunk=self.max_lines_per_chunk,
                 chunk_depth=self.chunk_depth,
-                enable_max_split=self.enable_max_split,
                 include_header_epilogue=self.include_header_epilogue,
                 l2_level_exclusive=self.l2_level_exclusive,
             )
