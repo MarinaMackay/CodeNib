@@ -15,7 +15,7 @@ def create_chunker(
     chunk_depth: int = 2,
     enable_max_split: bool = True,
     include_header_epilogue: bool = False,
-    include_class_level: bool = False,
+    l2_level_exclusive: bool = True,
 ) -> BaseCodeChunker:
     """
     Create a code chunker for the specified language.
@@ -29,7 +29,8 @@ def create_chunker(
             2 = Include methods/impl members
         enable_max_split: Whether to apply max_lines_per_chunk splitting
         include_header_epilogue: Whether to include file headers and epilogues. Default: False
-        include_class_level: Whether to include class definitions as chunks. Default: False (align with SweRank)
+        l2_level_exclusive: When chunk_depth is 2, whether to omit L1 container nodes
+            (classes/structs/impls) and emit only L2 members. Default: True.
 
     Returns:
         Language-specific code chunker instance
@@ -45,7 +46,7 @@ def create_chunker(
             chunk_depth=chunk_depth,
             enable_max_split=enable_max_split,
             include_header_epilogue=include_header_epilogue,
-            include_class_level=include_class_level,
+            l2_level_exclusive=l2_level_exclusive,
         )
     elif language in ("cpp", "c++", "cxx"):
         return CppCodeChunker(
@@ -53,7 +54,7 @@ def create_chunker(
             chunk_depth=chunk_depth,
             enable_max_split=enable_max_split,
             include_header_epilogue=include_header_epilogue,
-            include_class_level=include_class_level,
+            l2_level_exclusive=l2_level_exclusive,
         )
     elif language == "rust":
         return RustCodeChunker(
@@ -61,7 +62,7 @@ def create_chunker(
             chunk_depth=chunk_depth,
             enable_max_split=enable_max_split,
             include_header_epilogue=include_header_epilogue,
-            include_class_level=include_class_level,
+            l2_level_exclusive=l2_level_exclusive,
         )
     else:
         raise ValueError(f"Unsupported language: {language}")
