@@ -15,16 +15,18 @@ class CppCodeChunker(BaseCodeChunker):
         self,
         max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
-        include_header_epilogue: bool = False,
-        include_class_level: bool = False,
+        enable_max_split: bool = True,
+        l2_level_exclusive: bool = True,
+        **kwargs,
     ):
         """Initialize the C++ code chunker."""
         super().__init__(
             "cpp",
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
-            include_header_epilogue=include_header_epilogue,
-            include_class_level=include_class_level,
+            enable_max_split=enable_max_split,
+            l2_level_exclusive=l2_level_exclusive,
+            **kwargs,
         )
 
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:
@@ -40,6 +42,8 @@ class CppCodeChunker(BaseCodeChunker):
         definitions = []
 
         # For C++, look for function_definition and class_specifier
+        include_type_level = self.chunk_depth < 2 or not self.l2_level_exclusive
+
         for node in self._find_nodes_by_type(root_node, "function_definition"):
             name = self._extract_function_name(node)
             if name:
@@ -48,7 +52,7 @@ class CppCodeChunker(BaseCodeChunker):
         for node in self._find_nodes_by_type(root_node, "class_specifier"):
             name = self._extract_class_name(node)
             if name:
-                if self.include_class_level:
+                if include_type_level:
                     definitions.append((node, name, "class"))
                 # Extract methods only if chunk_depth >= 2
                 if self.chunk_depth >= 2:

@@ -34,7 +34,7 @@ class BaseCodeChunker(ABC):
         max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
         include_header_epilogue: bool = False,
-        include_class_level: bool = False,
+        l2_level_exclusive: bool = True,
     ):
         """
         Initialize the code chunker for a specific language.
@@ -51,14 +51,15 @@ class BaseCodeChunker(ABC):
                 2 = Method-level (classes, functions, and methods) [default]
             include_header_epilogue: Whether to include file header (imports, module docstrings)
                 and epilogue (trailing code) in chunks. Default: False (skip them to reduce noise).
-            include_class_level: Whether to include class definitions as chunks. Default: False
-                (only index methods, not the class itself, to align with SweRank and reduce redundancy).
+            l2_level_exclusive: When chunk_depth is 2 (method/member level), whether to exclude
+                the containing type/scope chunks (classes, structs, impls). Default: True to keep
+                L2-only output; set to False to emit both L1 container chunks and L2 members.
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
         self.chunk_depth = chunk_depth
         self.include_header_epilogue = include_header_epilogue
-        self.include_class_level = include_class_level
+        self.l2_level_exclusive = l2_level_exclusive
         try:
             self.parser = get_parser(language)
             self.tree_sitter_language = get_language(language)

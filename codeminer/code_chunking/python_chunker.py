@@ -15,16 +15,18 @@ class PythonCodeChunker(BaseCodeChunker):
         self,
         max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
-        include_header_epilogue: bool = False,
-        include_class_level: bool = False,
+        enable_max_split: bool = True,
+        l2_level_exclusive: bool = True,
+        **kwargs,
     ):
         """Initialize the Python code chunker."""
         super().__init__(
             "python",
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
-            include_header_epilogue=include_header_epilogue,
-            include_class_level=include_class_level,
+            enable_max_split=enable_max_split,
+            l2_level_exclusive=l2_level_exclusive,
+            **kwargs,
         )
 
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:
@@ -41,6 +43,8 @@ class PythonCodeChunker(BaseCodeChunker):
         definitions = []
 
         # For Python, look for function_definition, class_definition, and decorated_definition at module level
+        include_type_level = self.chunk_depth < 2 or not self.l2_level_exclusive
+
         for child in root_node.children:
             if child.type == "decorated_definition":
                 # Extract the actual definition (function or class) from decorated_definition
@@ -56,7 +60,7 @@ class PythonCodeChunker(BaseCodeChunker):
                         name = self._extract_class_name(actual_def)
                         if name:
                             # Use the decorated_definition node (includes decorators)
-                            if self.include_class_level:
+                            if include_type_level:
                                 definitions.append((child, name, "class"))
                             # Extract methods only if chunk_depth >= 2
                             if self.chunk_depth >= 2:
@@ -69,7 +73,7 @@ class PythonCodeChunker(BaseCodeChunker):
             elif child.type == "class_definition":
                 name = self._extract_class_name(child)
                 if name:
-                    if self.include_class_level:
+                    if include_type_level:
                         definitions.append((child, name, "class"))
                     # Extract methods only if chunk_depth >= 2
                     if self.chunk_depth >= 2:
