@@ -166,32 +166,32 @@ class GTLocator:
         logger.debug(f"Extracted changed line ranges for {len(changed_ranges)} files")
         return dict(changed_ranges)
 
-    def extract_symbols_from_file(self, file_path: str) -> Dict[str, any]:
+    def extract_symbols_from_file(
+        self, file_path: str, relative_path: Optional[str] = None
+    ) -> Dict[str, any]:
         """
         Extract all symbols from a file with their chunks.
 
         Args:
-            file_path: Path to the source file
+            file_path: Absolute path to the source file
+            relative_path: Relative path for node_id generation. If provided,
+                          the returned dictionary keys will use this path prefix.
 
         Returns:
-            Dictionary mapping symbol names to CodeChunk objects
+            Dictionary mapping node_id (file:symbol format) to CodeChunk objects
         """
         if not os.path.exists(file_path):
             logger.debug(f"File does not exist: {file_path}")
             return {}
 
         try:
-            chunks = self.chunker.chunk_file(file_path)
+            chunks = self.chunker.chunk_file(file_path, relative_path)
             symbols = {}
 
             for chunk in chunks:
                 if chunk.chunk_type in ("function", "method", "class"):
-                    # Format symbol name according to codebase standard
-                    if chunk.chunk_type in ("function", "method"):
-                        symbol_name = f"{chunk.name}()"
-                    else:
-                        symbol_name = chunk.name
-                    symbols[symbol_name] = chunk
+                    # Use chunk.node_id directly (already in file:symbol format)
+                    symbols[chunk.node_id] = chunk
 
             logger.debug(f"Extracted {len(symbols)} symbols from {file_path}")
             return symbols
@@ -475,11 +475,9 @@ class GTLocator:
         for file_path in python_files:
             full_path = os.path.join(repo_dir, file_path)
             if os.path.exists(full_path):
-                file_symbols = self.extract_symbols_from_file(full_path)
-                # Prefix with file path for uniqueness
-                for symbol_name, chunk in file_symbols.items():
-                    qualified_name = f"{file_path}:{symbol_name}"
-                    symbols_before[qualified_name] = chunk
+                # Pass relative_path for proper node_id generation
+                file_symbols = self.extract_symbols_from_file(full_path, file_path)
+                symbols_before.update(file_symbols)
         logger.info(f"Extracted {len(symbols_before)} symbols before patch")
 
         # Get changed line ranges
@@ -497,10 +495,9 @@ class GTLocator:
         for file_path in python_files:
             full_path = os.path.join(repo_dir, file_path)
             if os.path.exists(full_path):
-                file_symbols = self.extract_symbols_from_file(full_path)
-                for symbol_name, chunk in file_symbols.items():
-                    qualified_name = f"{file_path}:{symbol_name}"
-                    symbols_after[qualified_name] = chunk
+                # Pass relative_path for proper node_id generation
+                file_symbols = self.extract_symbols_from_file(full_path, file_path)
+                symbols_after.update(file_symbols)
         logger.info(f"Extracted {len(symbols_after)} symbols after patch")
 
         # Compare symbols to identify changes

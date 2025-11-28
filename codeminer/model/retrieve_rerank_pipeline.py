@@ -20,6 +20,7 @@ from ..types import QueriedNode
 logger = get_logger(__name__)
 
 SUPPORTED_ENGINES = {"dense", "sparse"}
+RETRIEVAL_TOP_K = 100
 
 
 @dataclass(frozen=True)
@@ -46,13 +47,13 @@ def build_retrieve_plan(mode: str = "dense") -> List[RetrieveStageConfig]:
 
     normalized = (mode or "dense").strip().lower()
     if normalized == "dense":
-        return [RetrieveStageConfig(engine="dense", top_k=50)]
+        return [RetrieveStageConfig(engine="dense", top_k=RETRIEVAL_TOP_K)]
     if normalized == "sparse":
-        return [RetrieveStageConfig(engine="sparse", top_k=50)]
+        return [RetrieveStageConfig(engine="sparse", top_k=RETRIEVAL_TOP_K)]
     if normalized == "hybrid":
         return [
-            RetrieveStageConfig(engine="dense", weight=0.6, top_k=64),
-            RetrieveStageConfig(engine="sparse", weight=0.4, top_k=64),
+            RetrieveStageConfig(engine="dense", weight=0.6, top_k=RETRIEVAL_TOP_K),
+            RetrieveStageConfig(engine="sparse", weight=0.4, top_k=RETRIEVAL_TOP_K),
         ]
     raise ValueError(
         f"Unknown retrieval mode '{mode}'. Choose from: dense, sparse, hybrid."
@@ -202,12 +203,22 @@ class RetrieveRerankPipeline:
         )
 
     def query(self, query: str, top_k: int = 10) -> List[QueriedNode]:
-        """Execute retrieve + rerank plan for the provided query."""
+        """Execute retrieve + rerank plan for the provided query.
+
+        Args:
+            query: The search query.
+            top_k: Number of results to return. If rerank is enabled, this controls
+                the rerank output. Retrieval always fetches 100 candidates internally.
+        """
+
+        # Build and execute the retrieval/rerank graph
         graph, final_node_id = self._build_execution_graph(query, top_k)
         state = self.engine.execute(graph)
         results = state.get(final_node_id, [])
+
         if not isinstance(results, list):
             return []
+
         nodes: List[QueriedNode] = []
         for item in results[:top_k]:
             if isinstance(item, QueriedNode):
@@ -303,16 +314,15 @@ class RetrieveRerankPipeline:
         return self._chunks
 
     def _build_execution_graph(
-        self, query: str, top_k: int
+        self, query: str, output_top_k: int
     ) -> Tuple[ExecutionGraph, str]:
         graph = ExecutionGraph()
         retrieve_nodes: List[str] = []
         for idx, stage in enumerate(self.retrieve_plan):
             node_id = f"retrieve_{idx}"
             params = dict(stage.params)
-            stage_top_k = max(stage.top_k or 0, top_k, self._default_stage_top_k)
             params.setdefault("query", query)
-            params.setdefault("top_k", stage_top_k)
+            params.setdefault("top_k", stage.top_k or RETRIEVAL_TOP_K)
             params.setdefault("return_content", True)
             graph.add_node(
                 ExecutionNode(
@@ -335,7 +345,7 @@ class RetrieveRerankPipeline:
                     operator=PhysicalOperator.HYBRID_RETRIEVE.value,
                     params={
                         "weights": weights,
-                        "top_k": max(top_k, self._default_stage_top_k),
+                        "top_k": RETRIEVAL_TOP_K,
                     },
                     deps=retrieve_nodes,
                 )
@@ -346,7 +356,7 @@ class RetrieveRerankPipeline:
             return graph, aggregate_node_id
 
         rerank_node_id = "rerank_0"
-        rerank_params = {"query": query, "top_k": top_k, "return_content": True}
+        rerank_params = {"query": query, "top_k": output_top_k, "return_content": True}
         if self.rerank_window_size is not None:
             rerank_params["window_size"] = self.rerank_window_size
         if self.rerank_window_step is not None:

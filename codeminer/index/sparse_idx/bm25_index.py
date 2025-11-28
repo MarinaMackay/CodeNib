@@ -308,11 +308,14 @@ class BM25CodeIndexer:
         # Apply custom text processing to query
         query = self._apply_stemming(query)
 
-        # Use LangChain's invoke method with top_k parameter
         if top_k is None:
             top_k = self.max_k
 
+        logger.debug(f"BM25 search with k={top_k}, num_documents={len(self.documents)}")
+
+        # Retrieve results and truncate to requested top_k
         results = self.retriever.invoke(query)
+        logger.info(f"BM25 retrieval returned {len(results)} results")
 
         # Convert results to NodeInfo objects and apply filtering
         processed_results = []
@@ -395,6 +398,7 @@ class BM25CodeIndexer:
             result = NodeInfo(
                 score=0.0,  # LangChain BM25Retriever doesn't provide scores
                 node_name=node_name,
+                node_id=node_name,  # Set node_id to the same value as node_name
                 type=node_type,
                 file=file_path,
                 start_line=start_line,
