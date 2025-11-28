@@ -42,7 +42,7 @@ def test_dense_compatibility(repo_paths):
 
     try:
         code_chunker = CodeChunker(language="python", max_lines_per_chunk=50)
-        chunks = code_chunker.chunk_repository(str(repo_path), languages=["python"])
+        chunks = code_chunker.chunk_repository(str(repo_path))
     except Exception as exc:  # pragma: no cover - defensive
         pytest.fail(f"Dense chunks creation failed: {exc}")
 

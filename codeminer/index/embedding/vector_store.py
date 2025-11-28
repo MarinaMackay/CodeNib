@@ -1,5 +1,5 @@
 """
-Vector Store implementation using FAISS and LlamaIndex for code embeddings.
+Vector Store implementation using FAISS and LangChain for code embeddings.
 This module provides functionality to create, store, and query vector embeddings
 of code chunks for semantic similarity search.
 """
@@ -20,7 +20,7 @@ from langchain_openai import OpenAIEmbeddings
 
 from ...log_utils import get_logger
 from ...profiler import Profiler
-from ...types import NodeWithContent, NodeWithScore
+from ...types import NodeInfo
 
 logger = get_logger(__name__)
 
@@ -39,7 +39,6 @@ class CodeVectorStore:
         index_type: str = "flat",
         index_metric: str = "ip",
         store_path: Optional[str] = None,
-        index_params: Optional[Dict[str, Any]] = None,
         profiler: Optional[Profiler] = None,
         **embedding_kwargs,
     ):
@@ -50,22 +49,26 @@ class CodeVectorStore:
             embedding_model: Name of the embedding model to use
             embedding_provider: Provider for embeddings ("openai", "huggingface")
             dimension: Dimension of the embedding vectors
-            index_type: Type of FAISS index ("flat", "ivf", "hnsw")
+            index_type: Type of FAISS index (only "flat" is supported)
             index_metric: Distance metric ("ip" for inner product, "l2" for L2 distance)
             store_path: Path to store/load the vector store
-            index_params: Additional parameters for index construction (e.g., nlist)
             profiler: Optional profiler instance to capture detailed timings
             **embedding_kwargs: Additional arguments for embedding model
         """
         self.embedding_model = embedding_model
         self.embedding_provider = embedding_provider
         self.dimension = dimension
-        self.index_type = index_type
+        self.index_type = index_type.lower()
+        if self.index_type != "flat":
+            raise ValueError(
+                f"Unsupported index_type: {index_type}. Only 'flat' is supported."
+            )
         self.index_metric = index_metric.lower()
         if self.index_metric not in ["ip", "l2"]:
-            raise ValueError(f"Unsupported index_metric: {index_metric}. Must be 'ip' or 'l2'.")
+            raise ValueError(
+                f"Unsupported index_metric: {index_metric}. Must be 'ip' or 'l2'."
+            )
         self.store_path = Path(store_path) if store_path else None
-        self.index_params = index_params or {}
         self.profiler = profiler
 
         # Initialize embedding model
@@ -73,7 +76,7 @@ class CodeVectorStore:
 
         self.dimension = self._infer_embedding_dimension(dimension)
 
-        # Initialize vector store (will be created when documents are added)
+        # Initialize vector store with flat index
         self.index = self._build_faiss_index()
         self.vector_store = FAISS(
             embedding_function=self.embedding,
@@ -82,8 +85,6 @@ class CodeVectorStore:
             index_to_docstore_id={},
         )
         self.documents = []
-        self._index_requires_training = False
-        self._min_train_docs = int(self.index_params.get("train_size", 0))
 
         logger.info(
             f"Initialized CodeVectorStore with {embedding_provider}:{embedding_model}"
@@ -94,7 +95,6 @@ class CodeVectorStore:
         if self.embedding_provider.lower() == "openai":
             return OpenAIEmbeddings(model=self.embedding_model, **kwargs)
         elif self.embedding_provider.lower() == "huggingface":
-            # Default to a good code embedding model if not specified
             model_name = self.embedding_model
             model_kwargs = kwargs.pop("model_kwargs", {})
             encode_kwargs = kwargs.pop("encode_kwargs", {})
@@ -132,42 +132,34 @@ class CodeVectorStore:
             return nullcontext()
         return self.profiler.section(label, metadata)
 
-    def _build_faiss_index(self) -> faiss.Index:
-        """Create a FAISS index according to the configured index_type."""
-        index_type = self.index_type.lower()
-        metric = self.index_metric
-        params = self.index_params
+    def _should_filter_by_threshold(self, score: float, threshold: float) -> bool:
+        """
+        Determine if a result should be filtered based on score threshold.
 
-        if index_type == "flat":
-            if metric == "ip":
-                return faiss.IndexFlatIP(self.dimension)
-            elif metric == "l2":
-                return faiss.IndexFlatL2(self.dimension)
-            else:
-                raise ValueError(f"Unsupported metric for flat index: {metric}")
-
-        if index_type == "ivf":
-            nlist = int(params.get("nlist", 1024))
-            quantizer = faiss.IndexFlatL2(self.dimension)
-            index = faiss.IndexIVFFlat(
-                quantizer, self.dimension, nlist, faiss.METRIC_L2
+        For inner product (ip): higher scores are better (similarity), filter if score < threshold
+        For L2 distance (l2): lower scores are better (distance), filter if score > threshold
+        """
+        if self.index_metric == "ip":
+            # Inner product: higher is better (similarity score)
+            return score < threshold
+        elif self.index_metric == "l2":  # l2
+            # L2 distance: lower is better (distance)
+            return score > threshold
+        else:
+            raise ValueError(
+                f"Unsupported index_metric: {self.index_metric}. Must be 'ip' or 'l2'."
             )
-            return index
 
-        if index_type == "hnsw":
-            m = int(params.get("M", params.get("m", 32)))
-            index = faiss.IndexHNSWFlat(self.dimension, m)
-            ef_construction = params.get("ef_construction")
-            if ef_construction is not None:
-                try:
-                    faiss.ParameterSpace().set_index_parameter(
-                        index, "efConstruction", int(ef_construction)
-                    )
-                except Exception:
-                    logger.warning("Failed to set efConstruction on HNSW index")
-            return index
-
-        raise ValueError(f"Unsupported FAISS index type: {self.index_type}")
+    def _build_faiss_index(self) -> faiss.Index:
+        """Create a flat FAISS index with the configured metric."""
+        if self.index_metric == "ip":
+            return faiss.IndexFlatIP(self.dimension)
+        elif self.index_metric == "l2":  # l2
+            return faiss.IndexFlatL2(self.dimension)
+        else:
+            raise ValueError(
+                f"Unsupported index_metric: {self.index_metric}. Must be 'ip' or 'l2'."
+            )
 
     def add_code_chunks(self, code_chunks: List[Dict[str, Any]]) -> None:
         """
@@ -208,7 +200,7 @@ class CodeVectorStore:
 
         # Store documents
         self.documents.extend(documents)
-        # add profiling section
+
         with self._profile_section(
             "vector_store_add_documents",
             {"num_documents": len(documents)},
@@ -219,12 +211,12 @@ class CodeVectorStore:
 
         logger.info(f"Successfully added {len(documents)} documents to vector store")
 
-    def add_nodes_with_content(self, nodes: List[NodeWithContent]) -> None:
+    def add_nodes_with_content(self, nodes: List[NodeInfo]) -> None:
         """
-        Add NodeWithContent objects to the vector store.
+        Add NodeInfo objects (with content) to the vector store.
 
         Args:
-            nodes: List of NodeWithContent objects
+            nodes: List of NodeInfo objects
         """
         chunks = []
         for node in nodes:
@@ -242,7 +234,7 @@ class CodeVectorStore:
 
     def search(
         self, query: str, top_k: int = 10, score_threshold: Optional[float] = None
-    ) -> List[NodeWithScore]:
+    ) -> List[NodeInfo]:
         """
         Search for similar code chunks using semantic similarity.
 
@@ -252,7 +244,7 @@ class CodeVectorStore:
             score_threshold: Minimum similarity score threshold
 
         Returns:
-            List of NodeWithScore objects
+            List of NodeInfo objects with scores populated
         """
         if self.vector_store is None:
             logger.warning("No vector store available. Add code chunks first.")
@@ -265,16 +257,20 @@ class CodeVectorStore:
             query, k=top_k
         )
 
-        # Convert to NodeWithScore objects
+        # Convert to NodeInfo objects
         results = []
         for doc, score in docs_with_scores:
             metadata = doc.metadata
 
-            # Apply score threshold if specified (note: FAISS returns distance, lower is better)
-            if score_threshold is not None and score > score_threshold:
+            # Apply score threshold based on index metric
+            # ip (inner product): higher score = more similar, filter if score < threshold
+            # l2 (distance): lower score = more similar, filter if score > threshold
+            if score_threshold is not None and self._should_filter_by_threshold(
+                score, score_threshold
+            ):
                 continue
 
-            node_with_score = NodeWithScore(
+            node_with_score = NodeInfo(
                 node_name=metadata.get("name", "unknown"),
                 type=metadata.get("chunk_type", "unknown"),
                 file=metadata.get("file", ""),
@@ -290,7 +286,7 @@ class CodeVectorStore:
 
     def search_with_content(
         self, query: str, top_k: int = 10, score_threshold: Optional[float] = None
-    ) -> List[NodeWithContent]:
+    ) -> List[NodeInfo]:
         """
         Search and return results with content included.
 
@@ -300,7 +296,7 @@ class CodeVectorStore:
             score_threshold: Minimum similarity score threshold
 
         Returns:
-            List of NodeWithContent objects
+            List of NodeInfo objects with content populated
         """
         if self.vector_store is None:
             logger.warning("No vector store available. Add code chunks first.")
@@ -311,22 +307,27 @@ class CodeVectorStore:
             query, k=top_k
         )
 
-        # Convert to NodeWithContent objects
+        # Convert to NodeInfo objects
         results = []
         for doc, score in docs_with_scores:
             metadata = doc.metadata
 
-            # Apply score threshold if specified (note: FAISS returns distance, lower is better)
-            if score_threshold is not None and score > score_threshold:
+            # Apply score threshold based on index metric
+            # ip (inner product): higher score = more similar, filter if score < threshold
+            # l2 (distance): lower score = more similar, filter if score > threshold
+            if score_threshold is not None and self._should_filter_by_threshold(
+                score, score_threshold
+            ):
                 continue
 
-            node_with_content = NodeWithContent(
+            node_with_content = NodeInfo(
                 node_name=metadata.get("name", "unknown"),
                 type=metadata.get("chunk_type", "unknown"),
                 file=metadata.get("file", ""),
                 node_id=metadata.get("node_id", ""),
                 start_line=metadata.get("start_line", 0),
                 end_line=metadata.get("end_line", 0),
+                score=float(score),
                 content=doc.page_content,
             )
             results.append(node_with_content)
@@ -368,7 +369,6 @@ class CodeVectorStore:
             "dimension": self.dimension,
             "index_type": self.index_type,
             "index_metric": self.index_metric,
-            "index_params": self.index_params,
         }
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
@@ -391,7 +391,6 @@ class CodeVectorStore:
             raise FileNotFoundError(f"Vector store not found at {load_path}")
 
         logger.info(f"Loading vector store from {load_path}")
-        self._index_requires_training = False
 
         model_suffix = self.embedding_model.replace("/", "__")
         # Load configuration
@@ -425,10 +424,6 @@ class CodeVectorStore:
                     saved_metric,
                 )
                 self.index_metric = saved_metric
-            saved_params = config.get("index_params")
-            if saved_params and saved_params != self.index_params:
-                logger.warning("Index params mismatch between config and runtime")
-                self.index_params = saved_params
 
         # Load FAISS vector store (LangChain format)
         try:
@@ -478,8 +473,6 @@ class CodeVectorStore:
             "dimension": self.dimension,
             "index_type": self.index_type,
             "index_metric": self.index_metric,
-            "index_params": self.index_params,
-            "vector_store_size": len(self.documents),
         }
 
         if self.documents:
@@ -496,10 +489,15 @@ class CodeVectorStore:
         """Clear all data from the vector store."""
         logger.info("Clearing vector store")
 
-        # Clear data
-        self.vector_store = None
+        # Reinitialize with empty index
+        self.index = self._build_faiss_index()
+        self.vector_store = FAISS(
+            embedding_function=self.embedding,
+            index=self.index,
+            docstore=InMemoryDocstore(),
+            index_to_docstore_id={},
+        )
         self.documents = []
-        self._index_requires_training = False
 
         logger.info("Vector store cleared")
 

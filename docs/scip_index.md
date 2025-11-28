@@ -120,3 +120,15 @@ indexer = SCIPIndexer(
     exclude_patterns=["tests/*", "*.test.py", "build/*"]
 )
 ```
+
+
+#### FAQ
+If the following error occurs:
+```
+FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
+```
+
+Please increase the memory space for node.js
+``` bash
+export NODE_OPTIONS="--max-old-space-size=16384"
+```

@@ -8,6 +8,7 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from collections import namedtuple
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 # Import the tree-sitter-language-pack
@@ -32,7 +33,6 @@ class BaseCodeChunker(ABC):
         language: str,
         max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
-        enable_max_split: bool = True,
         include_header_epilogue: bool = False,
         include_class_level: bool = False,
     ):
@@ -46,10 +46,9 @@ class BaseCodeChunker(ABC):
                 multiple sequential chunks of at most this many lines. node_id and name remain
                 the same across the split pieces. Default: None (no splitting). Set to a number to enable.
             chunk_depth: Depth of AST traversal for chunking:
+                0 = Treat entire file as a single chunk
                 1 = Top-level only (classes and top-level functions, no methods)
                 2 = Method-level (classes, functions, and methods) [default]
-            enable_max_split: Whether to apply max_lines_per_chunk splitting. When False,
-                keeps logical units (functions/classes/methods) intact regardless of size.
             include_header_epilogue: Whether to include file header (imports, module docstrings)
                 and epilogue (trailing code) in chunks. Default: False (skip them to reduce noise).
             include_class_level: Whether to include class definitions as chunks. Default: False
@@ -58,7 +57,6 @@ class BaseCodeChunker(ABC):
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
         self.chunk_depth = chunk_depth
-        self.enable_max_split = enable_max_split
         self.include_header_epilogue = include_header_epilogue
         self.include_class_level = include_class_level
         try:
@@ -108,6 +106,19 @@ class BaseCodeChunker(ABC):
         # Use relative_path for node_id generation, fallback to file_path
         path_for_node_id = relative_path if relative_path else file_path
 
+        if self.chunk_depth == 0:
+            if not lines:
+                return []
+            return self._split_by_max_lines(
+                lines=lines,
+                start_line=0,
+                end_line=len(lines) - 1,
+                chunk_type="file",
+                name=Path(file_path).name,
+                file_path=file_path,
+                node_id=path_for_node_id,
+            )
+
         # Generate chunks
         chunks = self._generate_chunks(
             lines, top_level_nodes, file_path, path_for_node_id
@@ -115,6 +126,24 @@ class BaseCodeChunker(ABC):
 
         # logger.debug(f"Generated {len(chunks)} chunks from {file_path}")
         return chunks
+
+    def _build_chunk_prefix(self, node_id: str, chunk_type: str, name: str) -> str:
+        """
+        Build prefix with node_id and class context for methods.
+
+        Args:
+            node_id: The node identifier for the chunk
+            chunk_type: Type of the chunk (e.g., "method", "function", "class")
+            name: Name of the symbol
+
+        Returns:
+            Prefix string to prepend to chunk content
+        """
+        prefix_lines = [node_id]
+        if chunk_type == "method" and "." in name:
+            class_name = name.split(".")[0]
+            prefix_lines.append(f"class {class_name}:")
+        return "\n".join(prefix_lines) + "\n"
 
     def _split_by_max_lines(
         self,
@@ -131,86 +160,45 @@ class BaseCodeChunker(ABC):
         Keeps node_id and name unchanged across pieces.
         Uses balanced splitting to distribute lines evenly across chunks.
         """
-        # If max split is disabled, or no max specified, or chunk already within limit, return single piece
-        if (
-            not self.enable_max_split
-            or not self.max_lines_per_chunk
-            or self.max_lines_per_chunk <= 0
-        ):
-            # Build prefix with node_id and class context for methods
-            prefix_lines = [node_id]
-            if chunk_type == "method" and "." in name:
-                class_name = name.split(".")[0]
-                prefix_lines.append(f"class {class_name}:")
-            prefix = "\n".join(prefix_lines) + "\n"
-
-            content = prefix + "\n".join(lines[start_line : end_line + 1])
-            return [
-                CodeChunk(
-                    content=content,
-                    start_line=start_line,
-                    end_line=end_line,
-                    chunk_type=chunk_type,
-                    name=name,
-                    file=file_path,
-                    node_id=node_id,
-                )
-            ]
-
+        prefix = self._build_chunk_prefix(node_id, chunk_type, name)
         total_lines = end_line - start_line + 1
-        if total_lines <= self.max_lines_per_chunk:
-            # Build prefix with node_id and class context for methods
-            prefix_lines = [node_id]
-            if chunk_type == "method" and "." in name:
-                class_name = name.split(".")[0]
-                prefix_lines.append(f"class {class_name}:")
-            prefix = "\n".join(prefix_lines) + "\n"
 
+        # Calculate number of chunks needed
+        if not self.max_lines_per_chunk or self.max_lines_per_chunk <= 0:
+            num_chunks = 1
+        else:
+            num_chunks = (
+                total_lines + self.max_lines_per_chunk - 1
+            ) // self.max_lines_per_chunk
+
+        # 1. Single chunk: no splitting needed
+        if num_chunks == 1:
             content = prefix + "\n".join(lines[start_line : end_line + 1])
             return [
                 CodeChunk(
-                    content=content,
-                    start_line=start_line,
-                    end_line=end_line,
-                    chunk_type=chunk_type,
-                    name=name,
-                    file=file_path,
-                    node_id=node_id,
+                    content, start_line, end_line, chunk_type, name, file_path, node_id
                 )
             ]
 
-        # Calculate number of chunks needed and balanced chunk sizes
-        num_chunks = (
-            total_lines + self.max_lines_per_chunk - 1
-        ) // self.max_lines_per_chunk
+        # 2. Multiple chunks: balanced splitting
         base_chunk_size = total_lines // num_chunks
         extra_lines = total_lines % num_chunks
-
-        # Create balanced chunks
         pieces: List[CodeChunk] = []
         current_start = start_line
-
-        # Build prefix with node_id and class context for methods
-        prefix_lines = [node_id]
-        if chunk_type == "method" and "." in name:
-            class_name = name.split(".")[0]
-            prefix_lines.append(f"class {class_name}:")
-        prefix = "\n".join(prefix_lines) + "\n"
 
         for i in range(num_chunks):
             chunk_size = base_chunk_size + (1 if i < extra_lines else 0)
             current_end = current_start + chunk_size - 1
-
             piece_content = prefix + "\n".join(lines[current_start : current_end + 1])
             pieces.append(
                 CodeChunk(
-                    content=piece_content,
-                    start_line=current_start,
-                    end_line=current_end,
-                    chunk_type=chunk_type,
-                    name=name,
-                    file=file_path,
-                    node_id=node_id,
+                    piece_content,
+                    current_start,
+                    current_end,
+                    chunk_type,
+                    name,
+                    file_path,
+                    node_id,
                 )
             )
             current_start = current_end + 1
