@@ -1,26 +1,43 @@
 """
-Test RegexNodeIndex functionality using simple_repo.
+Test RegexNodeIndex functionality using the httpie CLI repository.
 """
 
+import subprocess
 from pathlib import Path
 
 from codeminer import RegexNodeIndex
 from codeminer.scip_interface import SCIPIndexer
 
+HTTPIE_REPO_URL = "https://github.com/httpie/cli.git"
+HTTPIE_REPO_PATH = Path("/tmp/httpie-cli")
 
-def test_regex_index_basic():
-    """Test basic RegexNodeIndex functionality with simple_repo."""
-    # Setup paths
-    simple_repo_path = Path(__file__).parent.parent / "simple_repo"
-    output_path = Path.home() / ".codeminer" / "simple_repo_nodes_test"
 
-    print(f"Testing with simple_repo at: {simple_repo_path}")
+def ensure_httpie_repo() -> Path:
+    """Clone the httpie/cli repository if needed and return its path."""
+    if not HTTPIE_REPO_PATH.exists():
+        subprocess.run(
+            ["git", "clone", "--depth", "1", HTTPIE_REPO_URL, str(HTTPIE_REPO_PATH)],
+            check=True,
+        )
+    return HTTPIE_REPO_PATH
+
+
+def test_regex_index_basic(httpie_cli_repo=None, tmp_path_factory=None):
+    """Test RegexNodeIndex functionality with the httpie CLI repository."""
+    repo_path = httpie_cli_repo or ensure_httpie_repo()
+    if tmp_path_factory:
+        output_path = tmp_path_factory.mktemp("httpie_cli_regex")
+    else:
+        output_path = Path("/tmp") / "httpie_cli_regex"
+        output_path.mkdir(parents=True, exist_ok=True)
+
+    print(f"Testing with httpie repo at: {repo_path}")
     print(f"Output path: {output_path}")
 
     # Build CodeGraph using SCIPIndexer
-    indexer = SCIPIndexer(str(simple_repo_path), output_dir=str(output_path))
+    indexer = SCIPIndexer(str(repo_path), output_dir=str(output_path))
     code_graph = indexer.run_pipeline(
-        project_name="simple_repo_test",
+        project_name="httpie_cli_regex_test",
         skip_level="graph",  # Use cached graph if available
     )
 
@@ -30,10 +47,10 @@ def test_regex_index_basic():
     print("\nBuilding RegexNodeIndex...")
     regex_idx = RegexNodeIndex(code_graph=code_graph)
 
-    # Test 1: Search for 'calculator' (plain string)
-    print("\n=== Test 1: Plain string search for 'calculator' ===")
-    results = regex_idx.search("calculator", use_regex=False)
-    print(f"Found {len(results)} nodes containing 'calculator':")
+    # Test 1: Search for 'raw_main' (plain string)
+    print("\n=== Test 1: Plain string search for 'raw_main' ===")
+    results = regex_idx.search("raw_main", use_regex=False)
+    print(f"Found {len(results)} nodes containing 'raw_main':")
     for node in results[:5]:  # Show first 5
         print(f"  - {node.node_name} ({node.type})")
 
@@ -45,9 +62,9 @@ def test_regex_index_basic():
         print(f"  - {node.file}:{node.start_line} - {node.node_name}")
 
     # Test 3: Search with file glob filter
-    print("\n=== Test 3: Search in calculator files only ===")
-    results = regex_idx.search("class", file_glob="*calculator*", use_regex=False)
-    print(f"Found {len(results)} nodes containing 'class' in calculator files:")
+    print("\n=== Test 3: Search in core files only ===")
+    results = regex_idx.search("class", file_glob="*core.py", use_regex=False)
+    print(f"Found {len(results)} nodes containing 'class' in core files:")
     for node in results:
         print(f"  - {node.file} - {node.node_name} ({node.type})")
 

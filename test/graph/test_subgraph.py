@@ -37,7 +37,7 @@ if __name__ == "__main__":
 
         # Run the indexing pipeline, allowing skip_index and skip_decode for faster tests
         graph = repo_indexer.run_pipeline(
-            project_name="test_swebench",
+            project_name="test_swebench", skip_level="graph"
         )
 
         # get node info
