@@ -31,7 +31,7 @@ def test_scip_exclude():
     )
 
     # Run the indexing pipeline from scratch (skip_level=None)
-    graph = repo_indexer.run_pipeline(project_name="test_swebench", skip_level="index")
+    graph = repo_indexer.run_pipeline(project_name="test_swebench", skip_level="graph")
 
     # list the neighbors of the sympy/utilities/lamdify.py file node
     start_file = "sympy/utilities/lambdify.py"
