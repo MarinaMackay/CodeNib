@@ -30,9 +30,10 @@ jobs:
       - name: Set up codeminer conda env
         uses: conda-incubator/setup-miniconda@v3
         with:
-          activate-environment: codeminer
+          activate-environment: codeminer-test
           python-version: "3.12"
           auto-activate-base: false
+          remove-profiles: false
 
       - name: Install dependencies
         shell: bash -l {0}
