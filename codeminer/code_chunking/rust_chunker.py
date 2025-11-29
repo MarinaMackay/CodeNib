@@ -15,7 +15,6 @@ class RustCodeChunker(BaseCodeChunker):
         self,
         max_lines_per_chunk: Optional[int] = 200,
         chunk_depth: int = 2,
-        enable_max_split: bool = True,
         l2_level_exclusive: bool = True,
         **kwargs,
     ):
@@ -23,7 +22,6 @@ class RustCodeChunker(BaseCodeChunker):
             "rust",
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
-            enable_max_split=enable_max_split,
             l2_level_exclusive=l2_level_exclusive,
             **kwargs,
         )
