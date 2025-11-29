@@ -1,5 +1,3 @@
-import json
-import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -77,25 +75,21 @@ def test_python_repo_indexing(httpie_cli_repo, test_output_dir, tmp_path_factory
     repo_path = httpie_cli_repo or ensure_httpie_repo()
     assert repo_path.exists(), f"Test Python repo not found at {repo_path}"
 
-    # Create output file in the local directory (not in tmp)
-    output_file = str(test_output_dir / "python_repo_index.json")
-
     # Create a new indexer for the cloned test repo
     scip_output_dir = tmp_path_factory.mktemp("httpie_cli_scip")
     repo_indexer = SCIPIndexer(repo_path, output_dir=scip_output_dir)
 
     # Run the indexing pipeline, allowing skip_index and skip_decode for faster tests
-    graph = repo_indexer.run_pipeline(
-        project_name="HttpieCliRepo", output_file=output_file, force=True
-    )
+    graph = repo_indexer.run_pipeline(project_name="HttpieCliRepo", skip_level="graph")
 
     if graph:
         graph.print_graph_basic_info()
         assert graph is not None
 
-        # Print some sample data from the output file
-        assert os.path.exists(
-            output_file
+        # Print some sample data from the output pickle
+        output_file = repo_indexer.graph_file
+        assert (
+            output_file.exists()
         ), f"Expected output file {output_file} was not created"
 
         # Check that index files were created in the temporary directory, not in the project
@@ -104,21 +98,21 @@ def test_python_repo_indexing(httpie_cli_repo, test_output_dir, tmp_path_factory
             index_file.exists()
         ), f"Expected index file {index_file} was not created in tmp directory"
 
-        try:
-            with open(output_file, "r") as f:
-                data = json.load(f)
-                print("\nSample nodes from the graph:")
-                # Print up to 3 nodes of each type
-                file_nodes = [n for n in data["nodes"] if n.get("type") == "file"]
-                symbol_nodes = [n for n in data["nodes"] if n.get("type") == "symbol"]
-
-                for i, node in enumerate(file_nodes[:3]):
-                    print(f"  File node {i+1}: {node['id']}")
-
-                for i, node in enumerate(symbol_nodes[:3]):
-                    print(f"  Symbol node {i+1}: {node['id']}")
-        except (json.JSONDecodeError, FileNotFoundError) as e:
-            print(f"Could not read output file: {e}")
+        # Print some sample data from the graph object
+        file_vertices = [
+            v["name"]
+            for v in graph.graph.vs
+            if "type" in v.attributes() and v["type"] == "file"
+        ]
+        symbol_vertices = [
+            v["name"]
+            for v in graph.graph.vs
+            if "type" in v.attributes() and v["type"] == "symbol"
+        ]
+        for i, node in enumerate(file_vertices[:3]):
+            print(f"  File node {i+1}: {node}")
+        for i, node in enumerate(symbol_vertices[:3]):
+            print(f"  Symbol node {i+1}: {node}")
     else:
         pytest.skip(
             "Failed to run indexing pipeline for test_python_repo, possibly due to missing dependencies"
@@ -134,8 +128,6 @@ def test_samplemod_repo_indexing(samplemod_repo, test_output_dir, tmp_path_facto
     # Verify the test repo exists
     assert samplemod_repo.exists(), f"Sample module repo not found at {samplemod_repo}"
 
-    # Create output file in the local directory (not in tmp)
-    output_file = str(test_output_dir / "samplemod_index.json")
     graph_image_file = str(test_output_dir / "samplemod_graph.jpg")
 
     # Create a new indexer for the cloned test repo
@@ -146,8 +138,7 @@ def test_samplemod_repo_indexing(samplemod_repo, test_output_dir, tmp_path_facto
     # Run the indexing pipeline
     graph = repo_indexer.run_pipeline(
         project_name="SampleModRepo",
-        output_file=output_file,
-        force=True,
+        skip_level="graph",
     )
 
     if graph:
@@ -157,9 +148,10 @@ def test_samplemod_repo_indexing(samplemod_repo, test_output_dir, tmp_path_facto
         # visualize the graph and save it to a file
         graph.visualize_graph(graph_image_file)
 
-        # Check that the output file was created
-        assert os.path.exists(
-            output_file
+        # Check that the output pickle was created
+        output_file = repo_indexer.graph_file
+        assert (
+            output_file.exists()
         ), f"Expected output file {output_file} was not created"
 
         # Check that index files were created in the temporary directory, not in the project
@@ -168,23 +160,21 @@ def test_samplemod_repo_indexing(samplemod_repo, test_output_dir, tmp_path_facto
             index_file.exists()
         ), f"Expected index file {index_file} was not created in tmp directory"
 
-        # Print some sample data from the output file
-        try:
-            with open(output_file, "r") as f:
-                data = json.load(f)
-                print("\nSample nodes from the graph:")
-                # Print up to 3 nodes of each type
-                file_nodes = [n for n in data["nodes"] if n.get("type") == "file"]
-                symbol_nodes = [n for n in data["nodes"] if n.get("type") == "symbol"]
-
-                for i, node in enumerate(file_nodes[:3]):
-                    print(f"  File node {i+1}: {node['id']}")
-
-                for i, node in enumerate(symbol_nodes[:3]):
-                    print(f"  Symbol node {i+1}: {node['id']}")
-
-        except (json.JSONDecodeError, FileNotFoundError) as e:
-            print(f"Could not read output file: {e}")
+        # Print some sample data from the graph object
+        file_vertices = [
+            v["name"]
+            for v in graph.graph.vs
+            if "type" in v.attributes() and v["type"] == "file"
+        ]
+        symbol_vertices = [
+            v["name"]
+            for v in graph.graph.vs
+            if "type" in v.attributes() and v["type"] == "symbol"
+        ]
+        for i, node in enumerate(file_vertices[:3]):
+            print(f"  File node {i+1}: {node}")
+        for i, node in enumerate(symbol_vertices[:3]):
+            print(f"  Symbol node {i+1}: {node}")
     else:
         pytest.skip(
             "Failed to run indexing pipeline for samplemod_repo, possibly due to missing dependencies"

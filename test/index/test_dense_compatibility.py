@@ -24,6 +24,21 @@ def test_dense_compatibility(httpie_cli_repo, tmp_path_factory):
     if not graph:
         pytest.fail("Failed to create BM25 graph")
 
+    target_file = "httpie/cookies.py"
+    target_nodes = []
+    for vertex in graph.graph.vs:
+        attrs = vertex.attributes()
+        if vertex["name"] == target_file or attrs.get("file") == target_file:
+            target_nodes.append(
+                {
+                    "name": vertex["name"],
+                    "type": attrs.get("type"),
+                    "start_line": attrs.get("start_line"),
+                    "end_line": attrs.get("end_line"),
+                }
+            )
+    print(f"Graph nodes for {target_file}: {target_nodes}")
+
     bm25_indexer = BM25CodeIndexer(code_graph=graph)
     bm25_node_ids = {
         doc.metadata.get("node_id")

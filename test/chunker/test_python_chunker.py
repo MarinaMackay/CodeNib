@@ -15,7 +15,6 @@ def _collect_chunks(repo_root: Path, chunk_depth: int, l2_level_exclusive: bool 
         repo_config=repo_config,
         max_lines_per_chunk=None,
         chunk_depth=chunk_depth,
-        enable_max_split=False,
         l2_level_exclusive=l2_level_exclusive,
     )
     return chunker.chunk_repository(str(repo_root))

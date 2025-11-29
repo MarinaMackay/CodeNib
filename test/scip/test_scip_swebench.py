@@ -30,4 +30,4 @@ def test_scip_exclude():
     )
 
     # Run the indexing pipeline from scratch (skip_level=None)
-    repo_indexer.run_pipeline(project_name="test_swebench", skip_level="index")
+    repo_indexer.run_pipeline(project_name="test_swebench", skip_level="graph")
