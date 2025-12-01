@@ -9,7 +9,13 @@ from .base import BaseCodeChunker
 
 
 class PythonCodeChunker(BaseCodeChunker):
-    """Code chunker specifically for Python files."""
+    """
+    Code chunker specifically for Python files.
+
+    L1 entities: module-level functions and classes.
+    L2 entities: methods inside classes (including async and decorated definitions).
+    Skeleton mode: module skeleton lists L1 definitions; class skeleton lists method signatures.
+    """
 
     def __init__(
         self,
@@ -190,3 +196,15 @@ class PythonCodeChunker(BaseCodeChunker):
         """
         # Method name extraction is the same as function name extraction
         return self._extract_function_name(node)
+
+    def _get_child_definitions(self, node, def_type: str):
+        """Return class methods for class skeletons."""
+        if def_type != "class":
+            return []
+
+        target_node = node
+        if node.type == "decorated_definition":
+            target_node = self._extract_definition_from_decorated(node)
+        if not target_node:
+            return []
+        return self._find_class_methods(target_node)

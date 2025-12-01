@@ -9,7 +9,13 @@ from .base import BaseCodeChunker
 
 
 class CppCodeChunker(BaseCodeChunker):
-    """Code chunker specifically for C++ files."""
+    """
+    Code chunker specifically for C++ files.
+
+    L1 entities: free functions and class/struct definitions.
+    L2 entities: methods declared/defined inside class bodies.
+    Skeleton mode: file skeleton lists L1 declarations; class skeleton lists method signatures.
+    """
 
     def __init__(
         self,
@@ -154,3 +160,9 @@ class CppCodeChunker(BaseCodeChunker):
             if child.type in ("identifier", "field_identifier"):
                 return child.text.decode("utf-8")
         return None
+
+    def _get_child_definitions(self, node, def_type: str):
+        """Return method definitions for class skeletons."""
+        if def_type != "class":
+            return []
+        return self._find_class_methods(node)

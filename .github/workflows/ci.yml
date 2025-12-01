@@ -40,6 +40,13 @@ jobs:
           auto-activate-base: false
           remove-profiles: false
 
+      - name: Create scip env (empty conda env for SCIP indexer)
+        shell: bash -l {0}
+        run: |
+          if ! conda env list | grep -q 'scip-env'; then
+            conda env create --quiet --solver=libmamba --file codeminer/scip_interface/scip-environment.yml
+          fi
+
       - name: Install dependencies
         shell: bash -l {0}
         run: |
