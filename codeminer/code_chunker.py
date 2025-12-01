@@ -101,6 +101,7 @@ class CodeChunker:
         chunk_depth: int = 2,
         include_header_epilogue: bool = False,
         l2_level_exclusive: bool = True,
+        skeleton_mode: bool = False,
     ):
         """
         Initialize the code chunker for a specific language.
@@ -113,18 +114,21 @@ class CodeChunker:
             include_header_epilogue: Whether to include file headers and epilogues. Default: False
             l2_level_exclusive: When chunk_depth is 2, whether to omit L1 container nodes
                 (classes/structs/impls) and emit only L2 members. Default: True.
+            skeleton_mode: Emit signature-only skeletons instead of full bodies when True.
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
         self.chunk_depth = chunk_depth
         self.include_header_epilogue = include_header_epilogue
         self.l2_level_exclusive = l2_level_exclusive
+        self.skeleton_mode = skeleton_mode
         self._chunker = create_chunker(
             language,
             max_lines_per_chunk=self.max_lines_per_chunk,
             chunk_depth=self.chunk_depth,
             include_header_epilogue=self.include_header_epilogue,
             l2_level_exclusive=self.l2_level_exclusive,
+            skeleton_mode=self.skeleton_mode,
         )
         if repo_config is None:
             repo_config = RepoChunkingConfig()
@@ -136,18 +140,27 @@ class CodeChunker:
             []
         )  # List of node IDs in code graph format (dir/file.py:A.b(), dir/file.py:A)
 
-    def chunk_file(self, file_path: str, relative_path: Optional[str] = None):
+    def chunk_file(
+        self,
+        file_path: str,
+        relative_path: Optional[str] = None,
+        skeleton_mode: Optional[bool] = None,
+    ):
         """
         Chunk a code file into function/class level pieces.
 
         Args:
             file_path: Path to the code file to chunk
             relative_path: Relative path for node_id generation. If None, uses file_path.
+            skeleton_mode: Override instance-level skeleton setting. When True, chunk content
+                contains signatures only.
 
         Returns:
             List of CodeChunk objects
         """
-        chunks = self._chunker.chunk_file(file_path, relative_path)
+        chunks = self._chunker.chunk_file(
+            file_path, relative_path=relative_path, skeleton_mode=skeleton_mode
+        )
         # Collect unique node IDs from chunks
         self._update_nodes_from_chunks(chunks)
         return chunks
@@ -412,6 +425,7 @@ class CodeChunker:
                 chunk_depth=self.chunk_depth,
                 include_header_epilogue=self.include_header_epilogue,
                 l2_level_exclusive=self.l2_level_exclusive,
+                skeleton_mode=self.skeleton_mode,
             )
 
         chunker = self._chunkers[language]
@@ -420,9 +434,13 @@ class CodeChunker:
         if repo_path:
             relative_path = str(file_path.relative_to(repo_path))
             # Pass relative path to chunker for proper node_id generation
-            return chunker.chunk_file(str(file_path), relative_path)
+            return chunker.chunk_file(
+                str(file_path),
+                relative_path=relative_path,
+                skeleton_mode=self.skeleton_mode,
+            )
         else:
-            return chunker.chunk_file(str(file_path))
+            return chunker.chunk_file(str(file_path), skeleton_mode=self.skeleton_mode)
 
     def chunk_swebench_instance(
         self,

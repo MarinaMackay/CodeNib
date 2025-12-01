@@ -9,7 +9,13 @@ from .base import BaseCodeChunker
 
 
 class RustCodeChunker(BaseCodeChunker):
-    """Code chunker for Rust source files."""
+    """
+    Code chunker for Rust source files.
+
+    L1 entities: free functions plus struct/enum/trait/impl blocks.
+    L2 entities: functions inside impl blocks.
+    Skeleton mode: file skeleton lists L1 declarations; impl skeleton lists method signatures.
+    """
 
     def __init__(
         self,
@@ -98,3 +104,10 @@ class RustCodeChunker(BaseCodeChunker):
 
     def _extract_method_name(self, node) -> Optional[str]:
         return self._extract_function_name(node)
+
+    def _get_child_definitions(self, node, def_type: str):
+        """Return impl methods for impl skeletons."""
+        if def_type != "impl":
+            return []
+        _, target_name = self._extract_impl_label(node)
+        return self._find_impl_methods(node, target_name)
