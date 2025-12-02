@@ -47,6 +47,20 @@ jobs:
             conda env create --quiet --solver=libmamba --file codeminer/scip_interface/scip-environment.yml
           fi
 
+      - name: Build and install scip-python (local fork) into scip env
+        shell: bash -l {0}
+        run: |
+          git submodule update --init --recursive third_party/scip-python
+          conda run -n scip-env bash -lc "
+            set -euo pipefail
+            cd third_party/scip-python
+            npm ci
+            cd packages/pyright-scip
+            npm ci
+            npm run build
+            npm install -g .
+          "
+
       - name: Install dependencies
         shell: bash -l {0}
         run: |

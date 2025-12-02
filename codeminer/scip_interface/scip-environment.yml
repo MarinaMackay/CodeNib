@@ -4,6 +4,7 @@ channels:
 dependencies:
   - python=3.11
   - pip
+  - nodejs
 variables:
   CONDA_NETWORK_TIMEOUT_SECS: 60
   CONDA_REPODATA_TIMEOUT_SECS: 30
