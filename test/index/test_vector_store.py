@@ -4,11 +4,26 @@ Test script for the CodeVectorStore functionality.
 Demonstrates how to use the vector store for semantic search over code chunks.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
 from codeminer.code_chunking import create_chunker
 from codeminer.index import create_code_vector_store
+
+HTTPIE_REPO_URL = "https://github.com/httpie/cli.git"
+HTTPIE_REPO_PATH = Path("/tmp/httpie-cli")
+
+
+def ensure_httpie_repo() -> Path:
+    """Clone the httpie/cli repository if needed and return its path."""
+    if not HTTPIE_REPO_PATH.exists():
+        subprocess.run(
+            ["git", "clone", "--depth", "1", HTTPIE_REPO_URL, str(HTTPIE_REPO_PATH)],
+            check=True,
+        )
+    return HTTPIE_REPO_PATH
+
 
 # Add the parent directory to the path to import codeminer modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -152,15 +167,15 @@ def test_vector_store_with_huggingface():
         )
 
 
-def test_with_real_code_chunks():
-    """Test with real code chunks from the sample Python file."""
+def test_with_real_code_chunks(httpie_cli_repo=None):
+    """Test with real code chunks from the httpie CLI repository."""
     print("\n=== Testing with Real Code Chunks ===")
 
     try:
-        # Check if sample file exists
-        sample_file = Path(__file__).parent / "sample_python_file.py"
+        repo_path = httpie_cli_repo or ensure_httpie_repo()
+        sample_file = repo_path / "httpie" / "core.py"
         if not sample_file.exists():
-            print(f"Sample file not found: {sample_file}")
+            print(f"Target file not found: {sample_file}")
             return
 
         # Create chunker and chunk the file
@@ -168,7 +183,7 @@ def test_with_real_code_chunks():
         chunks = chunker.chunk_file(str(sample_file))
 
         if not chunks:
-            print("No chunks generated from sample file")
+            print("No chunks generated from httpie/core.py")
             return
 
         print(f"Generated {len(chunks)} chunks from {sample_file}")
@@ -200,8 +215,8 @@ def test_with_real_code_chunks():
 
         # Test search
         search_queries = [
-            "class Calculator",
-            "async function",
+            "raw_main",
+            "Environment",
         ]
 
         for query in search_queries:

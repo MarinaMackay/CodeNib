@@ -83,10 +83,6 @@ class SCIPGraphDecoder:
             self._process_occurrence(occurrence)
 
     def _process_occurrence(self, occurrence_text):
-        # Skip local symbols
-        if "local" in occurrence_text:
-            return
-
         # Skip stdlib symbols
         if "python-stdlib" in occurrence_text:
             return
@@ -104,6 +100,10 @@ class SCIPGraphDecoder:
             return
 
         symbol = symbol_match.group(1)
+
+        # Skip local symbols (scip represents them as 'local <id>')
+        if symbol.startswith("local "):
+            return
 
         # Extract symbol_roles
         symbol_roles_match = re.search(r"symbol_roles:\s*(\d+)", occurrence_text)

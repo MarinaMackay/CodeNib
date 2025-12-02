@@ -9,22 +9,28 @@ from .base import BaseCodeChunker
 
 
 class PythonCodeChunker(BaseCodeChunker):
-    """Code chunker specifically for Python files."""
+    """
+    Code chunker specifically for Python files.
+
+    L1 entities: module-level functions and classes.
+    L2 entities: methods inside classes (including async and decorated definitions).
+    Skeleton mode: module skeleton lists L1 definitions; class skeleton lists method signatures.
+    """
 
     def __init__(
         self,
         max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
-        include_header_epilogue: bool = False,
-        include_class_level: bool = False,
+        l2_level_exclusive: bool = True,
+        **kwargs,
     ):
         """Initialize the Python code chunker."""
         super().__init__(
             "python",
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
-            include_header_epilogue=include_header_epilogue,
-            include_class_level=include_class_level,
+            l2_level_exclusive=l2_level_exclusive,
+            **kwargs,
         )
 
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:
@@ -41,6 +47,8 @@ class PythonCodeChunker(BaseCodeChunker):
         definitions = []
 
         # For Python, look for function_definition, class_definition, and decorated_definition at module level
+        include_type_level = self.chunk_depth < 2 or not self.l2_level_exclusive
+
         for child in root_node.children:
             if child.type == "decorated_definition":
                 # Extract the actual definition (function or class) from decorated_definition
@@ -56,7 +64,7 @@ class PythonCodeChunker(BaseCodeChunker):
                         name = self._extract_class_name(actual_def)
                         if name:
                             # Use the decorated_definition node (includes decorators)
-                            if self.include_class_level:
+                            if include_type_level:
                                 definitions.append((child, name, "class"))
                             # Extract methods only if chunk_depth >= 2
                             if self.chunk_depth >= 2:
@@ -69,7 +77,7 @@ class PythonCodeChunker(BaseCodeChunker):
             elif child.type == "class_definition":
                 name = self._extract_class_name(child)
                 if name:
-                    if self.include_class_level:
+                    if include_type_level:
                         definitions.append((child, name, "class"))
                     # Extract methods only if chunk_depth >= 2
                     if self.chunk_depth >= 2:
@@ -188,3 +196,15 @@ class PythonCodeChunker(BaseCodeChunker):
         """
         # Method name extraction is the same as function name extraction
         return self._extract_function_name(node)
+
+    def _get_child_definitions(self, node, def_type: str):
+        """Return class methods for class skeletons."""
+        if def_type != "class":
+            return []
+
+        target_node = node
+        if node.type == "decorated_definition":
+            target_node = self._extract_definition_from_decorated(node)
+        if not target_node:
+            return []
+        return self._find_class_methods(target_node)

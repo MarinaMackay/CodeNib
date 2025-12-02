@@ -9,22 +9,28 @@ from .base import BaseCodeChunker
 
 
 class CppCodeChunker(BaseCodeChunker):
-    """Code chunker specifically for C++ files."""
+    """
+    Code chunker specifically for C++ files.
+
+    L1 entities: free functions and class/struct definitions.
+    L2 entities: methods declared/defined inside class bodies.
+    Skeleton mode: file skeleton lists L1 declarations; class skeleton lists method signatures.
+    """
 
     def __init__(
         self,
         max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
-        include_header_epilogue: bool = False,
-        include_class_level: bool = False,
+        l2_level_exclusive: bool = True,
+        **kwargs,
     ):
         """Initialize the C++ code chunker."""
         super().__init__(
             "cpp",
             max_lines_per_chunk=max_lines_per_chunk,
             chunk_depth=chunk_depth,
-            include_header_epilogue=include_header_epilogue,
-            include_class_level=include_class_level,
+            l2_level_exclusive=l2_level_exclusive,
+            **kwargs,
         )
 
     def _find_top_level_definitions(self, root_node) -> List[Tuple]:
@@ -40,6 +46,8 @@ class CppCodeChunker(BaseCodeChunker):
         definitions = []
 
         # For C++, look for function_definition and class_specifier
+        include_type_level = self.chunk_depth < 2 or not self.l2_level_exclusive
+
         for node in self._find_nodes_by_type(root_node, "function_definition"):
             name = self._extract_function_name(node)
             if name:
@@ -48,7 +56,7 @@ class CppCodeChunker(BaseCodeChunker):
         for node in self._find_nodes_by_type(root_node, "class_specifier"):
             name = self._extract_class_name(node)
             if name:
-                if self.include_class_level:
+                if include_type_level:
                     definitions.append((node, name, "class"))
                 # Extract methods only if chunk_depth >= 2
                 if self.chunk_depth >= 2:
@@ -152,3 +160,9 @@ class CppCodeChunker(BaseCodeChunker):
             if child.type in ("identifier", "field_identifier"):
                 return child.text.decode("utf-8")
         return None
+
+    def _get_child_definitions(self, node, def_type: str):
+        """Return method definitions for class skeletons."""
+        if def_type != "class":
+            return []
+        return self._find_class_methods(node)

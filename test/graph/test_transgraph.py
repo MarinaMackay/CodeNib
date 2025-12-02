@@ -1,10 +1,10 @@
-"""Test script for transverse_graph functionality using a simple test repository."""
+"""Test script for transverse_graph functionality using the httpie CLI repository."""
 
+import subprocess
 from pathlib import Path
 
 from codeminer.graph.transverse_graph import (
     RepoDependencySearcher,
-    RepoEntitySearcher,
     traverse_tree_structure,
 )
 from codeminer.log_utils import setup_detailed_logging
@@ -19,13 +19,29 @@ from codeminer.types import (
     NODE_TYPE_SYMBOL,
 )
 
+HTTPIE_REPO_URL = "https://github.com/httpie/cli.git"
+HTTPIE_REPO_PATH = Path("/tmp/httpie-cli")
 
-def test_transgraph_simple():
-    """Test traverse functions with a simple test repository."""
 
-    # Use the simple test repository
-    repo_path = Path(__file__).parent.parent / "simple_repo"
-    output_path = Path.home() / ".codeminer" / "simple_repo_test"
+def ensure_httpie_repo() -> Path:
+    """Clone the httpie/cli repository if needed and return its path."""
+    if not HTTPIE_REPO_PATH.exists():
+        subprocess.run(
+            ["git", "clone", "--depth", "1", HTTPIE_REPO_URL, str(HTTPIE_REPO_PATH)],
+            check=True,
+        )
+    return HTTPIE_REPO_PATH
+
+
+def test_transgraph_simple(httpie_cli_repo=None, tmp_path_factory=None):
+    """Test traverse functions with the httpie CLI repository."""
+
+    repo_path = httpie_cli_repo or ensure_httpie_repo()
+    if tmp_path_factory:
+        output_path = tmp_path_factory.mktemp("httpie_cli_transgraph")
+    else:
+        output_path = Path("/tmp") / "httpie_cli_transgraph"
+        output_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Testing with repository: {repo_path}")
     print(f"Output directory: {output_path}")
@@ -44,7 +60,7 @@ def test_transgraph_simple():
 
     # Run the indexing pipeline
     graph = repo_indexer.run_pipeline(
-        project_name="simple_repo_test", force=True  # Force regeneration for testing
+        project_name="httpie_cli_test", skip_level="graph"
     )
 
     if not graph:
@@ -62,14 +78,19 @@ def test_transgraph_simple():
     print("TESTING TRAVERSE FUNCTIONS")
     print("=" * 50)
 
-    # Initialize searchers
-    entity_searcher = RepoEntitySearcher(graph)
     dependency_searcher = RepoDependencySearcher(graph)
+
+    def nodes_by_type(ntype):
+        return [
+            v.attributes()
+            for v in graph.graph.vs
+            if "type" in v.attributes() and v["type"] == ntype
+        ]
 
     # Get sample nodes
     print("\n--- Getting sample nodes ---")
-    file_nodes = entity_searcher.get_all_nodes_by_type(NODE_TYPE_FILE)
-    symbol_nodes = entity_searcher.get_all_nodes_by_type(NODE_TYPE_SYMBOL)
+    file_nodes = nodes_by_type(NODE_TYPE_FILE)
+    symbol_nodes = nodes_by_type(NODE_TYPE_SYMBOL)
 
     print(f"Found {len(file_nodes)} file nodes")
     print(f"Found {len(symbol_nodes)} symbol nodes")
@@ -86,10 +107,10 @@ def test_transgraph_simple():
 
     # Test specific symbol types
     print("\n--- Testing specific symbol types ---")
-    class_nodes = entity_searcher.get_all_nodes_by_type(NODE_TYPE_CLASS)
-    function_nodes = entity_searcher.get_all_nodes_by_type(NODE_TYPE_FUNCTION)
-    method_nodes = entity_searcher.get_all_nodes_by_type(NODE_TYPE_METHOD)
-    field_nodes = entity_searcher.get_all_nodes_by_type(NODE_TYPE_FIELD)
+    class_nodes = nodes_by_type(NODE_TYPE_CLASS)
+    function_nodes = nodes_by_type(NODE_TYPE_FUNCTION)
+    method_nodes = nodes_by_type(NODE_TYPE_METHOD)
+    field_nodes = nodes_by_type(NODE_TYPE_FIELD)
 
     print(f"Found {len(class_nodes)} class nodes")
     print(f"Found {len(function_nodes)} function nodes")
@@ -110,10 +131,11 @@ def test_transgraph_simple():
     if file_nodes:
         print(f"\n--- Testing traverse_tree_structure ---")
 
-        # set the file to be src/utils/helpers.py
-        main_file = "src/utils/helpers.py"
-
-        if not main_file and file_nodes:
+        preferred_file = "httpie/core.py"
+        available_files = {node["name"] for node in file_nodes}
+        if preferred_file in available_files:
+            main_file = preferred_file
+        else:
             main_file = file_nodes[0]["name"]
 
         if main_file:
@@ -155,22 +177,17 @@ def test_transgraph_simple():
     if symbol_nodes:
         print(f"\n--- Testing with Symbol Node ---")
 
-        # Find a calculator method if it exists
-        calc_symbol = None
-        for node in symbol_nodes:
-            if "Calculator" in node["name"] or "add" in node["name"]:
-                calc_symbol = node["name"]
-                break
+        target_symbol = next(
+            (node["name"] for node in symbol_nodes if "raw_main" in node["name"]),
+            symbol_nodes[0]["name"],
+        )
 
-        if not calc_symbol:
-            calc_symbol = symbol_nodes[0]["name"]
-
-        print(f"Symbol: {calc_symbol}")
+        print(f"Symbol: {target_symbol}")
 
         # Test upstream traversal
         tree_result_upstream = traverse_tree_structure(
             graph,
-            calc_symbol,
+            target_symbol,
             direction="upstream",
             hops=2,
             node_type_filter=[NODE_TYPE_FILE, NODE_TYPE_SYMBOL],
@@ -178,36 +195,11 @@ def test_transgraph_simple():
         print("Tree structure (upstream from symbol, 2 hops):")
         print(tree_result_upstream)
 
-    # Test RepoEntitySearcher functionality
-    print(f"\n--- Testing RepoEntitySearcher ---")
-
-    # Test global name dictionary
-    global_names = list(entity_searcher.global_name_dict.keys())
-    print(f"Global names found: {len(global_names)}")
-    if global_names:
-        print("Sample global names:")
-        for name in global_names[:10]:
-            print(f"  - {name}")
-
-    # Test node data retrieval
+    # Basic node structure check (replaces RepoEntitySearcher coverage)
+    print(f"\n--- Node Attribute Inspection ---")
     if file_nodes:
-        sample_file = file_nodes[0]["name"]
-        node_data = entity_searcher.get_node_data(
-            [sample_file], return_code_content=True, wrap_with_ln=True
-        )
-        print(f"\nNode data for '{sample_file}':")
-        if node_data and node_data[0]:
-            for key, value in node_data[0].items():
-                if key == "code_content":
-                    print(f"  {key}: {len(str(value))} characters")
-                    # Show first few lines
-                    lines = str(value).split("\n")[:5]
-                    for line in lines:
-                        print(f"    {line}")
-                    if len(str(value).split("\n")) > 5:
-                        print("    ...")
-                else:
-                    print(f"  {key}: {value}")
+        sample_file = file_nodes[0]
+        print(f"Sample file node: {sample_file}")
 
     # Test RepoDependencySearcher functionality
     print(f"\n--- Testing RepoDependencySearcher ---")
@@ -276,9 +268,9 @@ def test_transgraph_simple():
 
 # Example usage
 if __name__ == "__main__":
-    print("Starting simple repository traverse test...")
+    print("Starting httpie CLI repository traverse test...")
     setup_detailed_logging(
-        log_dir="logs", run_name="simple_test", mode="both", level="scip_debug"
+        log_dir="logs", run_name="httpie_cli_test", mode="both", level="scip_debug"
     )
     success = test_transgraph_simple()
 

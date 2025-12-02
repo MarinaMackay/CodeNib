@@ -6,7 +6,7 @@ from codeminer.env.process_swebench_data import (
     load_filter_swebench_dataset,
     process_swebench_instance,
 )
-from codeminer.graph.transverse_graph import RepoEntitySearcher, traverse_tree_structure
+from codeminer.graph.transverse_graph import traverse_tree_structure
 from codeminer.scip_interface import SCIPIndexer
 from codeminer.types import (
     NODE_TYPE_CLASS,
@@ -44,7 +44,7 @@ def indexed_repo(test_instance):
     output_path = str(Path.home()) + "/.codeminer/" + test_instance["instance_id"]
 
     repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
-    graph = repo_indexer.run_pipeline(project_name="test_swebench")
+    graph = repo_indexer.run_pipeline(project_name="test_swebench", skip_level="graph")
 
     return graph
 
@@ -58,23 +58,13 @@ def test_swebench_instance_loading(test_instance):
     assert test_instance["instance_id"] == "astropy__astropy-12907"
 
 
-def test_entity_searcher(indexed_repo):
-    """Test RepoEntitySearcher functionality."""
-    entity_searcher = RepoEntitySearcher(indexed_repo)
-
-    file_nodes = entity_searcher.get_all_nodes_by_type(NODE_TYPE_FILE)
-
-    assert len(file_nodes) > 0
-
-    # Verify node structure
-    if file_nodes:
-        assert "name" in file_nodes[0]
-
-
 def test_tree_traversal(indexed_repo):
     """Test traverse_tree_structure functionality."""
-    entity_searcher = RepoEntitySearcher(indexed_repo)
-    file_nodes = entity_searcher.get_all_nodes_by_type(NODE_TYPE_FILE)
+    file_nodes = [
+        v.attributes()
+        for v in indexed_repo.graph.vs
+        if "type" in v.attributes() and v["type"] == NODE_TYPE_FILE
+    ]
 
     assert len(file_nodes) > 0
 

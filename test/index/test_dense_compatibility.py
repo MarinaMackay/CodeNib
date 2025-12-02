@@ -2,7 +2,6 @@
 """Test to check if all dense chunk node_ids exist in BM25 graph nodes."""
 
 import warnings
-from pathlib import Path
 
 import pytest
 
@@ -11,27 +10,34 @@ from codeminer.index import BM25CodeIndexer
 from codeminer.scip_interface import SCIPIndexer
 
 
-@pytest.fixture(scope="module")
-def repo_paths():
-    repo_path = Path(__file__).parent.parent / "simple_repo"
-    if not repo_path.exists():
-        pytest.skip(f"Test repository not found at {repo_path}")
-    output_path = Path.home() / ".codeminer" / "simple_repo_nodes_test"
-    return repo_path, output_path
-
-
-def test_dense_compatibility(repo_paths):
-    """Test that all dense chunk node_ids exist in BM25 graph nodes."""
-    repo_path, output_path = repo_paths
+def test_dense_compatibility(httpie_cli_repo, tmp_path_factory):
+    """Test that all dense node IDs exist in BM25 graph nodes for httpie CLI."""
+    repo_path = httpie_cli_repo
+    output_path = tmp_path_factory.mktemp("httpie_cli_nodes_test")
 
     try:
         repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
-        graph = repo_indexer.run_pipeline(project_name="simple_repo_compat")
+        graph = repo_indexer.run_pipeline(project_name="httpie_cli_compat")
     except Exception as exc:  # pragma: no cover - defensive
         pytest.fail(f"BM25 nodes creation failed: {exc}")
 
     if not graph:
         pytest.fail("Failed to create BM25 graph")
+
+    # target_file = "httpie/cookies.py"
+    # target_nodes = []
+    # for vertex in graph.graph.vs:
+    #     attrs = vertex.attributes()
+    #     if vertex["name"] == target_file or attrs.get("file") == target_file:
+    #         target_nodes.append(
+    #             {
+    #                 "name": vertex["name"],
+    #                 "type": attrs.get("type"),
+    #                 "start_line": attrs.get("start_line"),
+    #                 "end_line": attrs.get("end_line"),
+    #             }
+    #         )
+    # print(f"Graph nodes for {target_file}: {target_nodes}")
 
     bm25_indexer = BM25CodeIndexer(code_graph=graph)
     bm25_node_ids = {

@@ -34,7 +34,8 @@ class BaseCodeChunker(ABC):
         max_lines_per_chunk: Optional[int] = None,
         chunk_depth: int = 2,
         include_header_epilogue: bool = False,
-        include_class_level: bool = False,
+        l2_level_exclusive: bool = True,
+        skeleton_mode: bool = False,
     ):
         """
         Initialize the code chunker for a specific language.
@@ -51,14 +52,19 @@ class BaseCodeChunker(ABC):
                 2 = Method-level (classes, functions, and methods) [default]
             include_header_epilogue: Whether to include file header (imports, module docstrings)
                 and epilogue (trailing code) in chunks. Default: False (skip them to reduce noise).
-            include_class_level: Whether to include class definitions as chunks. Default: False
-                (only index methods, not the class itself, to align with SweRank and reduce redundancy).
+            l2_level_exclusive: When chunk_depth is 2 (method/member level), whether to exclude
+                the containing type/scope chunks (classes, structs, impls). Default: True to keep
+                L2-only output; set to False to emit both L1 container chunks and L2 members.
+            skeleton_mode: When True, emit skeletonized content (signatures only) for file- and
+                type-level chunks. File-level skeletons list top-level definitions. Type-level
+                skeletons list member signatures. Defaults to False (emit full source).
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
         self.chunk_depth = chunk_depth
         self.include_header_epilogue = include_header_epilogue
-        self.include_class_level = include_class_level
+        self.l2_level_exclusive = l2_level_exclusive
+        self.skeleton_mode = skeleton_mode
         try:
             self.parser = get_parser(language)
             self.tree_sitter_language = get_language(language)
@@ -70,7 +76,10 @@ class BaseCodeChunker(ABC):
             sys.exit(1)
 
     def chunk_file(
-        self, file_path: str, relative_path: Optional[str] = None
+        self,
+        file_path: str,
+        relative_path: Optional[str] = None,
+        skeleton_mode: Optional[bool] = None,
     ) -> List[CodeChunk]:
         """
         Chunk a code file into function/class level pieces.
@@ -78,6 +87,8 @@ class BaseCodeChunker(ABC):
         Args:
             file_path: Absolute path to the code file to chunk
             relative_path: Relative path for node_id generation
+            skeleton_mode: Override instance-level skeleton setting. When True, chunks contain
+                signature-only skeletons instead of full bodies.
 
         Returns:
             List of CodeChunk objects representing the chunks
@@ -106,9 +117,28 @@ class BaseCodeChunker(ABC):
         # Use relative_path for node_id generation, fallback to file_path
         path_for_node_id = relative_path if relative_path else file_path
 
+        use_skeleton = self.skeleton_mode if skeleton_mode is None else skeleton_mode
+
         if self.chunk_depth == 0:
             if not lines:
                 return []
+            if use_skeleton:
+                skeleton_content = self._build_file_skeleton(
+                    top_level_nodes, code_content
+                )
+                if not skeleton_content:
+                    return []
+                return [
+                    CodeChunk(
+                        skeleton_content,
+                        0,
+                        len(lines) - 1,
+                        "file",
+                        Path(file_path).name,
+                        file_path,
+                        path_for_node_id,
+                    )
+                ]
             return self._split_by_max_lines(
                 lines=lines,
                 start_line=0,
@@ -121,7 +151,12 @@ class BaseCodeChunker(ABC):
 
         # Generate chunks
         chunks = self._generate_chunks(
-            lines, top_level_nodes, file_path, path_for_node_id
+            lines=lines,
+            definitions=top_level_nodes,
+            file_path=file_path,
+            path_for_node_id=path_for_node_id,
+            code_content=code_content,
+            skeleton_mode=use_skeleton,
         )
 
         # logger.debug(f"Generated {len(chunks)} chunks from {file_path}")
@@ -144,6 +179,87 @@ class BaseCodeChunker(ABC):
             class_name = name.split(".")[0]
             prefix_lines.append(f"class {class_name}:")
         return "\n".join(prefix_lines) + "\n"
+
+    def _find_first_child(self, node, target_types: Tuple[str, ...]):
+        """Depth-first search for the first child node matching one of target_types."""
+        for child in node.children:
+            if child.type in target_types:
+                return child
+            found = self._find_first_child(child, target_types)
+            if found:
+                return found
+        return None
+
+    def _get_signature_stop_types(self, def_type: str) -> Tuple[str, ...]:
+        """
+        Identify AST node types that represent the start of a body we want to strip.
+        Override in subclasses for language-specific constructs.
+        """
+        # Reasonable defaults across languages we support.
+        if def_type in ("function", "method"):
+            return ("block", "compound_statement")
+        if def_type in ("class", "struct", "enum", "trait"):
+            return ("block", "field_declaration_list")
+        if def_type == "impl":
+            return ("declaration_list",)
+        return ("block",)
+
+    def _extract_signature_text(self, node, def_type: str, code_content: str) -> str:
+        """
+        Slice out the signature/heading for a node, stopping before the first body-like child.
+        Falls back to the full node text when no stop child is found.
+        """
+        stop_child = self._find_first_child(
+            node, self._get_signature_stop_types(def_type)
+        )
+        stop_byte = stop_child.start_byte if stop_child else node.end_byte
+        return code_content[node.start_byte : stop_byte].rstrip()
+
+    def _get_child_definitions(self, node, def_type: str) -> List[Tuple]:
+        """
+        Return child definitions for container nodes (e.g., methods inside a class).
+        Language-specific chunkers override this as needed. Defaults to no children.
+        """
+        return []
+
+    def _build_definition_skeleton(
+        self, node, def_type: str, code_content: str
+    ) -> Optional[str]:
+        """
+        Build a skeleton string for a single definition. Container nodes append child signatures.
+        """
+        signature = self._extract_signature_text(node, def_type, code_content)
+        if not signature:
+            return None
+
+        child_defs = self._get_child_definitions(node, def_type)
+        if not child_defs:
+            return signature
+
+        lines = [signature]
+        for child_node, _, child_type in child_defs:
+            child_signature = self._extract_signature_text(
+                child_node, child_type, code_content
+            )
+            if child_signature:
+                indented = "\n".join(
+                    f"    {line}" for line in child_signature.splitlines()
+                )
+                lines.append(indented)
+        return "\n".join(lines)
+
+    def _build_file_skeleton(self, definitions: List[Tuple], code_content: str) -> str:
+        """
+        Build a skeleton for a file chunk: list top-level definitions (exclude methods).
+        """
+        entries: List[str] = []
+        for node, _, def_type in definitions:
+            if def_type == "method":
+                continue
+            skeleton = self._build_definition_skeleton(node, def_type, code_content)
+            if skeleton:
+                entries.append(skeleton)
+        return "\n".join(entries)
 
     def _split_by_max_lines(
         self,
@@ -211,6 +327,8 @@ class BaseCodeChunker(ABC):
         definitions: List[Tuple],
         file_path: str,
         path_for_node_id: str,
+        code_content: str,
+        skeleton_mode: bool = False,
     ) -> List[CodeChunk]:
         """
         Generate code chunks from the file content and AST definitions.
@@ -220,6 +338,8 @@ class BaseCodeChunker(ABC):
             definitions: List of (node, name, type) tuples
             file_path: Path to the source file
             path_for_node_id: Path to use for node_id generation
+            code_content: Raw file content for signature extraction
+            skeleton_mode: When True, emit skeletonized content
 
         Returns:
             List of CodeChunk objects
@@ -251,17 +371,32 @@ class BaseCodeChunker(ABC):
             # Create chunk for the function/class definition
             # Generate node_id in graph format: file_path:symbol_name
             node_id = self._generate_node_id(path_for_node_id, name, def_type)
-            chunks.extend(
-                self._split_by_max_lines(
-                    lines=lines,
-                    start_line=start_line,
-                    end_line=end_line,
-                    chunk_type=def_type,
-                    name=name,
-                    file_path=file_path,
-                    node_id=node_id,
+            if skeleton_mode:
+                skeleton = self._build_definition_skeleton(node, def_type, code_content)
+                if skeleton:
+                    chunks.append(
+                        CodeChunk(
+                            skeleton,
+                            start_line,
+                            end_line,
+                            def_type,
+                            name,
+                            file_path,
+                            node_id,
+                        )
+                    )
+            else:
+                chunks.extend(
+                    self._split_by_max_lines(
+                        lines=lines,
+                        start_line=start_line,
+                        end_line=end_line,
+                        chunk_type=def_type,
+                        name=name,
+                        file_path=file_path,
+                        node_id=node_id,
+                    )
                 )
-            )
 
             current_line = end_line + 1
 
