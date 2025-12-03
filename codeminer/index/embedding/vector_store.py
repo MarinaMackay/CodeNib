@@ -450,8 +450,8 @@ class CodeVectorStore:
 
         # Save L0 vector store
         l0_path = save_path / "l0"
-        l0_path.mkdir(parents=True, exist_ok=True)
         if self.l0_vector_store is not None and self.l0_documents:
+            l0_path.mkdir(parents=True, exist_ok=True)
             index_name = f"index_{model_suffix}"
             self.l0_vector_store.save_local(str(l0_path), index_name=index_name)
             # Save L0 documents
