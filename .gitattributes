@@ -1,0 +1,35 @@
+# Set sane defaults; normalize text with LF checkout unless specified otherwise.
+* text=auto
+
+# Common text files (force LF on checkout).
+*.py text eol=lf
+*.pyi text eol=lf
+*.sh text eol=lf
+*.bash text eol=lf
+*.ps1 text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+*.rst text eol=lf
+*.csv text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+*.proto text eol=lf
+*.ipynb text eol=lf -diff
+
+# Windows scripts (if any) keep CRLF.
+*.bat text eol=crlf
+
+# Binary assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.svg binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
