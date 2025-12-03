@@ -28,6 +28,14 @@ repos:
       - id: check-toml
         name: (TOML) Check syntax
 
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.8
+    hooks:
+      - id: clang-format
+        name: (C/C++) Format with clang-format
+        args: ["-style=file"]
+        files: "\\.(c|cc|cpp|cxx|cu|cuh|h|hh|hpp|hxx)$"
+
   - repo: https://github.com/psf/black
     rev: 24.8.0
     hooks:
@@ -45,4 +53,3 @@ repos:
     hooks:
       - id: flake8
         additional_dependencies: [flake8-bugbear]
-        args: ["--max-line-length=88", "--extend-ignore=E203,W503,E501,F541"]
