@@ -55,3 +55,18 @@ exclude = ["eval*"]  # exclude packages matching these glob patterns
 
 [tool.setuptools.package-data]
 "codeminer.scip_interface" = ["*.proto", "*.yml", "*.sh", "README.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+norecursedirs = [
+    "third_party",
+    ".git",
+    ".cache",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".venv",
+    "venv",
+    "env",
+    "build",
+    "dist",
+]
