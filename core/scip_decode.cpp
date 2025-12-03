@@ -425,10 +425,7 @@ SCIPGraphDecoder::Subgraph SCIPGraphDecoder::process_document(const std::string&
 }
 
 void SCIPGraphDecoder::process_occurrence(const std::string& occurrence_block, SubgraphBuilder& builder) const {
-    if (occurrence_block.find("local") != std::string::npos) {
-        log_debug("Skipping local occurrence");
-        return;
-    }
+    // Skip stdlib symbols
     if (occurrence_block.find("python-stdlib") != std::string::npos) {
         log_debug("Skipping stdlib occurrence");
         return;
@@ -448,6 +445,12 @@ void SCIPGraphDecoder::process_occurrence(const std::string& occurrence_block, S
     std::string symbol;
     if (!re2::RE2::PartialMatch(occurrence_block, symbol_regex, &symbol)) {
         log_debug("Occurrence missing symbol");
+        return;
+    }
+
+    // Skip local symbols (scip represents them as 'local <id>')
+    if (symbol.rfind("local ", 0) == 0) {
+        log_debug("Skipping local symbol");
         return;
     }
 
