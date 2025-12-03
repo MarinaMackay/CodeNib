@@ -1,26 +1,10 @@
 #!/usr/bin/env python3
 """
-This script builds and caches embedding indices for all SWE-bench Lite instances.
+This script builds and caches hierarchical embedding indices for all SWE-bench Lite instances.
 Each instance's embedding will be stored in /mnt/data/codeminer/{instance_id}/
 
-Usage:
-    # Build embeddings for all SWE-bench Lite instances
-    python scripts/build_embeddings.py
-
-    # Build with custom embedding model
-    python scripts/build_embeddings.py --embedding-model nomic-ai/CodeRankEmbed
-
-    # Build with custom index metric (ip: inner product, l2: L2 distance)
-    python scripts/build_embeddings.py --index-metric l2
-
-    # Build with filter (for testing)
-    python scripts/build_embeddings.py --filter-instance "^(astropy__astropy-12907)$"
-
-    # Force rebuild even if embeddings already exist
-    python scripts/build_embeddings.py --force-rebuild
-
-    # Enable max lines splitting (disabled by default to preserve function integrity)
-    python scripts/build_embeddings.py --max-lines-per-chunk 300
+Test Usage:
+    python scripts/build_embeddings.py --filter-instance "^(astropy__astropy-6938)$" --force-rebuild
 """
 
 import argparse
@@ -47,7 +31,7 @@ sys.path.insert(0, str(project_root))
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Build embedding indices for instances",
+        description="Build hierarchical embedding indices for instances",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -123,7 +107,7 @@ def parse_args():
         "--max-lines-per-chunk",
         type=int,
         default=None,
-        help="Maximum lines per code chunk (default: None, no splitting to preserve function integrity)",
+        help="Maximum lines per L2 code chunk (default: None, no splitting to preserve function integrity)",
     )
 
     # Storage configuration
@@ -151,7 +135,7 @@ def parse_args():
 
 
 def build_embeddings(args):
-    """Build embedding indices for all SWE-bench Lite instances."""
+    """Build hierarchical embedding indices for all SWE-bench Lite instances."""
 
     # Prepare dataset args
     dataset_args = argparse.Namespace(
@@ -222,22 +206,39 @@ def build_embeddings(args):
                     f"⚠ Embedding already exists but force-rebuild is enabled, rebuilding..."
                 )
 
-            # [Main] Chunk the repository code
-            logger.info("Chunking repository code...")
-            with instance_profiler.section("chunk_repository"):
-                repo_cfg = RepoChunkingConfig(languages=list(args.languages))
-                code_chunker = CodeChunker(
+            # Shared repo config
+            repo_cfg = RepoChunkingConfig(languages=list(args.languages))
+
+            # [Main] Generate L0 chunks (file-level skeletons)
+            logger.info("Generating L0 chunks (file-level skeletons)...")
+            with instance_profiler.section("chunk_repository_l0"):
+                l0_chunker = CodeChunker(
+                    language=args.languages[0],
+                    repo_config=repo_cfg,
+                    max_lines_per_chunk=None,  # No splitting for skeletons
+                    chunk_depth=0,  # File-level
+                    skeleton_mode=True,  # Skeleton only (signatures)
+                )
+                l0_chunks = l0_chunker.chunk_repository(repo_path=repo_path)
+            logger.info(f"Generated {len(l0_chunks)} L0 chunks (file skeletons)")
+
+            # [Main] Generate L2 chunks (function/method-level)
+            logger.info("Generating L2 chunks (function/method-level)...")
+            with instance_profiler.section("chunk_repository_l2"):
+                l2_chunker = CodeChunker(
                     language=args.languages[0],
                     repo_config=repo_cfg,
                     max_lines_per_chunk=args.max_lines_per_chunk,
+                    chunk_depth=2,  # Method-level
+                    l2_level_exclusive=True,  # Only functions/methods, no classes
+                    skeleton_mode=False,  # Full code
                 )
-                chunks = code_chunker.chunk_repository(repo_path=repo_path)
+                l2_chunks = l2_chunker.chunk_repository(repo_path=repo_path)
+            logger.info(f"Generated {len(l2_chunks)} L2 chunks (functions/methods)")
 
-            if not chunks:
+            if not l0_chunks and not l2_chunks:
                 logger.warning(f"No code chunks generated from repository, skipping...")
                 continue
-
-            logger.info(f"Generated {len(chunks)} code chunks")
 
             # [Main] Create vector store
             logger.info("Creating vector store...")
@@ -259,11 +260,19 @@ def build_embeddings(args):
                     **embedding_kwargs,
                 )
 
-            # [Main] Add chunks to vector store
-            logger.info("Adding chunks to vector store...")
-            with instance_profiler.section("add_chunks"):
-                chunks_for_indexing = [chunk._asdict() for chunk in chunks]
-                vector_store.add_code_chunks(chunks_for_indexing)
+            # [Main] Add L0 chunks to vector store
+            if l0_chunks:
+                logger.info("Adding L0 chunks to vector store...")
+                with instance_profiler.section("add_chunks_l0"):
+                    l0_chunks_for_indexing = [chunk._asdict() for chunk in l0_chunks]
+                    vector_store.add_code_chunks(l0_chunks_for_indexing, level="l0")
+
+            # [Main] Add L2 chunks to vector store
+            if l2_chunks:
+                logger.info("Adding L2 chunks to vector store...")
+                with instance_profiler.section("add_chunks_l2"):
+                    l2_chunks_for_indexing = [chunk._asdict() for chunk in l2_chunks]
+                    vector_store.add_code_chunks(l2_chunks_for_indexing, level="l2")
 
             # Save vector store
             logger.info("Saving vector store...")
@@ -292,7 +301,9 @@ def build_embeddings(args):
                     "instance_id": instance_id,
                     "repo": instance.get("repo", "unknown"),
                     "base_commit": instance.get("base_commit", "unknown"),
-                    "total_chunks": len(chunks),
+                    "l0_chunks": len(l0_chunks),
+                    "l2_chunks": len(l2_chunks),
+                    "total_chunks": len(l0_chunks) + len(l2_chunks),
                     "embedding_model": args.embedding_model,
                     "embedding_dimension": args.embedding_dimension,
                     "total_duration": sum(
@@ -307,8 +318,15 @@ def build_embeddings(args):
                 profile_file.write_text(json.dumps(profile_payload, indent=2))
                 logger.info(f"Saved profiler results to {profile_file}")
 
-            logger.info(f"✓ Successfully built embedding for {instance_id}")
-            logger.info(f"  - Total chunks: {len(vector_store.documents)}")
+            logger.info(
+                f"✓ Successfully built hierarchical embedding for {instance_id}"
+            )
+            logger.info(
+                f"  - L0 chunks (file skeletons): {len(vector_store.l0_documents)}"
+            )
+            logger.info(
+                f"  - L2 chunks (functions/methods): {len(vector_store.l2_documents)}"
+            )
             logger.info(f"  - Saved to: {instance_final_dir}")
 
         except Exception as e:
@@ -319,7 +337,7 @@ def build_embeddings(args):
             continue
 
     logger.info(f"\n{'='*80}")
-    logger.info("Embedding build complete!")
+    logger.info("Hierarchical embedding build complete!")
     logger.info(f"Processed {len(dataset_instances)} instance(s)")
     if args.profile_dir:
         logger.info(f"Profile logs stored in: {profile_output_dir}")
