@@ -475,8 +475,8 @@ class CodeVectorStore:
 
         # Save L2 vector store
         l2_path = save_path / "l2"
-        l2_path.mkdir(parents=True, exist_ok=True)
         if self.l2_vector_store is not None and self.l2_documents:
+            l2_path.mkdir(parents=True, exist_ok=True)
             index_name = f"index_{model_suffix}"
             self.l2_vector_store.save_local(str(l2_path), index_name=index_name)
             # Save L2 documents
