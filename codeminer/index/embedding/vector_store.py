@@ -8,7 +8,7 @@ import json
 import pickle
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import faiss
 from langchain_community.docstore import InMemoryDocstore
@@ -24,11 +24,17 @@ from ...types import NodeInfo
 
 logger = get_logger(__name__)
 
+Level = Literal["l0", "l2"]
+
 
 class CodeVectorStore:
     """
     Vector store for code embeddings using FAISS and LangChain.
     Provides semantic search capabilities over code chunks.
+
+    Supports hierarchical indexing:
+    - L0: File-level skeletons
+    - L2: Function/method-level chunks for fine-grained retrieval (default)
     """
 
     def __init__(
@@ -73,22 +79,39 @@ class CodeVectorStore:
 
         # Initialize embedding model
         self.embedding = self._initialize_embedding_model(**embedding_kwargs)
-
         self.dimension = self._infer_embedding_dimension(dimension)
 
-        # Initialize vector store with flat index
-        self.index = self._build_faiss_index()
-        self.vector_store = FAISS(
+        # Initialize L0 vector store (file-level skeletons)
+        self.l0_index = self._build_faiss_index()
+        self.l0_vector_store = FAISS(
             embedding_function=self.embedding,
-            index=self.index,
+            index=self.l0_index,
             docstore=InMemoryDocstore(),
             index_to_docstore_id={},
         )
-        self.documents = []
+        self.l0_documents: List[Document] = []
 
+        # Initialize L2 vector store (function/method-level) - default
+        self.l2_index = self._build_faiss_index()
+        self.l2_vector_store = FAISS(
+            embedding_function=self.embedding,
+            index=self.l2_index,
+            docstore=InMemoryDocstore(),
+            index_to_docstore_id={},
+        )
+        self.l2_documents: List[Document] = []
         logger.info(
             f"Initialized CodeVectorStore with {embedding_provider}:{embedding_model}"
         )
+
+    def _get_store_and_docs(self, level: Level) -> tuple[FAISS, List[Document]]:
+        """Get the vector store and documents list for the specified level."""
+        if level == "l0":
+            return self.l0_vector_store, self.l0_documents
+        elif level == "l2":
+            return self.l2_vector_store, self.l2_documents
+        else:
+            raise ValueError(f"Invalid level: {level}. Must be 'l0' or 'l2'.")
 
     def _initialize_embedding_model(self, **kwargs) -> Embeddings:
         """Initialize the embedding model based on provider."""
@@ -161,18 +184,22 @@ class CodeVectorStore:
                 f"Unsupported index_metric: {self.index_metric}. Must be 'ip' or 'l2'."
             )
 
-    def add_code_chunks(self, code_chunks: List[Dict[str, Any]]) -> None:
+    def add_code_chunks(
+        self, code_chunks: List[Dict[str, Any]], level: Level = "l2"
+    ) -> None:
         """
         Add code chunks to the vector store.
 
         Args:
             code_chunks: List of code chunk dictionaries with content and metadata
+            level: Index level to add chunks to ("l0" for file skeletons, "l2" for functions/methods)
         """
         if not code_chunks:
             logger.warning("No code chunks provided")
             return
 
-        logger.info(f"Adding {len(code_chunks)} code chunks to vector store")
+        vector_store, documents_list = self._get_store_and_docs(level)
+        logger.info(f"Adding {len(code_chunks)} code chunks to {level} vector store")
 
         # Convert chunks to Document objects
         documents = []
@@ -180,13 +207,14 @@ class CodeVectorStore:
             # Extract content and metadata
             content = chunk.get("content", "")
             metadata = {
-                "chunk_id": len(self.documents) + i,
+                "chunk_id": len(documents_list) + i,
                 "chunk_type": chunk.get("chunk_type", "unknown"),
                 "name": chunk.get("name", f"chunk_{i}"),
                 "file": chunk.get("file", ""),
                 "start_line": chunk.get("start_line", 0),
                 "end_line": chunk.get("end_line", 0),
                 "node_id": chunk.get("node_id", ""),
+                "level": level,  # Track which level this chunk belongs to
             }
 
             # Add any additional metadata
@@ -199,24 +227,29 @@ class CodeVectorStore:
             documents.append(document)
 
         # Store documents
-        self.documents.extend(documents)
+        documents_list.extend(documents)
 
         with self._profile_section(
-            "vector_store_add_documents",
-            {"num_documents": len(documents)},
+            f"vector_store_add_documents_{level}",
+            {"num_documents": len(documents), "level": level},
         ):
-            self.vector_store.add_documents(
+            vector_store.add_documents(
                 documents
             )  # this part will majorly blocked by embedding time
 
-        logger.info(f"Successfully added {len(documents)} documents to vector store")
+        logger.info(
+            f"Successfully added {len(documents)} documents to {level} vector store"
+        )
 
-    def add_nodes_with_content(self, nodes: List[NodeInfo]) -> None:
+    def add_nodes_with_content(
+        self, nodes: List[NodeInfo], level: Level = "l2"
+    ) -> None:
         """
         Add NodeInfo objects (with content) to the vector store.
 
         Args:
             nodes: List of NodeInfo objects
+            level: Index level to add nodes to ("l0" or "l2")
         """
         chunks = []
         for node in nodes:
@@ -230,10 +263,14 @@ class CodeVectorStore:
             }
             chunks.append(chunk)
 
-        self.add_code_chunks(chunks)
+        self.add_code_chunks(chunks, level=level)
 
     def search(
-        self, query: str, top_k: int = 10, score_threshold: Optional[float] = None
+        self,
+        query: str,
+        top_k: int = 10,
+        score_threshold: Optional[float] = None,
+        level: Level = "l2",
     ) -> List[NodeInfo]:
         """
         Search for similar code chunks using semantic similarity.
@@ -242,20 +279,21 @@ class CodeVectorStore:
             query: Search query text
             top_k: Number of top results to return
             score_threshold: Minimum similarity score threshold
+            level: Index level to search ("l0" for file skeletons, "l2" for functions/methods)
 
         Returns:
             List of NodeInfo objects with scores populated
         """
-        if self.vector_store is None:
-            logger.warning("No vector store available. Add code chunks first.")
+        vector_store, _ = self._get_store_and_docs(level)
+
+        if vector_store is None:
+            logger.warning(f"No {level} vector store available. Add code chunks first.")
             return []
 
-        logger.debug(f"Searching for: {query[:100]}...")
+        logger.debug(f"Searching {level} for: {query[:100]}...")
 
         # Perform similarity search with scores
-        docs_with_scores = self.vector_store.similarity_search_with_score(
-            query, k=top_k
-        )
+        docs_with_scores = vector_store.similarity_search_with_score(query, k=top_k)
 
         # Convert to NodeInfo objects
         results = []
@@ -281,11 +319,15 @@ class CodeVectorStore:
             )
             results.append(node_with_score)
 
-        logger.debug(f"Found {len(results)} results")
+        logger.debug(f"Found {len(results)} results in {level}")
         return results
 
     def search_with_content(
-        self, query: str, top_k: int = 10, score_threshold: Optional[float] = None
+        self,
+        query: str,
+        top_k: int = 10,
+        score_threshold: Optional[float] = None,
+        level: Level = "l2",
     ) -> List[NodeInfo]:
         """
         Search and return results with content included.
@@ -294,18 +336,19 @@ class CodeVectorStore:
             query: Search query text
             top_k: Number of top results to return
             score_threshold: Minimum similarity score threshold
+            level: Index level to search ("l0" for file skeletons, "l2" for functions/methods)
 
         Returns:
             List of NodeInfo objects with content populated
         """
-        if self.vector_store is None:
-            logger.warning("No vector store available. Add code chunks first.")
+        vector_store, _ = self._get_store_and_docs(level)
+
+        if vector_store is None:
+            logger.warning(f"No {level} vector store available. Add code chunks first.")
             return []
 
         # Perform similarity search with scores
-        docs_with_scores = self.vector_store.similarity_search_with_score(
-            query, k=top_k
-        )
+        docs_with_scores = vector_store.similarity_search_with_score(query, k=top_k)
 
         # Convert to NodeInfo objects
         results = []
@@ -334,6 +377,59 @@ class CodeVectorStore:
 
         return results
 
+    def hierarchical_search(
+        self,
+        query: str,
+        l0_top_k: int = 5,
+        l2_top_k: int = 10,
+        l0_score_threshold: Optional[float] = None,
+        l2_score_threshold: Optional[float] = None,
+        filter_l2_by_l0: bool = True,
+    ) -> Dict[str, List[NodeInfo]]:
+        """
+        Note: This method is implemented by Claude and is just for future reference.
+        Perform hierarchical search: first L0 (files), then L2 (functions).
+
+        This implements a coarse-to-fine retrieval strategy:
+        1. Search L0 to find relevant files based on their skeletons
+        2. Search L2 for specific functions/methods
+        3. Optionally filter L2 results to only include those from L0 files
+
+        Args:
+            query: Search query text
+            l0_top_k: Number of top L0 results (files)
+            l2_top_k: Number of top L2 results (functions/methods)
+            l0_score_threshold: Score threshold for L0 results
+            l2_score_threshold: Score threshold for L2 results
+            filter_l2_by_l0: If True, only return L2 results from files found in L0
+
+        Returns:
+            Dict with 'l0' and 'l2' keys containing search results
+        """
+        # Step 1: Search L0 to find relevant files
+        l0_results = self.search(
+            query, top_k=l0_top_k, score_threshold=l0_score_threshold, level="l0"
+        )
+
+        # Step 2: Search L2 for functions/methods (fetch more if filtering)
+        l2_fetch_k = l2_top_k * 3 if filter_l2_by_l0 else l2_top_k
+        l2_results = self.search(
+            query, top_k=l2_fetch_k, score_threshold=l2_score_threshold, level="l2"
+        )
+
+        # Step 3: Optionally filter L2 results by L0 files
+        if filter_l2_by_l0 and l0_results:
+            l0_files = {result.file for result in l0_results}
+            l2_results = [r for r in l2_results if r.file in l0_files]
+
+        # Limit L2 results to top_k
+        l2_results = l2_results[:l2_top_k]
+
+        return {
+            "l0": l0_results,
+            "l2": l2_results,
+        }
+
     def save(self, path: Optional[str] = None) -> None:
         """
         Save the vector store to disk.
@@ -351,17 +447,58 @@ class CodeVectorStore:
         logger.info(f"Saving vector store to {save_path}")
 
         model_suffix = self.embedding_model.replace("/", "__")
-        # Save FAISS vector store (LangChain format)
-        if self.vector_store is not None:
+
+        # Save L0 vector store
+        l0_path = save_path / "l0"
+        if self.l0_vector_store is not None and self.l0_documents:
+            l0_path.mkdir(parents=True, exist_ok=True)
             index_name = f"index_{model_suffix}"
-            self.vector_store.save_local(str(save_path), index_name=index_name)
+            self.l0_vector_store.save_local(str(l0_path), index_name=index_name)
+            # Save L0 documents
+            docs_path = l0_path / f"documents_{model_suffix}.pkl"
+            with open(docs_path, "wb") as f:
+                pickle.dump(self.l0_documents, f)
+            # Save L0 config
+            config_path = l0_path / f"config_{model_suffix}.json"
+            config = {
+                "embedding_model": self.embedding_model,
+                "embedding_provider": self.embedding_provider,
+                "dimension": self.dimension,
+                "index_type": self.index_type,
+                "index_metric": self.index_metric,
+                "level": "l0",
+                "num_documents": len(self.l0_documents),
+            }
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=2)
+            logger.info(f"Saved L0 store with {len(self.l0_documents)} documents")
 
-        # Save documents
-        docs_path = save_path / f"documents_{model_suffix}.pkl"
-        with open(docs_path, "wb") as f:
-            pickle.dump(self.documents, f)
+        # Save L2 vector store
+        l2_path = save_path / "l2"
+        if self.l2_vector_store is not None and self.l2_documents:
+            l2_path.mkdir(parents=True, exist_ok=True)
+            index_name = f"index_{model_suffix}"
+            self.l2_vector_store.save_local(str(l2_path), index_name=index_name)
+            # Save L2 documents
+            docs_path = l2_path / f"documents_{model_suffix}.pkl"
+            with open(docs_path, "wb") as f:
+                pickle.dump(self.l2_documents, f)
+            # Save L2 config
+            config_path = l2_path / f"config_{model_suffix}.json"
+            config = {
+                "embedding_model": self.embedding_model,
+                "embedding_provider": self.embedding_provider,
+                "dimension": self.dimension,
+                "index_type": self.index_type,
+                "index_metric": self.index_metric,
+                "level": "l2",
+                "num_documents": len(self.l2_documents),
+            }
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=2)
+            logger.info(f"Saved L2 store with {len(self.l2_documents)} documents")
 
-        # Save configuration
+        # Save top-level configuration
         config_path = save_path / f"config_{model_suffix}.json"
         config = {
             "embedding_model": self.embedding_model,
@@ -369,6 +506,8 @@ class CodeVectorStore:
             "dimension": self.dimension,
             "index_type": self.index_type,
             "index_metric": self.index_metric,
+            "l0_documents": len(self.l0_documents),
+            "l2_documents": len(self.l2_documents),
         }
         with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
@@ -393,9 +532,9 @@ class CodeVectorStore:
         logger.info(f"Loading vector store from {load_path}")
 
         model_suffix = self.embedding_model.replace("/", "__")
-        # Load configuration
+
+        # Load top-level configuration
         config_path = load_path / f"config_{model_suffix}.json"
-        # Fallback to old format if model-specific config doesn't exist
         if not config_path.exists():
             config_path = load_path / "config.json"
 
@@ -409,13 +548,6 @@ class CodeVectorStore:
                     f"Dimension mismatch: expected {self.dimension}, "
                     f"got {config.get('dimension')}"
                 )
-            saved_index_type = config.get("index_type")
-            if saved_index_type and saved_index_type != self.index_type:
-                logger.warning(
-                    "Index type mismatch: expected %s, got %s",
-                    self.index_type,
-                    saved_index_type,
-                )
             saved_metric = config.get("index_metric")
             if saved_metric and saved_metric != self.index_metric:
                 logger.warning(
@@ -425,38 +557,50 @@ class CodeVectorStore:
                 )
                 self.index_metric = saved_metric
 
-        # Load FAISS vector store (LangChain format)
-        try:
-            index_name = f"index_{model_suffix}"
-            self.vector_store = FAISS.load_local(
-                str(load_path),
-                self.embedding,
-                index_name=index_name,
-                allow_dangerous_deserialization=True,
-            )
-        except Exception as e:
-            # Fallback to old format if model-specific config doesn't exist
-            logger.warning(f"Could not load FAISS vector store with model suffix: {e}")
+        # Load L0 vector store
+        l0_path = load_path / "l0"
+        if l0_path.exists():
             try:
-                self.vector_store = FAISS.load_local(
-                    str(load_path), self.embedding, allow_dangerous_deserialization=True
+                index_name = f"index_{model_suffix}"
+                self.l0_vector_store = FAISS.load_local(
+                    str(l0_path),
+                    self.embedding,
+                    index_name=index_name,
+                    allow_dangerous_deserialization=True,
                 )
-            except Exception as e2:
-                logger.warning(f"Could not load FAISS vector store: {e2}")
-                self.vector_store = None
+                # Load L0 documents
+                docs_path = l0_path / f"documents_{model_suffix}.pkl"
+                if docs_path.exists():
+                    with open(docs_path, "rb") as f:
+                        self.l0_documents = pickle.load(f)
+                logger.info(f"Loaded L0 store with {len(self.l0_documents)} documents")
+            except Exception as e:
+                logger.warning(f"Could not load L0 vector store: {e}")
 
-        # Load documents
-        docs_path = load_path / f"documents_{model_suffix}.pkl"
-        # Fallback to old format if model-specific documents don't exist
-        if not docs_path.exists():
-            docs_path = load_path / "documents.pkl"
+        # Load L2 vector store
+        l2_path = load_path / "l2"
+        if l2_path.exists():
+            try:
+                index_name = f"index_{model_suffix}"
+                self.l2_vector_store = FAISS.load_local(
+                    str(l2_path),
+                    self.embedding,
+                    index_name=index_name,
+                    allow_dangerous_deserialization=True,
+                )
+                # Load L2 documents
+                docs_path = l2_path / f"documents_{model_suffix}.pkl"
+                if docs_path.exists():
+                    with open(docs_path, "rb") as f:
+                        self.l2_documents = pickle.load(f)
+                logger.info(f"Loaded L2 store with {len(self.l2_documents)} documents")
+            except Exception as e:
+                logger.warning(f"Could not load L2 vector store: {e}")
 
-        if docs_path.exists():
-            with open(docs_path, "rb") as f:
-                self.documents = pickle.load(f)
-
+        total_docs = len(self.l0_documents) + len(self.l2_documents)
         logger.info(
-            f"Vector store loaded successfully with {len(self.documents)} documents"
+            f"Vector store loaded successfully with {total_docs} total documents "
+            f"(L0: {len(self.l0_documents)}, L2: {len(self.l2_documents)})"
         )
 
     def get_stats(self) -> Dict[str, Any]:
@@ -467,37 +611,63 @@ class CodeVectorStore:
             Dictionary with store statistics
         """
         stats = {
-            "total_documents": len(self.documents),
             "embedding_model": self.embedding_model,
             "embedding_provider": self.embedding_provider,
             "dimension": self.dimension,
             "index_type": self.index_type,
             "index_metric": self.index_metric,
+            "l0_documents": len(self.l0_documents),
+            "l2_documents": len(self.l2_documents),
+            "total_documents": len(self.l0_documents) + len(self.l2_documents),
         }
 
-        if self.documents:
-            # Analyze chunk types
-            chunk_types = {}
-            for doc in self.documents:
+        # Analyze L0 chunk types
+        if self.l0_documents:
+            l0_chunk_types = {}
+            for doc in self.l0_documents:
                 chunk_type = doc.metadata.get("chunk_type", "unknown")
-                chunk_types[chunk_type] = chunk_types.get(chunk_type, 0) + 1
-            stats["chunk_types"] = chunk_types
+                l0_chunk_types[chunk_type] = l0_chunk_types.get(chunk_type, 0) + 1
+            stats["l0_chunk_types"] = l0_chunk_types
+
+        # Analyze L2 chunk types
+        if self.l2_documents:
+            l2_chunk_types = {}
+            for doc in self.l2_documents:
+                chunk_type = doc.metadata.get("chunk_type", "unknown")
+                l2_chunk_types[chunk_type] = l2_chunk_types.get(chunk_type, 0) + 1
+            stats["l2_chunk_types"] = l2_chunk_types
 
         return stats
 
-    def clear(self) -> None:
-        """Clear all data from the vector store."""
-        logger.info("Clearing vector store")
+    def clear(self, level: Optional[Level] = None) -> None:
+        """
+        Clear data from the vector store.
 
-        # Reinitialize with empty index
-        self.index = self._build_faiss_index()
-        self.vector_store = FAISS(
-            embedding_function=self.embedding,
-            index=self.index,
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-        )
-        self.documents = []
+        Args:
+            level: If specified, only clear that level ("l0" or "l2").
+                   If None, clear both levels.
+        """
+        if level is None or level == "l0":
+            logger.info("Clearing L0 vector store")
+            self.l0_index = self._build_faiss_index()
+            self.l0_vector_store = FAISS(
+                embedding_function=self.embedding,
+                index=self.l0_index,
+                docstore=InMemoryDocstore(),
+                index_to_docstore_id={},
+            )
+            self.l0_documents = []
+
+        if level is None or level == "l2":
+            logger.info("Clearing L2 vector store")
+            self.l2_index = self._build_faiss_index()
+            self.l2_vector_store = FAISS(
+                embedding_function=self.embedding,
+                index=self.l2_index,
+                docstore=InMemoryDocstore(),
+                index_to_docstore_id={},
+            )
+            self.l2_documents = []
 
         logger.info("Vector store cleared")
 
