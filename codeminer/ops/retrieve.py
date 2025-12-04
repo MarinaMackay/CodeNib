@@ -23,6 +23,7 @@ class RetrieveContext:
     vector_store: Optional[CodeVectorStore] = None
     regex_index: Optional[RegexNodeIndex] = None
     default_top_k: int = 10
+    default_level: str = "l2"  # "l0" (file skeletons) or "l2" (functions/methods)
 
 
 def register_retrieve_ops(engine: ExecutionEngine, context: RetrieveContext) -> None:
@@ -80,18 +81,27 @@ def _vector_kernel(context: RetrieveContext):
         top_k = _resolve_top_k(node.params, context.default_top_k)
         score_threshold = node.params.get("score_threshold")
         include_content = bool(node.params.get("return_content", False))
+        # Support hierarchical retrieval level (l0 = file skeletons, l2 = functions/methods)
+        level = node.params.get("level", context.default_level)
 
         logger.debug(
             "Executing vector retrieval",
-            extra={"query": query, "k": top_k, "score_threshold": score_threshold},
+            extra={
+                "query": query,
+                "k": top_k,
+                "level": level,
+                "score_threshold": score_threshold,
+            },
         )
 
-        scored = store.search(query=query, top_k=top_k, score_threshold=score_threshold)
+        scored = store.search(
+            query=query, top_k=top_k, score_threshold=score_threshold, level=level
+        )
 
         content_map: Dict[Tuple[str, str, Optional[int], Optional[int]], str] = {}
         if include_content:
             with_content = store.search_with_content(
-                query=query, top_k=top_k, score_threshold=score_threshold
+                query=query, top_k=top_k, score_threshold=score_threshold, level=level
             )
             for item in with_content:
                 data = _dump_model(item)
@@ -182,7 +192,7 @@ def _hybrid_kernel():
             Tuple[str, str, Optional[int], Optional[int]], QueriedNode
         ] = {}
 
-        for weight, results in zip(weights, branches):
+        for weight, results in zip(weights, branches, strict=True):
             for rank, item in enumerate(results):
                 base_score = item.score or 0.0
                 if base_score == 0.0:

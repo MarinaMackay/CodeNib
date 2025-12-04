@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from ..code_chunker import CodeChunker
+from ..code_chunker import CodeChunker, RepoChunkingConfig
 from ..index.embedding import CodeVectorStore
 from ..index.sparse_idx.bm25_index import BM25CodeIndexer
 from ..llm.llm_config import LLMConfig, LLMProvider
@@ -35,7 +35,7 @@ class RetrieveStageConfig:
     def __post_init__(self) -> None:
         if self.engine not in SUPPORTED_ENGINES:
             raise ValueError(
-                f"Unsupported retrieval engine '{self.engine}'. "
+                f"Unsupported retrieval engine {self.engine!r}. "
                 f"Expected one of: {', '.join(sorted(SUPPORTED_ENGINES))}"
             )
         if self.weight <= 0:
@@ -56,7 +56,7 @@ def build_retrieve_plan(mode: str = "dense") -> List[RetrieveStageConfig]:
             RetrieveStageConfig(engine="sparse", weight=0.4, top_k=RETRIEVAL_TOP_K),
         ]
     raise ValueError(
-        f"Unknown retrieval mode '{mode}'. Choose from: dense, sparse, hybrid."
+        f"Unknown retrieval mode {mode!r}. Choose from: dense, sparse, hybrid."
     )
 
 
@@ -93,6 +93,7 @@ class RetrieveRerankPipeline:
         *,
         retrieval_plan: Optional[Sequence[RetrieveStageConfig]] = None,
         retrieval_mode: str = "dense",
+        retrieval_level: str = "l2",
         embedding_model: str = "nomic-ai/CodeRankEmbed",
         embedding_provider: str = "huggingface",
         embedding_dimension: int = 768,
@@ -115,6 +116,12 @@ class RetrieveRerankPipeline:
         self.max_lines_per_chunk = max_lines_per_chunk
         self._chunks = None
         self.enable_rerank = enable_rerank
+        # Retrieval level: "l0" (file skeletons) or "l2" (functions/methods)
+        if retrieval_level not in ("l0", "l2"):
+            raise ValueError(
+                f"Invalid retrieval_level {retrieval_level!r}. Must be 'l0' or 'l2'."
+            )
+        self.retrieval_level = retrieval_level
 
         plan = (
             list(retrieval_plan)
@@ -176,6 +183,7 @@ class RetrieveRerankPipeline:
             vector_store=self.vector_store,
             regex_index=None,
             default_top_k=self._default_stage_top_k,
+            default_level=self.retrieval_level,
         )
         register_retrieve_ops(self.engine, self.retrieve_context)
 
@@ -195,6 +203,7 @@ class RetrieveRerankPipeline:
                 "repo": self.repo_path,
                 "index_path": str(self.index_path),
                 "retrieval_plan": [stage.engine for stage in self.retrieve_plan],
+                "retrieval_level": self.retrieval_level,
                 "dense_index": bool(self.vector_store),
                 "sparse_index": bool(self.bm25_index),
                 "rerank_model": rerank_model if self.enable_rerank else "disabled",
@@ -271,23 +280,64 @@ class RetrieveRerankPipeline:
             **embedding_kwargs,
         )
         model_suffix = embedding_model.replace("/", "__")
+        # Check for hierarchical index structure (l0/ and l2/ directories)
         config_file = self.index_path / f"config_{model_suffix}.json"
+        l0_path = self.index_path / "l0"
+        l2_path = self.index_path / "l2"
 
-        if config_file.exists():
+        # Load if either top-level config exists or hierarchical structure exists
+        if config_file.exists() or (l0_path.exists() and l2_path.exists()):
             logger.info(
-                "Loading vector store from cache.",
+                "Loading hierarchical vector store from cache.",
                 extra={"index_path": str(self.index_path)},
             )
             vector_store.load(str(self.index_path))
         else:
-            logger.info("Building vector store index.")
-            chunks = self._ensure_chunks()
-            chunks_for_indexing = [chunk._asdict() for chunk in chunks]
-            vector_store.add_code_chunks(chunks_for_indexing)
+            logger.info("Building hierarchical vector store index.")
+            # Build L0 and L2 chunks
+            repo_cfg = RepoChunkingConfig(languages=self.languages)
+
+            # L0 chunks (file-level skeletons)
+            l0_chunker = CodeChunker(
+                language=self.languages[0],
+                repo_config=repo_cfg,
+                max_lines_per_chunk=None,
+                chunk_depth=0,
+                skeleton_mode=True,
+            )
+            l0_chunks = l0_chunker.chunk_repository(repo_path=self.repo_path)
+
+            # L2 chunks (function/method-level)
+            l2_chunker = CodeChunker(
+                language=self.languages[0],
+                repo_config=repo_cfg,
+                max_lines_per_chunk=self.max_lines_per_chunk,
+                chunk_depth=2,
+                l2_level_exclusive=True,
+                skeleton_mode=False,
+            )
+            l2_chunks = l2_chunker.chunk_repository(repo_path=self.repo_path)
+
+            if not l0_chunks and not l2_chunks:
+                raise ValueError("No code chunks generated from repository.")
+
+            # Add L0 chunks
+            if l0_chunks:
+                l0_chunks_for_indexing = [chunk._asdict() for chunk in l0_chunks]
+                vector_store.add_code_chunks(l0_chunks_for_indexing, level="l0")
+
+            # Add L2 chunks
+            if l2_chunks:
+                l2_chunks_for_indexing = [chunk._asdict() for chunk in l2_chunks]
+                vector_store.add_code_chunks(l2_chunks_for_indexing, level="l2")
+
             vector_store.save(str(self.index_path))
             logger.info(
-                "Vector store built and cached.",
-                extra={"chunk_count": len(chunks_for_indexing)},
+                "Hierarchical vector store built and cached.",
+                extra={
+                    "l0_chunks": len(l0_chunks),
+                    "l2_chunks": len(l2_chunks),
+                },
             )
         return vector_store
 
@@ -378,4 +428,4 @@ class RetrieveRerankPipeline:
             return PhysicalOperator.FAISS_RETRIEVE.value
         if stage.engine == "sparse":
             return PhysicalOperator.BM25_TOPK.value
-        raise ValueError(f"Unsupported engine '{stage.engine}'.")
+        raise ValueError(f"Unsupported engine {stage.engine!r}.")

@@ -7,7 +7,7 @@ from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
 from ..graph.code_graph import CodeGraph
-from ..graph.transverse_graph import RepoEntitySearcher, traverse_tree_structure
+from ..graph.transverse_graph import traverse_tree_structure
 from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
 from ..log_utils import get_logger
 from ..scip_interface import SCIPIndexer
@@ -156,9 +156,6 @@ class AgentlessPipeline:
         if not self.code_graph:
             raise ValueError("Failed to build code graph")
 
-        # Initialize searcher
-        self.entity_searcher = RepoEntitySearcher(self.code_graph)
-
         # Initialize LLM
         llm_config = LLMConfig(
             model_name=llm_model,
@@ -242,14 +239,14 @@ class AgentlessPipeline:
             candidate_files = result.files
             logger.debug(f"[Stage 1] EXTRACTED CANDIDATE FILES: {candidate_files}")
         except Exception as e:
-            raise ValueError(f"Error in Stage 1: {e}")
+            raise ValueError(f"Error in Stage 1: {e}") from e
 
         if not candidate_files:
             raise ValueError("LLM did not return any file candidates")
 
         # Filter valid file nodes
         files = [
-            file for file in candidate_files if self.entity_searcher.has_node(file)
+            file for file in candidate_files if file in self.code_graph.name_to_vertex
         ]
 
         return files[: self.top_n_files]
@@ -269,7 +266,7 @@ class AgentlessPipeline:
         file_structures = []
         for file_path in file_paths:
             try:
-                if self.entity_searcher.has_node(file_path):
+                if file_path in self.code_graph.name_to_vertex:
                     structure = traverse_tree_structure(
                         code_graph=self.code_graph,
                         root=file_path,
@@ -283,7 +280,7 @@ class AgentlessPipeline:
                             f"### {file_path} ###\n```\n{structure}\n```\n"
                         )
             except Exception as e:
-                raise ValueError(f"Error processing file {file_path}: {e}")
+                raise ValueError(f"Error processing file {file_path}: {e}") from e
 
         if not file_structures:
             raise ValueError("No file structures to process")
@@ -301,7 +298,7 @@ class AgentlessPipeline:
             candidate_nodes = result.nodes
             logger.debug(f"[Stage 2] EXTRACTED CANDIDATE NODES: {candidate_nodes}")
         except Exception as e:
-            raise ValueError(f"Error in Stage 2: {e}")
+            raise ValueError(f"Error in Stage 2: {e}") from e
 
         if not candidate_nodes:
             raise ValueError("LLM did not return any node candidates")
@@ -324,29 +321,34 @@ class AgentlessPipeline:
         content_map: dict = {}
 
         for symbol_node_id in symbols:
-            if not self.entity_searcher.has_node(symbol_node_id):
-                raise ValueError(f"Skip missing node: {symbol_node_id}")
+            if symbol_node_id not in self.code_graph.name_to_vertex:
+                raise ValueError(f"Missing node: {symbol_node_id}")
 
             try:
-                node_data_list = self.entity_searcher.get_node_data(
-                    [symbol_node_id],
-                    return_code_content=True,
-                    wrap_with_ln=True,
-                )
+                # Get node info from code_graph
+                vertex_id = self.code_graph.name_to_vertex[symbol_node_id]
+                node_info = self.code_graph.get_node_info_by_name(symbol_node_id)
+                if not node_info:
+                    raise ValueError(f"Could not get node info for {symbol_node_id}")
+
+                # Get code content
+                code_content = self.code_graph.get_node_content(vertex_id)
+                if code_content:
+                    # Wrap with line numbers
+                    lines = code_content.split("\n")
+                    numbered_lines = [
+                        f"{i + 1}: {line}" for i, line in enumerate(lines)
+                    ]
+                    code_content = "\n".join(numbered_lines)
+
+                if not code_content:
+                    raise ValueError(
+                        f"Empty code content retrieved for node: {symbol_node_id}"
+                    )
             except Exception as exc:
-                raise ValueError(f"Error getting code for {symbol_node_id}: {exc}")
-
-            if not node_data_list:
                 raise ValueError(
-                    f"No code content available for node: {symbol_node_id}"
-                )
-
-            node_data = node_data_list[0]
-            code_content = node_data.get("code_content", "")
-            if not code_content:
-                raise ValueError(
-                    f"Empty code content retrieved for node: {symbol_node_id}"
-                )
+                    f"Error getting code for {symbol_node_id}: {exc}"
+                ) from exc
 
             code_segments.append(
                 f"### {symbol_node_id} ###\n```\n{code_content}\n```\n"
@@ -367,7 +369,7 @@ class AgentlessPipeline:
             shortlisted_node_ids = result.refined_nodes
             logger.debug(f"[Stage 3] EXTRACTED NODES: {shortlisted_node_ids}")
         except Exception as e:
-            raise ValueError(f"Error in Stage 3: {e}")
+            raise ValueError(f"Error in Stage 3: {e}") from e
 
         candidate_set = set(usable_symbols)
         results: List[QueriedNode] = []
@@ -378,7 +380,11 @@ class AgentlessPipeline:
                     f"Discarding node not part of Stage 2 results: {node_id}"
                 )
 
-            attrs = self.entity_searcher.get_node_data([node_id])[0]
+            # Get node attributes from code_graph
+            attrs = self.code_graph.get_node_info_by_name(node_id)
+            if not attrs:
+                raise ValueError(f"Could not get node info for {node_id}")
+
             results.append(
                 QueriedNode(
                     node_name=node_id,
