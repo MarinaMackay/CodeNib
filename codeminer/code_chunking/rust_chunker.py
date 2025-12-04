@@ -14,7 +14,8 @@ class RustCodeChunker(BaseCodeChunker):
 
     L1 entities: free functions plus struct/enum/trait/impl blocks.
     L2 entities: functions inside impl blocks.
-    Skeleton mode: file skeleton lists L1 declarations; impl skeleton lists method signatures.
+    Skeleton mode: file skeleton lists L1 declarations and impl member signatures;
+    impl skeleton lists method signatures.
     """
 
     def __init__(
@@ -32,10 +33,13 @@ class RustCodeChunker(BaseCodeChunker):
             **kwargs,
         )
 
-    def _find_top_level_definitions(self, root_node) -> List[Tuple]:
+    def _find_top_level_definitions(
+        self, root_node, include_l2_in_file_skeleton: bool = False
+    ) -> List[Tuple]:
         definitions: List[Tuple] = []
 
         include_type_level = self.chunk_depth < 2 or not self.l2_level_exclusive
+        include_methods = self.chunk_depth >= 2 or include_l2_in_file_skeleton
 
         for child in root_node.children:
             if child.type == "function_item":
@@ -51,11 +55,25 @@ class RustCodeChunker(BaseCodeChunker):
                 impl_label, target_name = self._extract_impl_label(child)
                 if include_type_level:
                     definitions.append((child, impl_label, "impl"))
-                if self.chunk_depth >= 2:
+                if include_methods:
                     definitions.extend(self._find_impl_methods(child, target_name))
 
         definitions.sort(key=lambda entry: entry[0].start_point[0])
         return definitions
+
+    def _extract_signature_text(self, node, def_type: str, code_content: str) -> str:
+        """
+        Extract a signature for Rust constructs by trimming before bodies/decl lists.
+        """
+        stop_types = {
+            "function": ("block",),
+            "method": ("block",),
+            "struct": ("field_declaration_list",),
+            "enum": ("enum_variant_list", "field_declaration_list"),
+            "trait": ("declaration_list",),
+            "impl": ("declaration_list",),
+        }.get(def_type, ("block",))
+        return self._extract_signature_text_default(node, stop_types, code_content)
 
     def _extract_function_name(self, node) -> Optional[str]:
         for child in node.children:

@@ -4,7 +4,8 @@ Regression tests for the Python code chunker using the httpie CLI repository.
 """
 
 from pathlib import Path
-from textwrap import dedent
+
+import pytest
 
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
 
@@ -58,34 +59,109 @@ def test_python_chunker_chunk_file(httpie_cli_repo):
     assert any(chunk.name == "raw_main" for chunk in chunks)
 
 
-def test_python_chunker_skeleton_mode(tmp_path):
-    sample = tmp_path / "sample.py"
-    sample.write_text(
-        dedent(
-            """
-            def top_level(a, b):
-                return a + b
+def _first_symbols_from_file(path: Path):
+    """Grab representative symbols from a real file for assertions."""
+    module_func = None
+    class_name = None
+    method_name = None
+    method_body_line = None
 
-            class MyClass:
-                def method_one(self, x: int) -> int:
-                    return x
-            """
-        ).lstrip()
-    )
+    lines = path.read_text().splitlines()
+    in_class = False
+    class_indent = None
+    method_indent = None
+
+    for idx, line in enumerate(lines):
+        stripped = line.lstrip()
+        indent = len(line) - len(stripped)
+        if not stripped:
+            continue
+
+        if module_func is None and stripped.startswith(("def ", "async def ")):
+            module_func = stripped.split()[1].split("(")[0]
+
+        if not in_class and stripped.startswith("class "):
+            class_name = stripped.split()[1].split("(")[0].rstrip(":")
+            in_class = True
+            class_indent = indent
+            continue
+
+        if in_class:
+            if indent <= class_indent:
+                in_class = False
+                class_indent = None
+                method_indent = None
+                continue
+            if method_name is None and stripped.startswith(("def ", "async def ")):
+                method_name = stripped.split()[1].split("(")[0]
+                method_indent = indent
+                # Grab the first body line nested under the method
+                for tail in lines[idx + 1 :]:
+                    tail_stripped = tail.lstrip()
+                    if not tail_stripped:
+                        continue
+                    tail_indent = len(tail) - len(tail_stripped)
+                    if tail_indent <= method_indent:
+                        break
+                    method_body_line = tail_stripped
+                    break
+    return module_func, class_name, method_name, method_body_line
+
+
+def test_python_chunker_skeleton_mode_real_file(httpie_cli_repo):
+    target_file = Path(httpie_cli_repo) / "httpie" / "manager" / "compat.py"
+    if not target_file.exists():
+        pytest.skip(f"Target file missing in fixture repo: {target_file}")
+
+    _, class_name, method_name, method_body_line = _first_symbols_from_file(target_file)
+    assert class_name and method_name, "Expected class and method in compat.py"
 
     chunker = CodeChunker(
         language="python",
         chunk_depth=2,
         l2_level_exclusive=False,
     )
-    chunks = chunker.chunk_file(str(sample), skeleton_mode=True)
+    chunks = chunker.chunk_file(str(target_file), skeleton_mode=True)
 
-    # Class skeleton should carry method signatures but no bodies.
-    class_chunk = next(chunk for chunk in chunks if chunk.chunk_type == "class")
-    assert "class MyClass" in class_chunk.content
-    assert "def method_one" in class_chunk.content
-    assert "return x" not in class_chunk.content
+    class_chunk = next(
+        chunk
+        for chunk in chunks
+        if chunk.chunk_type == "class" and chunk.name == class_name
+    )
+    assert class_name in class_chunk.content
+    assert f"def {method_name}" in class_chunk.content
+    if method_body_line:
+        assert method_body_line not in class_chunk.content
 
-    method_chunk = next(chunk for chunk in chunks if chunk.chunk_type == "method")
-    assert "def method_one" in method_chunk.content
-    assert "return x" not in method_chunk.content
+    method_chunk = next(
+        chunk
+        for chunk in chunks
+        if chunk.chunk_type == "method" and chunk.name.endswith(f".{method_name}")
+    )
+    assert f"def {method_name}" in method_chunk.content
+    if method_body_line:
+        assert method_body_line not in method_chunk.content
+
+
+def test_python_file_skeleton_includes_l2_real_file(httpie_cli_repo):
+    target_file = Path(httpie_cli_repo) / "httpie" / "manager" / "compat.py"
+    if not target_file.exists():
+        pytest.skip(f"Target file missing in fixture repo: {target_file}")
+
+    module_func, class_name, method_name, _ = _first_symbols_from_file(target_file)
+    chunker = CodeChunker(
+        language="python",
+        chunk_depth=0,
+        skeleton_mode=True,
+    )
+    chunks = chunker.chunk_file(str(target_file))
+
+    assert len(chunks) == 1
+    content = chunks[0].content
+
+    print(content)
+
+    if module_func:
+        assert f"def {module_func}" in content
+    assert class_name and class_name in content
+    assert method_name and f"def {method_name}" in content

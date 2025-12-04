@@ -14,7 +14,8 @@ class PythonCodeChunker(BaseCodeChunker):
 
     L1 entities: module-level functions and classes.
     L2 entities: methods inside classes (including async and decorated definitions).
-    Skeleton mode: module skeleton lists L1 definitions; class skeleton lists method signatures.
+    Skeleton mode: module skeleton lists L1 definitions and class member signatures;
+    class skeleton lists method signatures.
     """
 
     def __init__(
@@ -33,21 +34,26 @@ class PythonCodeChunker(BaseCodeChunker):
             **kwargs,
         )
 
-    def _find_top_level_definitions(self, root_node) -> List[Tuple]:
+    def _find_top_level_definitions(
+        self, root_node, include_l2_in_file_skeleton: bool = False
+    ) -> List[Tuple]:
         """
         Find all top-level function and class definitions in Python.
         Handles decorated_definition, function_definition, and class_definition nodes.
 
         Args:
             root_node: Root node of the AST
+            include_l2_in_file_skeleton: Include methods when building file skeletons.
 
         Returns:
             List of tuples (node, name, type) for each top-level definition
         """
         definitions = []
 
-        # For Python, look for function_definition, class_definition, and decorated_definition at module level
+        # For Python, look for function_definition, class_definition, and
+        # decorated_definition at module level
         include_type_level = self.chunk_depth < 2 or not self.l2_level_exclusive
+        include_methods = self.chunk_depth >= 2 or include_l2_in_file_skeleton
 
         for child in root_node.children:
             if child.type == "decorated_definition":
@@ -67,7 +73,7 @@ class PythonCodeChunker(BaseCodeChunker):
                             if include_type_level:
                                 definitions.append((child, name, "class"))
                             # Extract methods only if chunk_depth >= 2
-                            if self.chunk_depth >= 2:
+                            if include_methods:
                                 methods = self._find_class_methods(actual_def)
                                 definitions.extend(methods)
             elif child.type in ("function_definition", "async_function_definition"):
@@ -80,13 +86,22 @@ class PythonCodeChunker(BaseCodeChunker):
                     if include_type_level:
                         definitions.append((child, name, "class"))
                     # Extract methods only if chunk_depth >= 2
-                    if self.chunk_depth >= 2:
+                    if include_methods:
                         methods = self._find_class_methods(child)
                         definitions.extend(methods)
 
         # Sort by start line
         definitions.sort(key=lambda x: x[0].start_point[0])
         return definitions
+
+    def _extract_signature_text(self, node, def_type: str, code_content: str) -> str:
+        """Extract a signature for Python constructs by trimming the block body."""
+        stop_types = {
+            "function": ("block",),
+            "method": ("block",),
+            "class": ("block",),
+        }.get(def_type, ("block",))
+        return self._extract_signature_text_default(node, stop_types, code_content)
 
     def _extract_definition_from_decorated(self, decorated_node) -> Optional[object]:
         """
@@ -96,7 +111,8 @@ class PythonCodeChunker(BaseCodeChunker):
             decorated_node: AST node representing a decorated_definition
 
         Returns:
-            The function_definition, async_function_definition, or class_definition node, or None
+            The function_definition, async_function_definition, or class_definition
+            node, or None
         """
         for child in decorated_node.children:
             if child.type in (

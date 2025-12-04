@@ -14,7 +14,8 @@ class CppCodeChunker(BaseCodeChunker):
 
     L1 entities: free functions and class/struct definitions.
     L2 entities: methods declared/defined inside class bodies.
-    Skeleton mode: file skeleton lists L1 declarations; class skeleton lists method signatures.
+    Skeleton mode: file skeleton lists L1 declarations and member signatures;
+    class skeleton lists method signatures.
     """
 
     def __init__(
@@ -33,12 +34,15 @@ class CppCodeChunker(BaseCodeChunker):
             **kwargs,
         )
 
-    def _find_top_level_definitions(self, root_node) -> List[Tuple]:
+    def _find_top_level_definitions(
+        self, root_node, include_l2_in_file_skeleton: bool = False
+    ) -> List[Tuple]:
         """
         Find all top-level function and class definitions in C++.
 
         Args:
             root_node: Root node of the AST
+            include_l2_in_file_skeleton: Include methods when building file skeletons.
 
         Returns:
             List of tuples (node, name, type) for each top-level definition
@@ -47,6 +51,7 @@ class CppCodeChunker(BaseCodeChunker):
 
         # For C++, look for function_definition and class_specifier
         include_type_level = self.chunk_depth < 2 or not self.l2_level_exclusive
+        include_methods = self.chunk_depth >= 2 or include_l2_in_file_skeleton
 
         for node in self._find_nodes_by_type(root_node, "function_definition"):
             name = self._extract_function_name(node)
@@ -59,13 +64,25 @@ class CppCodeChunker(BaseCodeChunker):
                 if include_type_level:
                     definitions.append((node, name, "class"))
                 # Extract methods only if chunk_depth >= 2
-                if self.chunk_depth >= 2:
+                if include_methods:
                     methods = self._find_class_methods(node)
                     definitions.extend(methods)
 
         # Sort by start line
         definitions.sort(key=lambda x: x[0].start_point[0])
         return definitions
+
+    def _extract_signature_text(self, node, def_type: str, code_content: str) -> str:
+        """
+        Extract a signature for C++ constructs by trimming at compound statements or
+        declarations.
+        """
+        stop_types = {
+            "function": ("compound_statement",),
+            "method": ("compound_statement",),
+            "class": ("field_declaration_list",),
+        }.get(def_type, ("compound_statement",))
+        return self._extract_signature_text_default(node, stop_types, code_content)
 
     def _extract_function_name(self, node) -> Optional[str]:
         """
@@ -110,6 +127,7 @@ class CppCodeChunker(BaseCodeChunker):
             List of tuples (node, name, type) for each method definition
         """
         methods = []
+        class_name = self._extract_class_name(class_node)
 
         # Look for the class body (field_declaration_list)
         for child in class_node.children:
@@ -119,7 +137,12 @@ class CppCodeChunker(BaseCodeChunker):
                     if member.type == "function_definition":
                         method_name = self._extract_method_name(member)
                         if method_name:
-                            methods.append((member, method_name, "method"))
+                            full_name = (
+                                f"{class_name}::{method_name}"
+                                if class_name
+                                else method_name
+                            )
+                            methods.append((member, full_name, "method"))
                     # Also look for function declarations that might be methods
                     elif member.type == "declaration":
                         # Check if this declaration contains a function declarator
@@ -129,7 +152,12 @@ class CppCodeChunker(BaseCodeChunker):
                                     decl_child
                                 )
                                 if method_name:
-                                    methods.append((member, method_name, "method"))
+                                    full_name = (
+                                        f"{class_name}::{method_name}"
+                                        if class_name
+                                        else method_name
+                                    )
+                                    methods.append((member, full_name, "method"))
 
         return methods
 
