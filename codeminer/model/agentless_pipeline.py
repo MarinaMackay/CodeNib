@@ -322,7 +322,7 @@ class AgentlessPipeline:
 
         for symbol_node_id in symbols:
             if symbol_node_id not in self.code_graph.name_to_vertex:
-                raise ValueError(f"Skip missing node: {symbol_node_id}")
+                raise ValueError(f"Missing node: {symbol_node_id}")
 
             try:
                 # Get node info from code_graph
