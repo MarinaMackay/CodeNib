@@ -76,3 +76,16 @@ norecursedirs = [
     "build",
     "dist",
 ]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+extend-exclude = '''
+/(
+    build
+  | dist
+  | third_party
+  | docs/_build
+  | .*\.egg-info
+)/
+'''

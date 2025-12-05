@@ -102,19 +102,25 @@ class CodeChunker:
         include_header_epilogue: bool = False,
         l2_level_exclusive: bool = True,
         skeleton_mode: bool = False,
+        include_l2_in_file_skeleton: bool = True,
     ):
         """
         Initialize the code chunker for a specific language.
 
         Args:
             language: Programming language to parse ('python', 'cpp', 'java', etc.)
-            repo_config: Configuration for repository-level chunking. Uses defaults if None.
-            max_lines_per_chunk: Maximum number of lines per emitted chunk. Default: None (no splitting)
+            repo_config: Configuration for repository-level chunking. Uses defaults if
+                None.
+            max_lines_per_chunk: Maximum number of lines per emitted chunk.
+                Default: None (no splitting)
             chunk_depth: Depth of AST traversal (1=top-level only, 2=include methods)
-            include_header_epilogue: Whether to include file headers and epilogues. Default: False
-            l2_level_exclusive: When chunk_depth is 2, whether to omit L1 container nodes
-                (classes/structs/impls) and emit only L2 members. Default: True.
+            include_header_epilogue: Whether to include file headers and epilogues.
+                Default: False
+            l2_level_exclusive: When chunk_depth is 2, whether to omit L1 container
+                nodes (classes/structs/impls) and emit only L2 members. Default: True.
             skeleton_mode: Emit signature-only skeletons instead of full bodies when True.
+            include_l2_in_file_skeleton: When chunk_depth is 0, include member
+                signatures in file-level skeletons. Default: True.
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
@@ -122,6 +128,7 @@ class CodeChunker:
         self.include_header_epilogue = include_header_epilogue
         self.l2_level_exclusive = l2_level_exclusive
         self.skeleton_mode = skeleton_mode
+        self.include_l2_in_file_skeleton = include_l2_in_file_skeleton
         self._chunker = create_chunker(
             language,
             max_lines_per_chunk=self.max_lines_per_chunk,
@@ -129,6 +136,7 @@ class CodeChunker:
             include_header_epilogue=self.include_header_epilogue,
             l2_level_exclusive=self.l2_level_exclusive,
             skeleton_mode=self.skeleton_mode,
+            include_l2_in_file_skeleton=self.include_l2_in_file_skeleton,
         )
         if repo_config is None:
             repo_config = RepoChunkingConfig()
@@ -336,7 +344,7 @@ class CodeChunker:
                 for ext in self.repo_config.rust_extensions:
                     extension_to_language[ext] = "rust"
             else:
-                logger.warning(f"Language '{language}' not supported yet")
+                logger.warning("Language %r not supported yet", language)
 
         # Walk through repository
         for root, dirs, files in os.walk(repo_path):
@@ -426,6 +434,7 @@ class CodeChunker:
                 include_header_epilogue=self.include_header_epilogue,
                 l2_level_exclusive=self.l2_level_exclusive,
                 skeleton_mode=self.skeleton_mode,
+                include_l2_in_file_skeleton=self.include_l2_in_file_skeleton,
             )
 
         chunker = self._chunkers[language]
@@ -452,9 +461,11 @@ class CodeChunker:
         Chunk a SWE-bench instance repository.
 
         Args:
-            instance: SWE-bench instance dictionary containing repo, base_commit, instance_id, etc.
+            instance: SWE-bench instance dictionary containing repo, base_commit,
+                instance_id, etc.
             cache_dir: Directory to cache repositories. Defaults to ~/.codeminer
-            languages: List of languages to process. If None, uses repository's primary language
+            languages: List of languages to process. If None, uses repository's
+                primary language
 
         Returns:
             Dictionary containing instance info, repo path, and chunks

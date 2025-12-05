@@ -36,6 +36,7 @@ class BaseCodeChunker(ABC):
         include_header_epilogue: bool = False,
         l2_level_exclusive: bool = True,
         skeleton_mode: bool = False,
+        include_l2_in_file_skeleton: bool = True,
     ):
         """
         Initialize the code chunker for a specific language.
@@ -44,20 +45,28 @@ class BaseCodeChunker(ABC):
             language: Programming language to parse ('python', 'cpp', 'java', etc.)
             max_lines_per_chunk: Maximum number of lines per emitted chunk. When set,
                 large logical chunks (function/class) will be split into
-                multiple sequential chunks of at most this many lines. node_id and name remain
-                the same across the split pieces. Default: None (no splitting). Set to a number to enable.
+                multiple sequential chunks of at most this many lines. node_id and name
+                remain the same across the split pieces. Default: None (no splitting).
+                Set to a number to enable.
             chunk_depth: Depth of AST traversal for chunking:
                 0 = Treat entire file as a single chunk
                 1 = Top-level only (classes and top-level functions, no methods)
                 2 = Method-level (classes, functions, and methods) [default]
-            include_header_epilogue: Whether to include file header (imports, module docstrings)
-                and epilogue (trailing code) in chunks. Default: False (skip them to reduce noise).
-            l2_level_exclusive: When chunk_depth is 2 (method/member level), whether to exclude
-                the containing type/scope chunks (classes, structs, impls). Default: True to keep
-                L2-only output; set to False to emit both L1 container chunks and L2 members.
-            skeleton_mode: When True, emit skeletonized content (signatures only) for file- and
-                type-level chunks. File-level skeletons list top-level definitions. Type-level
-                skeletons list member signatures. Defaults to False (emit full source).
+            include_header_epilogue: Whether to include file header (imports, module
+                docstrings) and epilogue (trailing code) in chunks. Default: False
+                (skip them to reduce noise).
+            l2_level_exclusive: When chunk_depth is 2 (method/member level), whether
+                to exclude the containing type/scope chunks (classes, structs, impls).
+                Default: True to keep L2-only output; set to False to emit both L1
+                container chunks and L2 members.
+            skeleton_mode: When True, emit skeletonized content (signatures only) for
+                file- and type-level chunks. File-level skeletons list top-level
+                definitions and, when include_l2_in_file_skeleton is True, member
+                signatures for a hierarchical view. Type-level skeletons list member
+                signatures. Defaults to False (emit full source).
+            include_l2_in_file_skeleton: When chunk_depth is 0 and skeleton_mode is
+                enabled, whether to include L2/member signatures in the file skeleton
+                output. Defaults to True for richer, hierarchical skeletons.
         """
         self.language = language
         self.max_lines_per_chunk = max_lines_per_chunk
@@ -65,14 +74,16 @@ class BaseCodeChunker(ABC):
         self.include_header_epilogue = include_header_epilogue
         self.l2_level_exclusive = l2_level_exclusive
         self.skeleton_mode = skeleton_mode
+        self.include_l2_in_file_skeleton = include_l2_in_file_skeleton
         try:
             self.parser = get_parser(language)
             self.tree_sitter_language = get_language(language)
             logger.info(
-                f"Successfully loaded {language} language parser from tree-sitter-language-pack"
+                "Successfully loaded %s language parser from tree-sitter-language-pack",
+                language,
             )
         except Exception as e:
-            logger.error(f"Error loading {language} parser: {e}")
+            logger.error("Error loading %s parser: %s", language, e)
             sys.exit(1)
 
     def chunk_file(
@@ -108,16 +119,21 @@ class BaseCodeChunker(ABC):
         tree = self.parser.parse(code_bytes)
         root_node = tree.root_node
 
+        use_skeleton = self.skeleton_mode if skeleton_mode is None else skeleton_mode
+        include_l2_in_skeleton = (
+            use_skeleton and self.chunk_depth == 0 and self.include_l2_in_file_skeleton
+        )
+
         # Split content into lines for easier chunk extraction
         lines = code_content.split("\n")
 
         # Find all top-level functions and classes
-        top_level_nodes = self._find_top_level_definitions(root_node)
+        top_level_nodes = self._find_top_level_definitions(
+            root_node, include_l2_in_file_skeleton=include_l2_in_skeleton
+        )
 
         # Use relative_path for node_id generation, fallback to file_path
         path_for_node_id = relative_path if relative_path else file_path
-
-        use_skeleton = self.skeleton_mode if skeleton_mode is None else skeleton_mode
 
         if self.chunk_depth == 0:
             if not lines:
@@ -190,30 +206,23 @@ class BaseCodeChunker(ABC):
                 return found
         return None
 
-    def _get_signature_stop_types(self, def_type: str) -> Tuple[str, ...]:
+    def _extract_signature_text_default(
+        self, node, stop_types: Tuple[str, ...], code_content: str
+    ) -> str:
         """
-        Identify AST node types that represent the start of a body we want to strip.
-        Override in subclasses for language-specific constructs.
+        Default implementation for extracting a signature by trimming the body.
+        Subclasses can delegate to this helper with language-specific stop types.
         """
-        # Reasonable defaults across languages we support.
-        if def_type in ("function", "method"):
-            return ("block", "compound_statement")
-        if def_type in ("class", "struct", "enum", "trait"):
-            return ("block", "field_declaration_list")
-        if def_type == "impl":
-            return ("declaration_list",)
-        return ("block",)
-
-    def _extract_signature_text(self, node, def_type: str, code_content: str) -> str:
-        """
-        Slice out the signature/heading for a node, stopping before the first body-like child.
-        Falls back to the full node text when no stop child is found.
-        """
-        stop_child = self._find_first_child(
-            node, self._get_signature_stop_types(def_type)
-        )
+        stop_child = self._find_first_child(node, stop_types)
         stop_byte = stop_child.start_byte if stop_child else node.end_byte
         return code_content[node.start_byte : stop_byte].rstrip()
+
+    def _indent_lines(self, text: str, levels: int = 1) -> str:
+        """Indent a block of text by the given number of indentation levels."""
+        prefix = "    " * levels
+        return "\n".join(
+            f"{prefix}{line}" if line.strip() else line for line in text.splitlines()
+        )
 
     def _get_child_definitions(self, node, def_type: str) -> List[Tuple]:
         """
@@ -223,16 +232,23 @@ class BaseCodeChunker(ABC):
         return []
 
     def _build_definition_skeleton(
-        self, node, def_type: str, code_content: str
+        self,
+        node,
+        def_type: str,
+        code_content: str,
+        include_children: bool = True,
     ) -> Optional[str]:
         """
-        Build a skeleton string for a single definition. Container nodes append child signatures.
+        Build a skeleton string for a single definition. Container nodes append child signatures
+        when include_children is True.
         """
         signature = self._extract_signature_text(node, def_type, code_content)
         if not signature:
             return None
 
-        child_defs = self._get_child_definitions(node, def_type)
+        child_defs = (
+            self._get_child_definitions(node, def_type) if include_children else []
+        )
         if not child_defs:
             return signature
 
@@ -242,24 +258,8 @@ class BaseCodeChunker(ABC):
                 child_node, child_type, code_content
             )
             if child_signature:
-                indented = "\n".join(
-                    f"    {line}" for line in child_signature.splitlines()
-                )
-                lines.append(indented)
+                lines.append(self._indent_lines(child_signature))
         return "\n".join(lines)
-
-    def _build_file_skeleton(self, definitions: List[Tuple], code_content: str) -> str:
-        """
-        Build a skeleton for a file chunk: list top-level definitions (exclude methods).
-        """
-        entries: List[str] = []
-        for node, _, def_type in definitions:
-            if def_type == "method":
-                continue
-            skeleton = self._build_definition_skeleton(node, def_type, code_content)
-            if skeleton:
-                entries.append(skeleton)
-        return "\n".join(entries)
 
     def _split_by_max_lines(
         self,
@@ -441,15 +441,39 @@ class BaseCodeChunker(ABC):
         return f"{file_path}:{formatted_name}"
 
     @abstractmethod
-    def _find_top_level_definitions(self, root_node) -> List[Tuple]:
+    def _build_file_skeleton(
+        self,
+        definitions: List[Tuple],
+        code_content: str,
+        include_l2: Optional[bool] = None,
+    ) -> str:
+        """
+        Build a skeleton for a file chunk. Implemented per language.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def _find_top_level_definitions(
+        self, root_node, include_l2_in_file_skeleton: bool = False
+    ) -> List[Tuple]:
         """
         Find all top-level function and class definitions.
 
         Args:
             root_node: Root node of the AST
+            include_l2_in_file_skeleton: Whether to include method/member nodes when
+                constructing file-level skeletons.
 
         Returns:
             List of tuples (node, name, type) for each top-level definition
+        """
+        pass
+
+    @abstractmethod
+    def _extract_signature_text(self, node, def_type: str, code_content: str) -> str:
+        """
+        Slice out the signature/heading for a node, stopping before the first body-like child.
+        Implemented per language for accurate body delimiters.
         """
         pass
 
@@ -528,7 +552,11 @@ class BaseCodeChunker(ABC):
 
         for i, chunk in enumerate(chunks, 1):
             logger.info(
-                f"Chunk {i}: {chunk.chunk_type} '{chunk.name}' "
-                f"(lines {chunk.start_line}-{chunk.end_line}, "
-                f"{len(chunk.content.split(chr(10)))} lines)"
+                "Chunk %s: %s %r (lines %s-%s, %s lines)",
+                i,
+                chunk.chunk_type,
+                chunk.name,
+                chunk.start_line,
+                chunk.end_line,
+                len(chunk.content.split(chr(10))),
             )
