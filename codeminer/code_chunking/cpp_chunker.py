@@ -84,6 +84,42 @@ class CppCodeChunker(BaseCodeChunker):
         }.get(def_type, ("compound_statement",))
         return self._extract_signature_text_default(node, stop_types, code_content)
 
+    def _build_file_skeleton(
+        self,
+        definitions: List[Tuple],
+        code_content: str,
+        include_l2: Optional[bool] = None,
+    ) -> str:
+        include_l2 = (
+            self.include_l2_in_file_skeleton if include_l2 is None else include_l2
+        )
+        container_names = {
+            name for _, name, def_type in definitions if def_type == "class"
+        }
+        entries: List[str] = []
+        for node, name, def_type in definitions:
+            if def_type == "method":
+                if not include_l2:
+                    continue
+                parent = name.split("::", 1)[0] if "::" in name else None
+                if parent and parent in container_names:
+                    # Already represented inside the class skeleton.
+                    continue
+                signature = self._extract_signature_text(node, def_type, code_content)
+                if signature:
+                    entries.append(self._indent_lines(signature))
+                continue
+
+            skeleton = self._build_definition_skeleton(
+                node,
+                def_type,
+                code_content=code_content,
+                include_children=include_l2,
+            )
+            if skeleton:
+                entries.append(skeleton)
+        return "\n".join(entries)
+
     def _extract_function_name(self, node) -> Optional[str]:
         """
         Extract function name from C++ function_definition node.

@@ -224,13 +224,6 @@ class BaseCodeChunker(ABC):
             f"{prefix}{line}" if line.strip() else line for line in text.splitlines()
         )
 
-    def _extract_parent_from_name(self, member_name: str) -> Optional[str]:
-        """Infer the parent container name from a qualified member name, if present."""
-        for sep in (".", "::"):
-            if sep in member_name:
-                return member_name.split(sep)[0]
-        return None
-
     def _get_child_definitions(self, node, def_type: str) -> List[Tuple]:
         """
         Return child definitions for container nodes (e.g., methods inside a class).
@@ -267,47 +260,6 @@ class BaseCodeChunker(ABC):
             if child_signature:
                 lines.append(self._indent_lines(child_signature))
         return "\n".join(lines)
-
-    def _build_file_skeleton(
-        self,
-        definitions: List[Tuple],
-        code_content: str,
-        include_l2: Optional[bool] = None,
-    ) -> str:
-        """
-        Build a skeleton for a file chunk: list top-level definitions and optionally members.
-        """
-        include_l2 = (
-            self.include_l2_in_file_skeleton if include_l2 is None else include_l2
-        )
-
-        container_types = {"class", "struct", "enum", "trait", "impl"}
-        container_names = {
-            name for _, name, def_type in definitions if def_type in container_types
-        }
-        entries: List[str] = []
-        for node, name, def_type in definitions:
-            if def_type == "method" and not include_l2:
-                continue
-            if def_type == "method":
-                parent = self._extract_parent_from_name(name)
-                if parent and parent in container_names:
-                    # Already emitted within its container skeleton.
-                    continue
-                skeleton = self._extract_signature_text(node, def_type, code_content)
-                if skeleton:
-                    entries.append(self._indent_lines(skeleton))
-                continue
-
-            skeleton = self._build_definition_skeleton(
-                node,
-                def_type,
-                code_content=code_content,
-                include_children=include_l2,
-            )
-            if skeleton:
-                entries.append(skeleton)
-        return "\n".join(entries)
 
     def _split_by_max_lines(
         self,
@@ -487,6 +439,18 @@ class BaseCodeChunker(ABC):
             formatted_name = symbol_name
 
         return f"{file_path}:{formatted_name}"
+
+    @abstractmethod
+    def _build_file_skeleton(
+        self,
+        definitions: List[Tuple],
+        code_content: str,
+        include_l2: Optional[bool] = None,
+    ) -> str:
+        """
+        Build a skeleton for a file chunk. Implemented per language.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def _find_top_level_definitions(
