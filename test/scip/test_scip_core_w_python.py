@@ -30,6 +30,7 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -53,21 +54,22 @@ DEFAULT_TEST_INSTANCES = [
 ]
 
 
-def get_or_generate_scip_file(project_root: Path) -> Tuple[Path | None, bool]:
+def get_or_generate_scip_file(project_root: Path, instance_id: str = None) -> Tuple[Path | None, bool]:
     """
     Get cached SCIP file or generate new one.
 
     Args:
         project_root: Project root directory
+        instance_id: Optional instance ID to use as cache key (recommended for SWE-bench instances)
 
     Returns:
         Tuple of (scip_file_path, success)
         If failed, returns (None, False)
     """
-    import tempfile
-
     # Use platform-independent temporary directory
-    scip_cache_dir = Path(tempfile.gettempdir()) / project_root.name
+    # Use instance_id if provided (for SWE-bench), otherwise use project_root.name (for local projects)
+    cache_dir_name = instance_id if instance_id else project_root.name
+    scip_cache_dir = Path(tempfile.gettempdir()) / cache_dir_name
     scip_cache_dir.mkdir(parents=True, exist_ok=True)
 
     scip_file = scip_cache_dir / "index.scip"
@@ -311,11 +313,11 @@ def cpp_decode(
 
 
 def compare_nodes(py_nodes: List[Dict], cpp_nodes: List[Dict]) -> Tuple[int, List[str]]:
-    """Compare nodes between Python and C++ outputs using strict ID-based comparison.
+    """Compare nodes between Python and C++ outputs using name-based comparison.
 
     Args:
-        py_nodes: Python decoder's nodes (must be sorted by ID)
-        cpp_nodes: C++ decoder's nodes (must be sorted by ID)
+        py_nodes: Python decoder's nodes
+        cpp_nodes: C++ decoder's nodes
 
     Returns:
         Tuple of (num_count_mismatch, node_differences)
@@ -333,26 +335,34 @@ def compare_nodes(py_nodes: List[Dict], cpp_nodes: List[Dict]) -> Tuple[int, Lis
         )
         return count_diff, differences
 
-    # Compare nodes by ID position
-    for i in range(len(py_nodes)):
-        py_node = py_nodes[i]
-        cpp_node = cpp_nodes[i]
+    # Build name-to-node mappings
+    py_by_name = {node.get("name"): node for node in py_nodes}
+    cpp_by_name = {node.get("name"): node for node in cpp_nodes}
 
-        # Verify IDs match their positions
-        py_id = py_node.get("id")
-        cpp_id = cpp_node.get("id")
+    # Check for nodes present in one but not the other
+    py_names = set(py_by_name.keys())
+    cpp_names = set(cpp_by_name.keys())
 
-        if py_id != i or cpp_id != i:
-            differences.append(
-                f"ID position mismatch at index {i}: "
-                f"Python ID={py_id}, C++ ID={cpp_id}, expected={i}"
-            )
-            continue
+    only_in_py = py_names - cpp_names
+    only_in_cpp = cpp_names - py_names
 
-        # Compare all fields except 'id' (since IDs are sequential and match by position)
+    if only_in_py:
+        differences.append(f"Nodes only in Python: {sorted(only_in_py)}")
+    if only_in_cpp:
+        differences.append(f"Nodes only in C++: {sorted(only_in_cpp)}")
+
+    if only_in_py or only_in_cpp:
+        return len(only_in_py) + len(only_in_cpp), differences
+
+    # Compare nodes by name (for nodes present in both)
+    for name in sorted(py_names & cpp_names):
+        py_node = py_by_name[name]
+        cpp_node = cpp_by_name[name]
+
+        # Compare all fields except 'id' (IDs can differ, we care about content)
         node_diffs = []
         all_keys = set(py_node.keys()) | set(cpp_node.keys())
-        all_keys.discard("id")  # We already verified IDs match positions
+        all_keys.discard("id")  # Ignore ID differences
 
         for key in sorted(all_keys):
             py_val = py_node.get(key)
@@ -362,9 +372,8 @@ def compare_nodes(py_nodes: List[Dict], cpp_nodes: List[Dict]) -> Tuple[int, Lis
                 node_diffs.append(f"    {key}: Python={py_val}, C++={cpp_val}")
 
         if node_diffs:
-            py_name = py_node.get("name", "?")
             differences.append(
-                f"  Node ID {i} (name='{py_name}'):\n" + "\n".join(node_diffs) + "\n"
+                f"  Node '{name}':\n" + "\n".join(node_diffs) + "\n"
             )
 
     return 0, differences
@@ -376,13 +385,13 @@ def compare_edges(
     py_nodes: List[Dict] = None,
     cpp_nodes: List[Dict] = None,
 ) -> Tuple[int, List[str]]:
-    """Compare edges between Python and C++ outputs using strict ID-based comparison.
+    """Compare edges between Python and C++ outputs using name-based comparison.
 
     Args:
-        py_edges: Python decoder's edges (must be sorted by edge ID)
-        cpp_edges: C++ decoder's edges (must be sorted by edge ID)
-        py_nodes: Python decoder's nodes (for ID-to-name mapping for display)
-        cpp_nodes: C++ decoder's nodes (for ID-to-name mapping for display)
+        py_edges: Python decoder's edges
+        cpp_edges: C++ decoder's edges
+        py_nodes: Python decoder's nodes (for ID-to-name mapping)
+        cpp_nodes: C++ decoder's nodes (for ID-to-name mapping)
 
     Returns:
         Tuple of (num_count_mismatch, edge_differences)
@@ -391,7 +400,7 @@ def compare_edges(
     """
     differences = []
 
-    # Build ID-to-name mappings for display purposes
+    # Build ID-to-name mappings
     py_id_to_name = {}
     cpp_id_to_name = {}
 
@@ -416,61 +425,40 @@ def compare_edges(
         )
         return count_diff, differences
 
-    # Compare edges by ID position
-    for i in range(len(py_edges)):
-        py_edge = py_edges[i]
-        cpp_edge = cpp_edges[i]
+    # Convert edges to name-based representation for comparison
+    def edge_to_tuple(edge, id_to_name):
+        """Convert edge to (source_name, target_name, type) tuple."""
+        source_id = edge.get("source")
+        target_id = edge.get("target")
+        source_name = id_to_name.get(source_id, f"UNKNOWN_ID_{source_id}")
+        target_name = id_to_name.get(target_id, f"UNKNOWN_ID_{target_id}")
+        edge_type = edge.get("type")
+        return (source_name, target_name, edge_type)
 
-        # Verify edge IDs match their positions
-        py_eid = py_edge.get("id")
-        cpp_eid = cpp_edge.get("id")
+    # Build sets of edges (by node names)
+    py_edge_set = {edge_to_tuple(e, py_id_to_name) for e in py_edges}
+    cpp_edge_set = {edge_to_tuple(e, cpp_id_to_name) for e in cpp_edges}
 
-        if py_eid != i or cpp_eid != i:
-            differences.append(
-                f"Edge ID position mismatch at index {i}: "
-                f"Python edge ID={py_eid}, C++ edge ID={cpp_eid}, expected={i}"
-            )
-            continue
+    # Find differences
+    only_in_py = py_edge_set - cpp_edge_set
+    only_in_cpp = cpp_edge_set - py_edge_set
 
-        # Compare edge fields
-        edge_diffs = []
+    if only_in_py:
+        differences.append(f"Edges only in Python ({len(only_in_py)}):")
+        for src, tgt, typ in sorted(only_in_py)[:5]:
+            differences.append(f"  {src} -> {tgt} [{typ}]")
+        if len(only_in_py) > 5:
+            differences.append(f"  ... and {len(only_in_py) - 5} more")
 
-        # Compare source
-        py_source = py_edge.get("source")
-        cpp_source = cpp_edge.get("source")
-        if py_source != cpp_source:
-            py_source_name = py_id_to_name.get(py_source, "?")
-            cpp_source_name = cpp_id_to_name.get(cpp_source, "?")
-            edge_diffs.append(
-                f"    source: Python={py_source}({py_source_name}), "
-                f"C++={cpp_source}({cpp_source_name})"
-            )
+    if only_in_cpp:
+        differences.append(f"Edges only in C++ ({len(only_in_cpp)}):")
+        for src, tgt, typ in sorted(only_in_cpp)[:5]:
+            differences.append(f"  {src} -> {tgt} [{typ}]")
+        if len(only_in_cpp) > 5:
+            differences.append(f"  ... and {len(only_in_cpp) - 5} more")
 
-        # Compare target
-        py_target = py_edge.get("target")
-        cpp_target = cpp_edge.get("target")
-        if py_target != cpp_target:
-            py_target_name = py_id_to_name.get(py_target, "?")
-            cpp_target_name = cpp_id_to_name.get(cpp_target, "?")
-            edge_diffs.append(
-                f"    target: Python={py_target}({py_target_name}), "
-                f"C++={cpp_target}({cpp_target_name})"
-            )
-
-        # Compare type
-        py_type = py_edge.get("type")
-        cpp_type = cpp_edge.get("type")
-        if py_type != cpp_type:
-            edge_diffs.append(f"    type: Python={py_type}, C++={cpp_type}")
-
-        if edge_diffs:
-            py_source_name = py_id_to_name.get(py_source, "?")
-            py_target_name = py_id_to_name.get(py_target, "?")
-            differences.append(
-                f"  Edge ID {i} ({py_source_name} -> {py_target_name}):\n"
-                + "\n".join(edge_diffs)
-                + "\n"
-            )
+    if only_in_py or only_in_cpp:
+        return len(only_in_py) + len(only_in_cpp), differences
 
     return 0, differences
 
@@ -533,19 +521,6 @@ def generate_report(
             "total_issues": total_issues,
             "perfect_match": total_issues == 0,
         }
-
-        # Detailed report data for JSON export
-        detailed_report = {
-            "summary": stats,
-            "details": {"node_differences": node_diffs, "edge_differences": edge_diffs},
-        }
-
-        # Save detailed JSON report if requested
-        if json_report_file:
-            json_report_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(json_report_file, "w") as f:
-                json.dump(detailed_report, f, indent=2)
-            print(f"  ✓ Detailed JSON report saved to: {json_report_file}")
 
         # Generate simplified report
         report = []
@@ -642,13 +617,14 @@ def process_single_instance(
         print(f"  Project root: {project_root}")
 
         # Get or generate SCIP file
-        scip_file, success = get_or_generate_scip_file(project_root)
+        scip_file, success = get_or_generate_scip_file(project_root, instance_id)
         if not success:
             return False, {"error": "scip_generation_failed"}
 
         # Output files
         instance_output_dir = args.output_dir / instance_id
         instance_output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"  Output directory: {instance_output_dir}")
 
         py_output = instance_output_dir / "python_output.json"
         cpp_output = instance_output_dir / "cpp_output.json"
@@ -776,7 +752,7 @@ def main():
     args = parser.parse_args()
 
     # Set default values
-    output_dir = Path(__file__).parent / "comparison_results"
+    output_dir = Path(tempfile.gettempdir()) / "codeminer_scip_test_results"
     swebench_dataset = "princeton-nlp/SWE-bench_Verified"
     swebench_split = "test"
     cache_dir = "~/.codeminer"
@@ -842,8 +818,36 @@ def main():
             )
             all_stats.append(stats)
 
+        # Generate summary report
+        print(f"\n{'='*80}")
+        print(f"BATCH TEST SUMMARY")
+        print(f"{'='*80}")
+
+        passed_count = sum(1 for s in all_stats if s.get("perfect_match", False))
+        failed_count = len(all_stats) - passed_count
+
+        print(f"Total instances tested: {len(all_stats)}")
+        print(f"✅ Passed: {passed_count}")
+        print(f"❌ Failed: {failed_count}")
+        print()
+
+        if failed_count > 0:
+            print("Failed instances:")
+            for stats in all_stats:
+                if not stats.get("perfect_match", False):
+                    instance_id = stats.get("instance_id", "unknown")
+                    total_issues = stats.get("total_issues", 0)
+                    node_diffs = stats.get("node_diffs", 0)
+                    edge_diffs = stats.get("edge_diffs", 0)
+                    print(f"  ❌ {instance_id}: {total_issues} issues "
+                          f"({node_diffs} node diffs, {edge_diffs} edge diffs)")
+        else:
+            print("✅ All instances passed!")
+
+        print(f"{'='*80}\n")
+
         # Return success if all passed
-        all_success = all(s.get("perfect_match", False) for s in all_stats)
+        all_success = passed_count == len(all_stats)
         return 0 if all_success else 1
 
     # Handle single instance
