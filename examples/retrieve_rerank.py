@@ -12,16 +12,21 @@ Usage:
     python examples/retrieve_rerank.py --dataset swebench_lite
 
     # Run on LocBench with custom filter
-    python examples/retrieve_rerank.py --dataset locbench_v1 --filter-instance "^(joselc__life-sim-first-try-2)$"
+    python examples/retrieve_rerank.py --dataset locbench_v1 \\
+        --filter-instance "^(joselc__life-sim-first-try-2)$"
 
     # Run on SWE-bench with custom embedding model
-    python examples/retrieve_rerank.py --dataset swebench_lite --embedding-model nomic-ai/CodeRankEmbed --embedding-provider huggingface
+    python examples/retrieve_rerank.py --dataset swebench_lite \\
+        --embedding-model nomic-ai/CodeRankEmbed \\
+        --embedding-provider huggingface
 
     # Run with hybrid (dense + sparse) retrieval before rerank
     python examples/retrieve_rerank.py --dataset swebench_lite --retrieval-mode hybrid
 
     # Override cache directories (one for indices, one for repos)
-    python examples/retrieve_rerank.py --dataset swebench_lite --index-cache-dir /tmp/codeminer/index --repo-cache-dir ~/.codeminer/
+    python examples/retrieve_rerank.py --dataset swebench_lite \\
+        --index-cache-dir /tmp/codeminer/index \\
+        --repo-cache-dir ~/.codeminer/
 """
 
 import argparse
@@ -152,7 +157,8 @@ def parse_args():
         type=int,
         default=10,
         help=(
-            "Number of candidates per LLM rerank window (None processes all candidates at once)."
+            "Number of candidates per LLM rerank window "
+            "(None processes all candidates at once)."
         ),
     )
     parser.add_argument(
@@ -186,6 +192,16 @@ def parse_args():
         choices=["dense", "sparse", "hybrid"],
         help="Retrieval plan to run (dense-only, BM25-only, or hybrid).",
     )
+    parser.add_argument(
+        "--retrieval-level",
+        type=str,
+        default="l2",
+        choices=["l0", "l2"],
+        help=(
+            "Hierarchical index level for dense retrieval "
+            "(l0=file skeletons, l2=functions/methods)."
+        ),
+    )
 
     # Evaluation configuration
     default_eval_path = Path.home() / ".codeminer" / "swebench_lite_gt.json"
@@ -202,7 +218,7 @@ def parse_args():
         "--metrics-k",
         type=int,
         nargs="+",
-        default=[1, 3, 5, 10],
+        default=[1, 3, 5, 10, 20],
         help="Cutoffs for accuracy/precision/recall reporting",
     )
 
@@ -322,6 +338,7 @@ def run_pipeline(args):
             languages=args.languages,
             max_lines_per_chunk=args.max_lines_per_chunk,
             retrieval_plan=retrieve_plan,
+            retrieval_level=args.retrieval_level,
             rerank_window_size=args.rerank_window_size,
             rerank_window_step=args.rerank_window_step,
             enable_rerank=not args.retrieval_only,
@@ -410,6 +427,7 @@ def main():
     logger.info("Dataset type: %s", args.dataset)
     logger.info("Embedding model: %s", args.embedding_model)
     logger.info("Retrieval mode: %s", args.retrieval_mode)
+    logger.info("Retrieval level: %s", args.retrieval_level)
     if args.retrieval_only:
         logger.info("Mode: Retrieval-only (reranking disabled)")
     else:

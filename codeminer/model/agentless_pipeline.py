@@ -336,15 +336,8 @@ class AgentlessPipeline:
 
             if not node_data_list:
                 raise ValueError(
-                    f"No code content available for node: {symbol_node_id}"
-                )
-
-            node_data = node_data_list[0]
-            code_content = node_data.get("code_content", "")
-            if not code_content:
-                raise ValueError(
-                    f"Empty code content retrieved for node: {symbol_node_id}"
-                )
+                    f"Error getting code for {symbol_node_id}: {exc}"
+                ) from exc
 
             code_segments.append(
                 f"### {symbol_node_id} ###\n```\n{code_content}\n```\n"
