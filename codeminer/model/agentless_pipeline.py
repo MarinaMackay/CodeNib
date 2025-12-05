@@ -7,11 +7,12 @@ from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
 from ..graph.code_graph import CodeGraph
-from ..graph.transverse_graph import RepoEntitySearcher, traverse_tree_structure
+from ..graph.transverse_graph import traverse_tree_structure
 from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
 from ..log_utils import get_logger
 from ..scip_interface import SCIPIndexer
-from ..types import ROOT_NODE, QueriedNode
+from ..types import NODE_TYPE_FILE, ROOT_NODE, QueriedNode, is_symbol_node
+from ..utils import wrap_code_snippet
 
 logger = get_logger(__name__)
 
@@ -156,9 +157,6 @@ class AgentlessPipeline:
         if not self.code_graph:
             raise ValueError("Failed to build code graph")
 
-        # Initialize searcher
-        self.entity_searcher = RepoEntitySearcher(self.code_graph)
-
         # Initialize LLM
         llm_config = LLMConfig(
             model_name=llm_model,
@@ -242,15 +240,13 @@ class AgentlessPipeline:
             candidate_files = result.files
             logger.debug(f"[Stage 1] EXTRACTED CANDIDATE FILES: {candidate_files}")
         except Exception as e:
-            raise ValueError(f"Error in Stage 1: {e}")
+            raise ValueError(f"Error in Stage 1: {e}") from e
 
         if not candidate_files:
             raise ValueError("LLM did not return any file candidates")
 
         # Filter valid file nodes
-        files = [
-            file for file in candidate_files if self.entity_searcher.has_node(file)
-        ]
+        files = [file for file in candidate_files if self._has_node(file)]
 
         return files[: self.top_n_files]
 
@@ -269,7 +265,7 @@ class AgentlessPipeline:
         file_structures = []
         for file_path in file_paths:
             try:
-                if self.entity_searcher.has_node(file_path):
+                if self._has_node(file_path):
                     structure = traverse_tree_structure(
                         code_graph=self.code_graph,
                         root=file_path,
@@ -283,7 +279,7 @@ class AgentlessPipeline:
                             f"### {file_path} ###\n```\n{structure}\n```\n"
                         )
             except Exception as e:
-                raise ValueError(f"Error processing file {file_path}: {e}")
+                raise ValueError(f"Error processing file {file_path}: {e}") from e
 
         if not file_structures:
             raise ValueError("No file structures to process")
@@ -301,7 +297,7 @@ class AgentlessPipeline:
             candidate_nodes = result.nodes
             logger.debug(f"[Stage 2] EXTRACTED CANDIDATE NODES: {candidate_nodes}")
         except Exception as e:
-            raise ValueError(f"Error in Stage 2: {e}")
+            raise ValueError(f"Error in Stage 2: {e}") from e
 
         if not candidate_nodes:
             raise ValueError("LLM did not return any node candidates")
@@ -324,17 +320,19 @@ class AgentlessPipeline:
         content_map: dict = {}
 
         for symbol_node_id in symbols:
-            if not self.entity_searcher.has_node(symbol_node_id):
+            if not self._has_node(symbol_node_id):
                 raise ValueError(f"Skip missing node: {symbol_node_id}")
 
             try:
-                node_data_list = self.entity_searcher.get_node_data(
+                node_data_list = self._get_node_data(
                     [symbol_node_id],
                     return_code_content=True,
                     wrap_with_ln=True,
                 )
             except Exception as exc:
-                raise ValueError(f"Error getting code for {symbol_node_id}: {exc}")
+                raise ValueError(
+                    f"Error getting code for {symbol_node_id}: {exc}"
+                ) from exc
 
             if not node_data_list:
                 raise ValueError(
@@ -367,7 +365,7 @@ class AgentlessPipeline:
             shortlisted_node_ids = result.refined_nodes
             logger.debug(f"[Stage 3] EXTRACTED NODES: {shortlisted_node_ids}")
         except Exception as e:
-            raise ValueError(f"Error in Stage 3: {e}")
+            raise ValueError(f"Error in Stage 3: {e}") from e
 
         candidate_set = set(usable_symbols)
         results: List[QueriedNode] = []
@@ -378,7 +376,7 @@ class AgentlessPipeline:
                     f"Discarding node not part of Stage 2 results: {node_id}"
                 )
 
-            attrs = self.entity_searcher.get_node_data([node_id])[0]
+            attrs = self._get_node_data([node_id])[0]
             results.append(
                 QueriedNode(
                     node_name=node_id,
@@ -392,3 +390,109 @@ class AgentlessPipeline:
             )
 
         return results
+
+    def _has_node(self, node_id: str) -> bool:
+        """Check if a node exists in the code graph."""
+        return node_id in self.code_graph.name_to_vertex
+
+    def _get_node_data(
+        self,
+        node_ids: List[str],
+        return_code_content: bool = False,
+        wrap_with_ln: bool = False,
+    ) -> List[dict]:
+        """Retrieve node attributes (and optional code content) directly from the code graph."""
+        node_data: List[dict] = []
+        for node_id in node_ids:
+            vertex_id = self.code_graph.name_to_vertex.get(node_id)
+            if vertex_id is None:
+                continue
+
+            vertex = self.code_graph.graph.vs[vertex_id]
+            attrs = vertex.attributes().copy()
+            attrs.setdefault("name", node_id)
+
+            if return_code_content:
+                code_content = self._extract_code_content(attrs, wrap_with_ln)
+                if code_content is not None:
+                    attrs["code_content"] = code_content
+
+            node_data.append(attrs)
+
+        return node_data
+
+    def _extract_code_content(
+        self, attrs: dict, wrap_with_ln: bool = False
+    ) -> Optional[str]:
+        """Load code content for a node given its attributes."""
+        node_type = attrs.get("type", "unknown")
+
+        if node_type == NODE_TYPE_FILE:
+            file_path = self._resolve_file_path(attrs.get("name"))
+            if not file_path:
+                return None
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                if wrap_with_ln:
+                    lines = content.split("\n")
+                    return wrap_code_snippet(content, 1, len(lines))
+                return content
+            except OSError as exc:
+                logger.warning(f"Failed to read file node {attrs.get('name')}: {exc}")
+                return None
+
+        if is_symbol_node(node_type):
+            file_path = self._resolve_file_path(attrs.get("file"))
+            if not file_path:
+                return None
+
+            start_line = attrs.get("start_line")
+            end_line = attrs.get("end_line")
+
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+            except (OSError, UnicodeDecodeError) as exc:
+                logger.warning(
+                    f"Failed to read code content for {attrs.get('name')}: {exc}"
+                )
+                return None
+
+            start_idx = max(0, start_line if start_line is not None else 0)
+            end_idx = (
+                min(len(lines), end_line + 1) if end_line is not None else len(lines)
+            )
+            extracted_lines = lines[start_idx:end_idx]
+
+            if wrap_with_ln:
+                original_end_idx = len(extracted_lines)
+                while extracted_lines and extracted_lines[-1].strip() == "":
+                    extracted_lines.pop()
+
+                code_content = "".join(extracted_lines)
+
+                lines_removed = original_end_idx - len(extracted_lines)
+                actual_end_line = (
+                    end_line
+                    if end_line is not None
+                    else start_idx + len(extracted_lines) - 1
+                ) - lines_removed
+
+                return wrap_code_snippet(
+                    code_content,
+                    start_idx + 1,
+                    actual_end_line + 1,
+                )
+
+            return "".join(extracted_lines)
+
+        return None
+
+    def _resolve_file_path(self, file_path: Optional[str]) -> Optional[str]:
+        """Resolve a possibly relative file path against the code graph root."""
+        if not file_path:
+            return None
+        if self.code_graph.project_root and not os.path.isabs(file_path):
+            return os.path.join(self.code_graph.project_root, file_path)
+        return file_path
