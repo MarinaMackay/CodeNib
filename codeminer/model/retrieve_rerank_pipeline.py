@@ -286,59 +286,75 @@ class RetrieveRerankPipeline:
         l2_path = self.index_path / "l2"
 
         # Load if either top-level config exists or hierarchical structure exists
-        if config_file.exists() or (l0_path.exists() and l2_path.exists()):
+        cache_exists = config_file.exists() or (l0_path.exists() and l2_path.exists())
+        if cache_exists:
             logger.info(
                 "Loading hierarchical vector store from cache.",
                 extra={"index_path": str(self.index_path)},
             )
             vector_store.load(str(self.index_path))
-        else:
-            logger.info("Building hierarchical vector store index.")
-            # Build L0 and L2 chunks
-            repo_cfg = RepoChunkingConfig(languages=self.languages)
+            missing_levels = []
+            if not vector_store.l0_documents:
+                missing_levels.append("l0")
+            if self.retrieval_level == "l2" and not vector_store.l2_documents:
+                missing_levels.append("l2")
 
-            # L0 chunks (file-level skeletons)
-            l0_chunker = CodeChunker(
-                language=self.languages[0],
-                repo_config=repo_cfg,
-                max_lines_per_chunk=None,
-                chunk_depth=0,
-                skeleton_mode=True,
-            )
-            l0_chunks = l0_chunker.chunk_repository(repo_path=self.repo_path)
+            if not missing_levels:
+                return vector_store
 
-            # L2 chunks (function/method-level)
-            l2_chunker = CodeChunker(
-                language=self.languages[0],
-                repo_config=repo_cfg,
-                max_lines_per_chunk=self.max_lines_per_chunk,
-                chunk_depth=2,
-                l2_level_exclusive=True,
-                skeleton_mode=False,
-            )
-            l2_chunks = l2_chunker.chunk_repository(repo_path=self.repo_path)
-
-            if not l0_chunks and not l2_chunks:
-                raise ValueError("No code chunks generated from repository.")
-
-            # Add L0 chunks
-            if l0_chunks:
-                l0_chunks_for_indexing = [chunk._asdict() for chunk in l0_chunks]
-                vector_store.add_code_chunks(l0_chunks_for_indexing, level="l0")
-
-            # Add L2 chunks
-            if l2_chunks:
-                l2_chunks_for_indexing = [chunk._asdict() for chunk in l2_chunks]
-                vector_store.add_code_chunks(l2_chunks_for_indexing, level="l2")
-
-            vector_store.save(str(self.index_path))
             logger.info(
-                "Hierarchical vector store built and cached.",
-                extra={
-                    "l0_chunks": len(l0_chunks),
-                    "l2_chunks": len(l2_chunks),
-                },
+                "Cached vector store missing required levels %s; rebuilding.",
+                missing_levels,
+                extra={"index_path": str(self.index_path)},
             )
+            vector_store.clear()
+
+        logger.info("Building hierarchical vector store index.")
+        # Build L0 and L2 chunks
+        repo_cfg = RepoChunkingConfig(languages=self.languages)
+
+        # L0 chunks (file-level skeletons)
+        l0_chunker = CodeChunker(
+            language=self.languages[0],
+            repo_config=repo_cfg,
+            max_lines_per_chunk=None,
+            chunk_depth=0,
+            skeleton_mode=True,
+        )
+        l0_chunks = l0_chunker.chunk_repository(repo_path=self.repo_path)
+
+        # L2 chunks (function/method-level)
+        l2_chunker = CodeChunker(
+            language=self.languages[0],
+            repo_config=repo_cfg,
+            max_lines_per_chunk=self.max_lines_per_chunk,
+            chunk_depth=2,
+            l2_level_exclusive=True,
+            skeleton_mode=False,
+        )
+        l2_chunks = l2_chunker.chunk_repository(repo_path=self.repo_path)
+
+        if not l0_chunks and not l2_chunks:
+            raise ValueError("No code chunks generated from repository.")
+
+        # Add L0 chunks
+        if l0_chunks:
+            l0_chunks_for_indexing = [chunk._asdict() for chunk in l0_chunks]
+            vector_store.add_code_chunks(l0_chunks_for_indexing, level="l0")
+
+        # Add L2 chunks
+        if l2_chunks:
+            l2_chunks_for_indexing = [chunk._asdict() for chunk in l2_chunks]
+            vector_store.add_code_chunks(l2_chunks_for_indexing, level="l2")
+
+        vector_store.save(str(self.index_path))
+        logger.info(
+            "Hierarchical vector store built and cached.",
+            extra={
+                "l0_chunks": len(l0_chunks),
+                "l2_chunks": len(l2_chunks),
+            },
+        )
         return vector_store
 
     def _initialize_bm25_index(self, *, max_k: int) -> BM25CodeIndexer:

@@ -4,7 +4,9 @@ This script builds and caches hierarchical embedding indices for all SWE-bench L
 Each instance's embedding will be stored in /mnt/data/codeminer/{instance_id}/
 
 Test Usage:
-    python scripts/build_embeddings.py --filter-instance "^(astropy__astropy-6938)$" --force-rebuild
+    python scripts/build_embeddings.py \\
+        --filter-instance "^(astropy__astropy-6938)$" \\
+        --force-rebuild
 """
 
 import argparse
@@ -107,7 +109,18 @@ def parse_args():
         "--max-lines-per-chunk",
         type=int,
         default=None,
-        help="Maximum lines per L2 code chunk (default: None, no splitting to preserve function integrity)",
+        help=(
+            "Maximum lines per L2 code chunk (default: None, no splitting to "
+            "preserve function integrity)"
+        ),
+    )
+    parser.add_argument(
+        "--build-levels",
+        type=str,
+        nargs="+",
+        default=["L0", "L2"],
+        choices=["L0", "L2"],
+        help="Chunk levels to build and index (choose one or both)",
     )
 
     # Storage configuration
@@ -136,6 +149,8 @@ def parse_args():
 
 def build_embeddings(args):
     """Build hierarchical embedding indices for all SWE-bench Lite instances."""
+
+    build_levels = [level.lower() for level in args.build_levels]
 
     # Prepare dataset args
     dataset_args = argparse.Namespace(
@@ -209,32 +224,51 @@ def build_embeddings(args):
             # Shared repo config
             repo_cfg = RepoChunkingConfig(languages=list(args.languages))
 
-            # [Main] Generate L0 chunks (file-level skeletons)
-            logger.info("Generating L0 chunks (file-level skeletons)...")
-            with instance_profiler.section("chunk_repository_l0"):
-                l0_chunker = CodeChunker(
-                    language=args.languages[0],
-                    repo_config=repo_cfg,
-                    max_lines_per_chunk=None,  # No splitting for skeletons
-                    chunk_depth=0,  # File-level
-                    skeleton_mode=True,  # Skeleton only (signatures)
-                )
-                l0_chunks = l0_chunker.chunk_repository(repo_path=repo_path)
-            logger.info(f"Generated {len(l0_chunks)} L0 chunks (file skeletons)")
+            # Build requested levels
+            chunks_by_level = {}
 
-            # [Main] Generate L2 chunks (function/method-level)
-            logger.info("Generating L2 chunks (function/method-level)...")
-            with instance_profiler.section("chunk_repository_l2"):
-                l2_chunker = CodeChunker(
-                    language=args.languages[0],
-                    repo_config=repo_cfg,
-                    max_lines_per_chunk=args.max_lines_per_chunk,
-                    chunk_depth=2,  # Method-level
-                    l2_level_exclusive=True,  # Only functions/methods, no classes
-                    skeleton_mode=False,  # Full code
+            level_configs = {
+                "l0": {
+                    "log": "Generating L0 chunks (file-level skeletons)...",
+                    "profiler_section": "chunk_repository_l0",
+                    "chunker_kwargs": dict(
+                        language=args.languages[0],
+                        repo_config=repo_cfg,
+                        max_lines_per_chunk=None,
+                        chunk_depth=0,
+                        skeleton_mode=True,
+                    ),
+                    "log_suffix": "L0 chunks (file skeletons)",
+                },
+                "l2": {
+                    "log": "Generating L2 chunks (function/method-level)...",
+                    "profiler_section": "chunk_repository_l2",
+                    "chunker_kwargs": dict(
+                        language=args.languages[0],
+                        repo_config=repo_cfg,
+                        max_lines_per_chunk=args.max_lines_per_chunk,
+                        chunk_depth=2,
+                        l2_level_exclusive=True,
+                        skeleton_mode=False,
+                    ),
+                    "log_suffix": "L2 chunks (functions/methods)",
+                },
+            }
+
+            for level in build_levels:
+                cfg = level_configs[level]
+                logger.info(cfg["log"])
+                with instance_profiler.section(cfg["profiler_section"]):
+                    chunker = CodeChunker(**cfg["chunker_kwargs"])
+                    chunks_by_level[level] = chunker.chunk_repository(
+                        repo_path=repo_path
+                    )
+                logger.info(
+                    f"Generated {len(chunks_by_level[level])} {cfg['log_suffix']}"
                 )
-                l2_chunks = l2_chunker.chunk_repository(repo_path=repo_path)
-            logger.info(f"Generated {len(l2_chunks)} L2 chunks (functions/methods)")
+
+            l0_chunks = chunks_by_level.get("l0", [])
+            l2_chunks = chunks_by_level.get("l2", [])
 
             if not l0_chunks and not l2_chunks:
                 logger.warning(f"No code chunks generated from repository, skipping...")
