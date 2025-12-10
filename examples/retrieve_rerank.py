@@ -218,7 +218,7 @@ def parse_args():
         "--metrics-k",
         type=int,
         nargs="+",
-        default=[1, 3, 5, 10, 20],
+        default=[1, 3, 5, 10, 20, 30, 40],
         help="Cutoffs for accuracy/precision/recall reporting",
     )
 
