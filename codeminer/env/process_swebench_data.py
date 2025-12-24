@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Union
 
 import datasets
-from datasets import Features, Value
+from datasets import Features, Sequence, Value
 
 from ..log_utils import get_logger
 
@@ -78,10 +78,18 @@ def load_filter_swebench_dataset_explicit(
             "hints_text": Value("string"),
             "created_at": Value("string"),
             "version": Value("string"),
-            "FAIL_TO_PASS": Value("string"),
-            "PASS_TO_PASS": Value("string"),
-            "environment_setup_commit": Value("string"),
         }
+
+        # Different datasets have different schemas for FAIL_TO_PASS and PASS_TO_PASS
+        if "multilingual" in dataset.lower():
+            # SWE-bench Multilingual uses list type for test fields
+            base_features["FAIL_TO_PASS"] = Sequence(Value("string"))
+            base_features["PASS_TO_PASS"] = Sequence(Value("string"))
+        else:
+            # SWE-bench Verified and original use string type
+            base_features["FAIL_TO_PASS"] = Value("string")
+            base_features["PASS_TO_PASS"] = Value("string")
+            base_features["environment_setup_commit"] = Value("string")
 
         # Add difficulty field for SWE-bench Verified
         if "verified" in dataset.lower():
