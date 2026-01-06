@@ -14,7 +14,9 @@ Usage Examples:
     python scripts/swebench_gt_locate.py --dataset lite
 
     # Process first 10 instances of repo "django/django", output into local file
-    python scripts/swebench_gt_locate.py --dataset verified --filter "django__django-.*" --limit 10 --output results/test_gt.json --keep-repos
+    python scripts/swebench_gt_locate.py --dataset verified \
+        --filter "django__django-.*" --limit 10 --output results/test_gt.json \
+        --keep-repos
 
 Output Format:
     Each entry in the output JSON array contains:
@@ -24,7 +26,10 @@ Output Format:
         "base_commit": "6500928dc0e57be8f06d1162eacc3ba5e2eff692",
         "target_files":     ["astropy/coordinates/builtin_frames/itrs.py", ...],
         "symbols_modified": ["astropy/coordinates/builtin_frames/itrs.py:ITRS", ...],
-        "symbols_added":    ["astropy/coordinates/builtin_frames/itrs_observed_transforms.py:itrs_to_observed()", ...],
+        "symbols_added":    [
+            "astropy/coordinates/builtin_frames/itrs_observed_transforms.py:itrs_to_observed()",
+            ...,
+        ],
         "symbols_deleted": [],
         "error": null
     }
@@ -662,7 +667,9 @@ def main():
     if args.output is None:
         cache_dir = str(Path.home()) + "/.codeminer"
         os.makedirs(cache_dir, exist_ok=True)
-        args.output = os.path.join(cache_dir, f"swebench_{args.dataset}_gt.json")
+        args.output = os.path.join(
+            cache_dir, f"swebench_{args.dataset}_{args.split}_gt.json"
+        )
 
     # Load dataset with filtering and limiting
     dataset = load_swebench(

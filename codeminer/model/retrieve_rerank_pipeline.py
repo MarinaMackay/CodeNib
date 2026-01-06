@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from ..code_chunker import CodeChunker
+from ..code_chunker import CodeChunker, RepoChunkingConfig
 from ..index.embedding import CodeVectorStore, build_hierarchical_vector_store
 from ..index.sparse_idx.bm25_index import BM25CodeIndexer
 from ..llm.llm_config import LLMConfig, LLMProvider
@@ -102,6 +102,12 @@ class RetrieveRerankPipeline:
         rerank_provider: LLMProvider = LLMProvider.VLLM_OPENAI,
         rerank_temperature: float = 0.0,
         rerank_max_tokens: int = 2048,
+        rerank_strategy: str = "llm",
+        rerank_embedding_model: Optional[str] = None,
+        rerank_embedding_provider: Optional[str] = None,
+        rerank_embedding_dimension: Optional[int] = None,
+        rerank_embedding_model_kwargs: Optional[dict] = None,
+        rerank_index_metric: str = "ip",
         languages: Optional[List[str]] = None,
         max_lines_per_chunk: int = 100,
         sparse_max_k: int = 128,
@@ -109,6 +115,7 @@ class RetrieveRerankPipeline:
         rerank_window_step: Optional[int] = None,
         enable_rerank: bool = True,
         vector_masks: Optional[Dict[str, Set[str]]] = None,
+        rerank_candidate_top_k: Optional[int] = None,
     ) -> None:
         self.repo_path = self._validate_repo(repo_path)
         self.index_path = Path(index_path)
@@ -117,6 +124,8 @@ class RetrieveRerankPipeline:
         self.max_lines_per_chunk = max_lines_per_chunk
         self._chunks = None
         self.enable_rerank = enable_rerank
+        self.index_metric = "ip"
+        self.profiler = None
         # Retrieval level: "l0" (file skeletons) or "l2" (functions/methods)
         if retrieval_level not in ("l0", "l2"):
             raise ValueError(
@@ -138,6 +147,7 @@ class RetrieveRerankPipeline:
 
         self.vector_store: Optional[CodeVectorStore] = None
         self.bm25_index: Optional[BM25CodeIndexer] = None
+        self.rerank_vector_store: Optional[CodeVectorStore] = None
 
         embedding_kwargs = self._prepare_embedding_kwargs(embedding_model_kwargs)
         if self._needs_engine("dense"):
@@ -159,13 +169,31 @@ class RetrieveRerankPipeline:
             )
             self.bm25_index = self._initialize_bm25_index(max_k=sparse_cap)
 
-        llm_config = LLMConfig(
-            model_name=rerank_model,
-            provider=rerank_provider,
-            max_tokens=rerank_max_tokens,
-            temperature=rerank_temperature,
-            config_data={"VLLM_TRUST_REMOTE_CODE": "true"},
-        )
+        strategy = (rerank_strategy or "llm").strip().lower()
+        if strategy not in ("llm", "embedding"):
+            raise ValueError("rerank_strategy must be 'llm' or 'embedding'.")
+        self.rerank_strategy = strategy
+
+        llm_config = None
+        if strategy == "llm":
+            llm_config = LLMConfig(
+                model_name=rerank_model,
+                provider=rerank_provider,
+                max_tokens=rerank_max_tokens,
+                temperature=rerank_temperature,
+                config_data={"VLLM_TRUST_REMOTE_CODE": "true"},
+            )
+        else:
+            rerank_model_kwargs = self._prepare_embedding_kwargs(
+                rerank_embedding_model_kwargs
+            )
+            self.rerank_vector_store = self._initialize_rerank_vector_store(
+                embedding_model=rerank_embedding_model or embedding_model,
+                embedding_provider=rerank_embedding_provider or embedding_provider,
+                embedding_dimension=rerank_embedding_dimension or embedding_dimension,
+                embedding_kwargs=rerank_model_kwargs,
+                index_metric=rerank_index_metric,
+            )
 
         self.rerank_window_size = (
             rerank_window_size
@@ -175,6 +203,11 @@ class RetrieveRerankPipeline:
         self.rerank_window_step = (
             rerank_window_step
             if rerank_window_step and rerank_window_step > 0
+            else None
+        )
+        self.rerank_candidate_top_k = (
+            rerank_candidate_top_k
+            if rerank_candidate_top_k and rerank_candidate_top_k > 0
             else None
         )
 
@@ -192,6 +225,8 @@ class RetrieveRerankPipeline:
         if self.enable_rerank:
             self.rerank_context = RerankContext(
                 llm_config=llm_config,
+                embedding_store=self.rerank_vector_store or self.vector_store,
+                candidate_top_k=self.rerank_candidate_top_k,
                 window_size=rerank_window_size,
                 window_step=rerank_window_step,
             )
@@ -208,7 +243,9 @@ class RetrieveRerankPipeline:
                 "retrieval_level": self.retrieval_level,
                 "dense_index": bool(self.vector_store),
                 "sparse_index": bool(self.bm25_index),
-                "rerank_model": rerank_model if self.enable_rerank else "disabled",
+                "rerank_strategy": (
+                    self.rerank_strategy if self.enable_rerank else "disabled"
+                ),
                 "enable_rerank": self.enable_rerank,
             },
         )
@@ -219,7 +256,8 @@ class RetrieveRerankPipeline:
         Args:
             query: The search query.
             top_k: Number of results to return. If rerank is enabled, this controls
-                the rerank output. Retrieval always fetches 100 candidates internally.
+                the rerank output. Retrieval always fetches RETRIEVAL_TOP_K
+                candidates internally.
         """
 
         # Build and execute the retrieval/rerank graph
@@ -244,7 +282,8 @@ class RetrieveRerankPipeline:
         resolved = os.path.abspath(repo_path)
         if not (os.path.exists(resolved) and os.path.isdir(resolved)):
             raise ValueError(
-                f"Repository path is invalid (does not exist or is not a directory): {resolved}"
+                "Repository path is invalid (does not exist or is not a directory): "
+                f"{resolved}"
             )
         return resolved
 
@@ -328,6 +367,39 @@ class RetrieveRerankPipeline:
         )
         return vector_store
 
+    def _initialize_rerank_vector_store(
+        self,
+        *,
+        embedding_model: str,
+        embedding_provider: str,
+        embedding_dimension: int,
+        embedding_kwargs: Dict[str, object],
+        index_metric: str,
+    ) -> CodeVectorStore:
+        if (
+            self.vector_store
+            and self.vector_store.embedding_model == embedding_model
+            and self.vector_store.embedding_provider == embedding_provider
+        ):
+            return self.vector_store
+
+        logger.info(
+            "Initializing rerank embedding store",
+            extra={
+                "model": embedding_model,
+                "provider": embedding_provider,
+                "index_metric": index_metric,
+            },
+        )
+        return CodeVectorStore(
+            embedding_model=embedding_model,
+            embedding_provider=embedding_provider,
+            dimension=embedding_dimension,
+            index_metric=index_metric,
+            store_path=str(self.index_path),
+            **embedding_kwargs,
+        )
+
     def _initialize_bm25_index(self, *, max_k: int) -> BM25CodeIndexer:
         logger.info("Building BM25 index.", extra={"max_k": max_k})
         chunks = self._ensure_chunks()
@@ -339,12 +411,10 @@ class RetrieveRerankPipeline:
         primary_language = self.languages[0] if self.languages else "python"
         chunker = CodeChunker(
             language=primary_language,
+            repo_config=RepoChunkingConfig(languages=self.languages),
             max_lines_per_chunk=self.max_lines_per_chunk,
         )
-        chunks = chunker.chunk_repository(
-            repo_path=self.repo_path,
-            languages=self.languages,
-        )
+        chunks = chunker.chunk_repository(repo_path=self.repo_path)
         if not chunks:
             raise ValueError("No code chunks generated from repository.")
         self._chunks = chunks
@@ -394,15 +464,22 @@ class RetrieveRerankPipeline:
 
         rerank_node_id = "rerank_0"
         rerank_params = {"query": query, "top_k": output_top_k, "return_content": True}
+        if self.rerank_candidate_top_k is not None:
+            rerank_params["candidate_top_k"] = self.rerank_candidate_top_k
         if self.rerank_window_size is not None:
             rerank_params["window_size"] = self.rerank_window_size
         if self.rerank_window_step is not None:
             rerank_params["window_step"] = self.rerank_window_step
 
+        rerank_operator = (
+            PhysicalOperator.EMBEDDING_RERANK.value
+            if self.rerank_strategy == "embedding"
+            else PhysicalOperator.LLM_RERANK.value
+        )
         graph.add_node(
             ExecutionNode(
                 node_id=rerank_node_id,
-                operator=PhysicalOperator.LLM_RERANK.value,
+                operator=rerank_operator,
                 params=rerank_params,
                 deps=[aggregate_node_id],
             )
