@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-This script demonstrates the usage of RetrieveRerankPipeline on SWE-bench or LocBench datasets.
-Before running the pipeline, start a vLLM server for the rerank model:
+This script demonstrates RetrieveRerankPipeline on SWE-bench or LocBench
+datasets. Before running the pipeline, start a vLLM server for the rerank
+model:
 
 ```bash
 python scripts/start_vllm_server.py --model Qwen/Qwen2.5-Coder-7B
@@ -21,7 +22,13 @@ Usage:
         --embedding-provider huggingface
 
     # Run with hybrid (dense + sparse) retrieval before rerank
-    python examples/retrieve_rerank.py --dataset swebench_lite --retrieval-mode hybrid
+    python examples/retrieve_rerank.py --dataset swebench_lite \\
+        --retrieval-mode hybrid
+
+    # Use embedding-based rerank instead of LLM listwise reranker
+    python examples/retrieve_rerank.py --dataset swebench_lite \\
+        --rerank-strategy embedding \\
+        --rerank-embedding-model jinaai/jina-code-embeddings-v2-base
 
     # Override cache directories (one for indices, one for repos)
     python examples/retrieve_rerank.py --dataset swebench_lite \\
@@ -52,6 +59,7 @@ from codeminer.eval.retrieval_eval import (
 from codeminer.llm.llm_config import LLMProvider
 from codeminer.log_utils import get_logger
 from codeminer.model import RetrieveRerankPipeline, build_retrieve_plan
+from codeminer.model.retrieve_rerank_pipeline import RETRIEVAL_TOP_K
 
 logger = get_logger(__name__)
 
@@ -137,7 +145,17 @@ def parse_args():
         "--retrieval-only",
         action="store_true",
         default=False,
-        help="Run retrieval only without reranking (for evaluating retrieval performance)",
+        help=(
+            "Run retrieval only without reranking "
+            "(for evaluating retrieval performance)"
+        ),
+    )
+    parser.add_argument(
+        "--rerank-strategy",
+        type=str,
+        default="llm",
+        choices=["llm", "embedding"],
+        help="Rerank method to apply after retrieval.",
     )
     parser.add_argument(
         "--rerank-model",
@@ -166,8 +184,52 @@ def parse_args():
         type=int,
         default=None,
         help=(
-            "Stride between rerank windows; defaults to the window size when unspecified."
+            "Stride between rerank windows; defaults to the window size "
+            "when unspecified."
         ),
+    )
+    parser.add_argument(
+        "--rerank-top-k",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of candidates to pass to the reranker."
+            "Must be >= max(metrics-k) and <= retrieve top_k."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-embedding-model",
+        type=str,
+        default=None,
+        help=(
+            "Optional embedding model for embedding-based rerank "
+            "(defaults to retrieval model)."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-embedding-provider",
+        type=str,
+        default=None,
+        choices=["openai", "huggingface"],
+        help=(
+            "Embedding provider for rerank embeddings "
+            "(defaults to retrieval provider)."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-embedding-dimension",
+        type=int,
+        default=None,
+        help=(
+            "Embedding dimension for rerank embeddings "
+            "(defaults to retrieval dimension)."
+        ),
+    )
+    parser.add_argument(
+        "--rerank-embedding-batch-size",
+        type=int,
+        default=32,
+        help="Batch size for rerank embedding encoding (embedding strategy only).",
     )
 
     # Repository processing configuration
@@ -210,7 +272,8 @@ def parse_args():
         type=str,
         default=str(default_eval_path),
         help=(
-            "Path to JSON file containing evaluation annotations (target_files, symbols_*). "
+            "Path to JSON file containing evaluation annotations "
+            "(target_files, symbols_*). "
             "Defaults to ~/.codeminer/swebench_lite_gt.json."
         ),
     )
@@ -250,7 +313,8 @@ def load_eval_metadata(path: str):
     if not resolved.exists():
         raise FileNotFoundError(
             f"Evaluation annotations file not found at {resolved}. "
-            "Generate it via scripts/swebench_gt_locate.py or point --eval-instances elsewhere."
+            "Generate it via scripts/swebench_gt_locate.py or point "
+            "--eval-instances elsewhere."
         )
     with open(resolved, "r", encoding="utf-8") as fh:
         payload = json.load(fh)
@@ -292,9 +356,22 @@ def run_pipeline(args):
 
     eval_metadata = load_eval_metadata(args.eval_instances)
     retrieve_plan = build_retrieve_plan(args.retrieval_mode)
+    retrieve_top_k = max((stage.top_k or RETRIEVAL_TOP_K) for stage in retrieve_plan)
     aggregate = {}
     metrics_k = sorted(set(args.metrics_k))
-    max_k = max(metrics_k)
+    metric_max_k = max(metrics_k)
+    if not args.retrieval_only and args.rerank_top_k is not None:
+        if args.rerank_top_k < metric_max_k:
+            raise ValueError(
+                "rerank_top_k must be >= the largest metrics-k value "
+                f"({metric_max_k}), got {args.rerank_top_k}."
+            )
+        if args.rerank_top_k > retrieve_top_k:
+            raise ValueError(
+                "rerank_top_k must be <= retrieve top_k "
+                f"({retrieve_top_k}), got {args.rerank_top_k}."
+            )
+    query_top_k = metric_max_k
     eval_count = 0
     all_results = [] if args.result_path else None
 
@@ -325,6 +402,12 @@ def run_pipeline(args):
                 "batch_size": args.batch_size,
             },
         }
+        rerank_embedding_kwargs = {
+            "trust_remote_code": args.trust_remote_code,
+            "encode_kwargs": {
+                "batch_size": args.rerank_embedding_batch_size,
+            },
+        }
 
         pipeline = RetrieveRerankPipeline(
             repo_path=repo_path,
@@ -335,6 +418,11 @@ def run_pipeline(args):
             embedding_model_kwargs=embedding_model_kwargs,
             rerank_model=args.rerank_model,
             rerank_provider=LLMProvider(args.rerank_provider),
+            rerank_strategy=args.rerank_strategy,
+            rerank_embedding_model=args.rerank_embedding_model,
+            rerank_embedding_provider=args.rerank_embedding_provider,
+            rerank_embedding_dimension=args.rerank_embedding_dimension,
+            rerank_embedding_model_kwargs=rerank_embedding_kwargs,
             languages=args.languages,
             max_lines_per_chunk=args.max_lines_per_chunk,
             retrieval_plan=retrieve_plan,
@@ -342,11 +430,12 @@ def run_pipeline(args):
             rerank_window_size=args.rerank_window_size,
             rerank_window_step=args.rerank_window_step,
             enable_rerank=not args.retrieval_only,
+            rerank_candidate_top_k=args.rerank_top_k,
         )
 
         # Query the pipeline
         query = instance["problem_statement"]
-        results = pipeline.query(query=query, top_k=max_k)
+        results = pipeline.query(query=query, top_k=query_top_k)
 
         metrics = evaluate_predictions(
             nodes=results,
@@ -372,8 +461,8 @@ def run_pipeline(args):
         # Collect results if result_path is provided
         if all_results is not None:
             unique_files_ordered, normalized_symbols = extract_predictions(results)
-            metric_k_files = unique_files_ordered[:max_k]
-            metric_k_node_ids = normalized_symbols[:max_k]
+            metric_k_files = unique_files_ordered[:metric_max_k]
+            metric_k_node_ids = normalized_symbols[:metric_max_k]
 
             result_entry = {
                 "instance_id": instance_id,
