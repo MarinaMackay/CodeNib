@@ -484,13 +484,14 @@ class CodeChunker:
         Returns:
             Dictionary containing instance info, repo path, and chunks
         """
-        from .env.process_swebench_data import process_swebench_instance
+        from .dataset.swebench import SwebenchDataset
 
         if cache_dir is None:
             cache_dir = "~/.codeminer"
 
-        # Process the SWE-bench instance (download repo, checkout commit)
-        repo_path = process_swebench_instance(instance, cache_dir)
+        dataset_obj = SwebenchDataset(root=cache_dir, repo_root=cache_dir)
+        dataset_obj.process_instance(instance)
+        repo_path = dataset_obj.get_repo_path(instance)
 
         # Auto-detect primary language if not specified
         if languages is None:
