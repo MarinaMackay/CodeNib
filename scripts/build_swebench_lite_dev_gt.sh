@@ -7,7 +7,7 @@ OUTPUT_PATH="${OUTPUT_PATH:-$HOME/.codeminer/swebench_lite_gt_dev.json}"
 FILTER="${FILTER:-.*}"
 LIMIT="${LIMIT:-}"
 
-CMD=(python scripts/swebench_gt_locate.py
+CMD=(python codeminer/dataset/gt_locate.py
   --dataset lite
   --split dev
   --output "${OUTPUT_PATH}"

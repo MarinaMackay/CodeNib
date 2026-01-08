@@ -15,10 +15,7 @@ import logging
 import sys
 from pathlib import Path
 
-from codeminer.env.process_swebench_data import (
-    load_filter_swebench_dataset,
-    process_swebench_instance,
-)
+from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.index.embedding import build_hierarchical_vector_store
 from codeminer.log_utils import get_logger
 from codeminer.profiler import Profiler
@@ -161,15 +158,13 @@ def build_embeddings(args):
 
     build_levels = [level.lower() for level in args.build_levels]
 
-    # Prepare dataset args
-    dataset_args = argparse.Namespace(
+    # Load dataset
+    dataset_obj = SwebenchDataset(
         dataset=args.dataset,
         split=args.split,
         filter_instance=args.filter_instance,
     )
-
-    # Load dataset
-    dataset_instances = load_filter_swebench_dataset(args=dataset_args)
+    dataset_instances = dataset_obj.load()
 
     if len(dataset_instances) == 0:
         raise ValueError(f"No instances found in {args.dataset}")
@@ -207,7 +202,8 @@ def build_embeddings(args):
             )
 
             # Process instance to get repo path
-            repo_path = process_swebench_instance(instance)
+            dataset_obj.process_instance(instance)
+            repo_path = dataset_obj.get_repo_path(instance)
 
             # Convert instance_id to directory name (replace / with __)
             instance_dir_name = instance_id.replace("/", "__")

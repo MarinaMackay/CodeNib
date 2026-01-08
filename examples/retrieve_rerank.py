@@ -38,17 +38,10 @@ Usage:
 
 import argparse
 import json
-import os
 from pathlib import Path
 
-from codeminer.env.process_locbench_data import (
-    load_filter_locbench_dataset,
-    process_locbench_instance,
-)
-from codeminer.env.process_swebench_data import (
-    load_filter_swebench_dataset,
-    process_swebench_instance,
-)
+from codeminer.dataset.locbench import LocbenchDataset
+from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.eval.retrieval_eval import (
     aggregate_metrics,
     average_metrics,
@@ -62,21 +55,6 @@ from codeminer.model import RetrieveRerankPipeline, build_retrieve_plan
 from codeminer.model.retrieve_rerank_pipeline import RETRIEVAL_TOP_K
 
 logger = get_logger(__name__)
-
-DATASET_CONFIGS = {
-    "swebench_lite": {
-        "dataset": "princeton-nlp/SWE-bench_Lite",
-        "split": "test",
-        "loader": load_filter_swebench_dataset,
-        "processor": process_swebench_instance,
-    },
-    "locbench_v1": {
-        "dataset": "czlll/Loc-Bench_V1",
-        "split": "test",
-        "loader": load_filter_locbench_dataset,
-        "processor": process_locbench_instance,
-    },
-}
 
 
 def parse_args():
@@ -266,7 +244,7 @@ def parse_args():
     )
 
     # Evaluation configuration
-    default_eval_path = Path.home() / ".codeminer" / "swebench_lite_gt.json"
+    default_eval_path = Path.home() / ".codeminer" / "swebench_lite_dev_gt.json"
     parser.add_argument(
         "--eval-instances",
         type=str,
@@ -274,7 +252,8 @@ def parse_args():
         help=(
             "Path to JSON file containing evaluation annotations "
             "(target_files, symbols_*). "
-            "Defaults to ~/.codeminer/swebench_lite_gt.json."
+            "Defaults to ~/.codeminer/swebench_lite_dev_gt.json. "
+            "For SWE-bench, the file is generated if missing."
         ),
     )
     parser.add_argument(
@@ -308,53 +287,37 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_eval_metadata(path: str):
-    resolved = Path(os.path.expanduser(path)).resolve()
-    if not resolved.exists():
-        raise FileNotFoundError(
-            f"Evaluation annotations file not found at {resolved}. "
-            "Generate it via scripts/swebench_gt_locate.py or point "
-            "--eval-instances elsewhere."
-        )
-    with open(resolved, "r", encoding="utf-8") as fh:
-        payload = json.load(fh)
-    if isinstance(payload, dict) and "instances" in payload:
-        records = payload["instances"]
-    elif isinstance(payload, list):
-        records = payload
-    else:
-        records = [payload]
-    metadata = {}
-    for entry in records:
-        instance_id = entry.get("instance_id")
-        if instance_id:
-            metadata[instance_id] = entry
-    return metadata
-
-
 def run_pipeline(args):
     """Run the retrieve + rerank pipeline on the specified dataset."""
 
     # Get dataset configuration
     dataset = args.dataset
-    dataset_config = DATASET_CONFIGS[dataset]
-
-    # Prepare dataset args
-    dataset_args = argparse.Namespace(
-        dataset=dataset_config["dataset"],
-        split=args.split,
-        filter_instance=args.filter_instance,
-    )
+    if dataset == "swebench_lite":
+        dataset_name = "princeton-nlp/SWE-bench_Lite"
+        dataset_split = "dev"
+        dataset_class = SwebenchDataset
+    elif dataset == "locbench_v1":
+        dataset_name = "czlll/Loc-Bench_V1"
+        dataset_split = "test"
+        dataset_class = LocbenchDataset
+    else:
+        raise ValueError(f"Unsupported dataset: {dataset}")
 
     # Load dataset
-    dataset_instances = dataset_config["loader"](args=dataset_args)
+    dataset_obj = dataset_class(
+        dataset=dataset_name,
+        split=dataset_split,
+        filter_instance=args.filter_instance,
+        repo_root=args.repo_cache_dir,
+    )
+    dataset_instances = dataset_obj.load()
 
     if len(dataset_instances) == 0:
         raise ValueError(f"No instances found in {dataset} dataset")
 
     logger.info("Loaded %d instance(s)", len(dataset_instances))
 
-    eval_metadata = load_eval_metadata(args.eval_instances)
+    eval_metadata = dataset_obj.load_eval_metadata(args.eval_instances)
     retrieve_plan = build_retrieve_plan(args.retrieval_mode)
     retrieve_top_k = max((stage.top_k or RETRIEVAL_TOP_K) for stage in retrieve_plan)
     aggregate = {}
@@ -389,7 +352,8 @@ def run_pipeline(args):
             continue
 
         # Process instance to get repo path
-        repo_path = dataset_config["processor"](instance, cache_dir=args.repo_cache_dir)
+        dataset_obj.process_instance(instance)
+        repo_path = dataset_obj.get_repo_path(instance)
 
         # Compute index path
         instance_dir_name = instance_id.replace("/", "__")
