@@ -34,7 +34,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from codeminer.env import load_filter_swebench_dataset, process_swebench_instance
+from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.scip_interface import SCIPClangIndexer, SCIPRustIndexer, SCIPTypeScriptIndexer
 
 
@@ -307,14 +307,13 @@ def test_cpp_simple(repo_path=None):
 def test_cpp_multisweb(args):
     """Test C++ SCIP CodeGraph with Multi-SWE-bench dataset."""
     # SWE-bench Multilingual dataset configuration
-    args_dict = {
-        "dataset": "SWE-bench/SWE-bench_Multilingual",
-        "split": "test",
-        "filter_instance": ".*",
-    }
+    dataset_obj = SwebenchDataset(
+        dataset="SWE-bench/SWE-bench_Multilingual",
+        split="test",
+        filter_instance=".*",
+    )
 
-    dataset_args = argparse.Namespace(**args_dict)
-    all_dataset = load_filter_swebench_dataset(args=dataset_args)
+    all_dataset = dataset_obj.load()
 
     # Filter for C/C++ projects
     cpp_instances = []
@@ -351,7 +350,8 @@ def test_cpp_multisweb(args):
 
         try:
             # Download and checkout repository
-            repo_path = process_swebench_instance(instance)
+            dataset_obj.process_instance(instance)
+            repo_path = dataset_obj.get_repo_path(instance)
 
             # Set output path
             output_path = f"./scip_output/cpp/{instance_id}"
@@ -485,14 +485,13 @@ def test_rust_simple(repo_path=None):
 def test_rust_multisweb(args):
     """Test Rust SCIP CodeGraph with Multi-SWE-bench dataset."""
     # SWE-bench Multilingual dataset configuration
-    args_dict = {
-        "dataset": "SWE-bench/SWE-bench_Multilingual",
-        "split": "test",
-        "filter_instance": ".*",
-    }
+    dataset_obj = SwebenchDataset(
+        dataset="SWE-bench/SWE-bench_Multilingual",
+        split="test",
+        filter_instance=".*",
+    )
 
-    dataset_args = argparse.Namespace(**args_dict)
-    all_dataset = load_filter_swebench_dataset(args=dataset_args)
+    all_dataset = dataset_obj.load()
 
     # Filter for Rust projects only
     rust_instances = []
@@ -530,7 +529,8 @@ def test_rust_multisweb(args):
 
         try:
             # Download and checkout repository
-            repo_path = process_swebench_instance(instance)
+            dataset_obj.process_instance(instance)
+            repo_path = dataset_obj.get_repo_path(instance)
 
             # Set output path
             output_path = f"./scip_output/rust/{instance_id}"
@@ -646,13 +646,12 @@ def test_ts_simple(repo_path=None):
 def test_ts_multisweb(args):
     """Test TypeScript SCIP CodeGraph with Multi-SWE-bench dataset."""
     # Load dataset
-    dataset_args_dict = {
-        "dataset": "SWE-bench/SWE-bench_Multilingual",
-        "split": "test",
-        "filter_instance": ".*",
-    }
-    dataset_args = argparse.Namespace(**dataset_args_dict)
-    all_dataset = load_filter_swebench_dataset(args=dataset_args)
+    dataset_obj = SwebenchDataset(
+        dataset="SWE-bench/SWE-bench_Multilingual",
+        split="test",
+        filter_instance=".*",
+    )
+    all_dataset = dataset_obj.load()
 
     # Filter for TypeScript/JavaScript projects
     ts_instances = []
@@ -697,7 +696,8 @@ def test_ts_multisweb(args):
 
         try:
             # Download repository
-            repo_path = process_swebench_instance(instance)
+            dataset_obj.process_instance(instance)
+            repo_path = dataset_obj.get_repo_path(instance)
 
             # Set output path
             output_path = f"./scip_output/ts/{instance_id}"

@@ -332,16 +332,15 @@ def test_cpp_simple(args):
 
 def test_cpp_multisweb(args):
     """Test C++ SCIP indexer with Multi-SWE-bench dataset."""
-    from codeminer.env import load_filter_swebench_dataset, process_swebench_instance
+    from codeminer.dataset.swebench import SwebenchDataset
 
-    args_dict = {
-        "dataset": "SWE-bench/SWE-bench_Multilingual",
-        "split": "test",
-        "filter_instance": ".*",
-    }
+    dataset_obj = SwebenchDataset(
+        dataset="SWE-bench/SWE-bench_Multilingual",
+        split="test",
+        filter_instance=".*",
+    )
 
-    dataset_args = argparse.Namespace(**args_dict)
-    all_dataset = load_filter_swebench_dataset(args=dataset_args)
+    all_dataset = dataset_obj.load()
 
     # Filter for C/C++ projects
     cpp_instances = []
@@ -374,7 +373,8 @@ def test_cpp_multisweb(args):
         print(f"{'=' * 80}")
 
         try:
-            repo_path = process_swebench_instance(instance)
+            dataset_obj.process_instance(instance)
+            repo_path = dataset_obj.get_repo_path(instance)
             output_path = f"./scip_output/cpp/{instance_id}"
 
             if not generate_cpp_compilation_database(Path(repo_path)):
@@ -533,16 +533,15 @@ def test_rust_simple(args):
 
 def test_rust_multisweb(args):
     """Test Rust SCIP indexer with Multi-SWE-bench dataset."""
-    from codeminer.env import load_filter_swebench_dataset, process_swebench_instance
+    from codeminer.dataset.swebench import SwebenchDataset
 
-    args_dict = {
-        "dataset": "SWE-bench/SWE-bench_Multilingual",
-        "split": "test",
-        "filter_instance": ".*",
-    }
+    dataset_obj = SwebenchDataset(
+        dataset="SWE-bench/SWE-bench_Multilingual",
+        split="test",
+        filter_instance=".*",
+    )
 
-    dataset_args = argparse.Namespace(**args_dict)
-    all_dataset = load_filter_swebench_dataset(args=dataset_args)
+    all_dataset = dataset_obj.load()
 
     # Filter for Rust projects
     rust_instances = []
@@ -575,7 +574,8 @@ def test_rust_multisweb(args):
         print(f"{'=' * 80}")
 
         try:
-            repo_path = process_swebench_instance(instance)
+            dataset_obj.process_instance(instance)
+            repo_path = dataset_obj.get_repo_path(instance)
             output_path = f"./scip_output/rust/{instance_id}"
 
             if not (Path(repo_path) / "Cargo.toml").exists():
@@ -702,16 +702,15 @@ def test_ts_simple(args):
 
 def test_ts_multisweb(args):
     """Test TypeScript SCIP indexer with Multi-SWE-bench dataset."""
-    from codeminer.env import load_filter_swebench_dataset, process_swebench_instance
+    from codeminer.dataset.swebench import SwebenchDataset
 
-    args_dict = {
-        "dataset": "SWE-bench/SWE-bench_Multilingual",
-        "split": "test",
-        "filter_instance": ".*",
-    }
+    dataset_obj = SwebenchDataset(
+        dataset="SWE-bench/SWE-bench_Multilingual",
+        split="test",
+        filter_instance=".*",
+    )
 
-    dataset_args = argparse.Namespace(**args_dict)
-    all_dataset = load_filter_swebench_dataset(args=dataset_args)
+    all_dataset = dataset_obj.load()
 
     # Filter for TypeScript/JavaScript projects
     ts_instances = []
@@ -753,7 +752,8 @@ def test_ts_multisweb(args):
         print(f"{'=' * 80}")
 
         try:
-            repo_path = process_swebench_instance(instance)
+            dataset_obj.process_instance(instance)
+            repo_path = dataset_obj.get_repo_path(instance)
             output_path = f"./scip_output/ts/{instance_id}"
 
             # Install dependencies if package.json exists

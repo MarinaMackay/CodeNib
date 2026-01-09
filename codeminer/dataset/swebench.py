@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Union
 
 import datasets
-from datasets import Features, Value
+from datasets import Features, Sequence, Value
 
 from ..log_utils import get_logger
 from .base import DatasetBase
@@ -117,6 +117,10 @@ class SwebenchDataset(DatasetBase):
             data_files = {self.split: dataset_path}
 
             # Define base features common to all SWE-bench variants
+            # Note: SWE-bench Multilingual uses list type for FAIL_TO_PASS/PASS_TO_PASS
+            # while other variants (Lite, Verified) use string type (JSON-formatted list)
+            is_multilingual = "multilingual" in self.dataset.lower()
+
             base_features = {
                 "repo": Value("string"),
                 "instance_id": Value("string"),
@@ -127,8 +131,8 @@ class SwebenchDataset(DatasetBase):
                 "hints_text": Value("string"),
                 "created_at": Value("string"),
                 "version": Value("string"),
-                "FAIL_TO_PASS": Value("string"),
-                "PASS_TO_PASS": Value("string"),
+                "FAIL_TO_PASS": Sequence(Value("string")) if is_multilingual else Value("string"),
+                "PASS_TO_PASS": Sequence(Value("string")) if is_multilingual else Value("string"),
                 "environment_setup_commit": Value("string"),
             }
 
