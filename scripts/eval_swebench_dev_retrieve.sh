@@ -12,31 +12,41 @@ REPO_CACHE_DIR="${REPO_CACHE_DIR:-~/.codeminer}"
 RESULT_PATH="${RESULT_PATH:-}"
 EVAL_INSTANCES="${EVAL_INSTANCES:-$HOME/.codeminer/swebench_lite_gt_dev.json}"
 
-EMBEDDING_MODEL="${EMBEDDING_MODEL:-Salesforce/SweRankEmbed-Small}"
 EMBEDDING_PROVIDER="${EMBEDDING_PROVIDER:-huggingface}"
-EMBEDDING_DIM="${EMBEDDING_DIM:-768}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 
-CMD=(python examples/retrieve_rerank.py
-  --dataset "${DATASET}"
-  --split "${SPLIT}"
-  --filter-instance "${FILTER_INSTANCE}"
-  --retrieval-only
-  --retrieval-mode dense
-  --embedding-model "${EMBEDDING_MODEL}"
-  --embedding-provider "${EMBEDDING_PROVIDER}"
-  --embedding-dimension "${EMBEDDING_DIM}"
-  --batch-size "${BATCH_SIZE}"
-  --eval-instances "${EVAL_INSTANCES}"
-  --index-cache-dir "${INDEX_CACHE_DIR}"
-  --repo-cache-dir "${REPO_CACHE_DIR}"
+EMBEDDING_MODELS=(
+  # "Salesforce/SweRankEmbed-Small:768"
+  # "BAAI/bge-code-v1:1536"
+  "jinaai/jina-code-embeddings-1.5b:1536"
 )
 
-if [[ -n "${RESULT_PATH}" ]]; then
-  CMD+=(--result-path "${RESULT_PATH}")
-fi
-
 echo "Running SWE-bench Lite dev retrieval eval (filter: ${FILTER_INSTANCE})"
-echo "Embedding model: ${EMBEDDING_MODEL}"
 
-"${CMD[@]}"
+for model_spec in "${EMBEDDING_MODELS[@]}"; do
+  EMBEDDING_MODEL="${model_spec%%:*}"
+  EMBEDDING_DIM="${model_spec##*:}"
+
+  CMD=(python examples/retrieve_rerank.py
+    --dataset "${DATASET}"
+    --split "${SPLIT}"
+    --filter-instance "${FILTER_INSTANCE}"
+    --retrieval-only
+    --retrieval-mode dense
+    --embedding-model "${EMBEDDING_MODEL}"
+    --embedding-provider "${EMBEDDING_PROVIDER}"
+    --embedding-dimension "${EMBEDDING_DIM}"
+    --batch-size "${BATCH_SIZE}"
+    --eval-instances "${EVAL_INSTANCES}"
+    --index-cache-dir "${INDEX_CACHE_DIR}"
+    --repo-cache-dir "${REPO_CACHE_DIR}"
+  )
+
+  if [[ -n "${RESULT_PATH}" ]]; then
+    result_suffix="${EMBEDDING_MODEL//\//_}.json"
+    CMD+=(--result-path "${RESULT_PATH%/}_${result_suffix}")
+  fi
+
+  echo "Embedding model: ${EMBEDDING_MODEL}"
+  "${CMD[@]}"
+done

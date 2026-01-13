@@ -206,7 +206,19 @@ class LocbenchDataset(DatasetBase):
             logger.info(f"Checking out commit {base_commit}")
             try:
                 subprocess.run(
-                    ["git", "checkout", base_commit],
+                    ["git", "reset", "--hard"],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                subprocess.run(
+                    ["git", "clean", "-fd"],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                subprocess.run(
+                    ["git", "checkout", "-f", base_commit],
                     check=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,

@@ -250,6 +250,33 @@ class RetrieveRerankPipeline:
             },
         )
 
+    def close(self) -> None:
+        """Release model/index resources held by the pipeline."""
+        if self.vector_store is not None:
+            self.vector_store.close()
+        if self.rerank_vector_store is not None:
+            self.rerank_vector_store.close()
+        if self.bm25_index is not None:
+            self.bm25_index.documents = []
+            self.bm25_index.nodes = []
+            self.bm25_index.retriever = None
+            self.bm25_index = None
+
+        self.vector_store = None
+        self.rerank_vector_store = None
+        self._chunks = None
+
+        try:
+            import gc
+
+            import torch
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def query(self, query: str, top_k: int = 10) -> List[QueriedNode]:
         """Execute retrieve + rerank plan for the provided query.
 
