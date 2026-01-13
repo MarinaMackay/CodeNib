@@ -186,6 +186,32 @@ class CodeVectorStore:
                 f"Unsupported index_metric: {self.index_metric}. Must be 'ip' or 'l2'."
             )
 
+    def close(self) -> None:
+        """Release embeddings and FAISS resources to free memory."""
+        for index in (self.l0_index, self.l2_index):
+            if index is None:
+                continue
+            reset = getattr(index, "reset", None)
+            if callable(reset):
+                reset()
+
+        self.l0_documents.clear()
+        self.l2_documents.clear()
+        self.l0_vector_store = None
+        self.l2_vector_store = None
+        self.l0_index = None
+        self.l2_index = None
+
+        self.embedding = None
+
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def add_code_chunks(
         self, code_chunks: List[Dict[str, Any]], level: Level = "l2"
     ) -> None:
@@ -283,7 +309,8 @@ class CodeVectorStore:
             query: Search query text
             top_k: Number of top results to return
             score_threshold: Minimum similarity score threshold
-            level: Index level to search ("l0" for file skeletons, "l2" for functions/methods)
+            level: Index level to search ("l0" for file skeletons, "l2" for
+                functions/methods)
             mask_node_ids: Optional set of CodeChunk.node_id values to filter results.
 
         Returns:
@@ -305,7 +332,8 @@ class CodeVectorStore:
             metadata = doc.metadata
 
             # Apply score threshold based on index metric
-            # ip (inner product): higher score = more similar, filter if score < threshold
+            # ip (inner product): higher score = more similar, filter if score <
+            # threshold
             # l2 (distance): lower score = more similar, filter if score > threshold
             if score_threshold is not None and self._should_filter_by_threshold(
                 score, score_threshold
@@ -348,7 +376,8 @@ class CodeVectorStore:
             query: Search query text
             top_k: Number of top results to return
             score_threshold: Minimum similarity score threshold
-            level: Index level to search ("l0" for file skeletons, "l2" for functions/methods)
+            level: Index level to search ("l0" for file skeletons, "l2" for
+                functions/methods)
             mask_node_ids: Optional set of CodeChunk.node_id values to filter results.
 
         Returns:
@@ -368,7 +397,8 @@ class CodeVectorStore:
             metadata = doc.metadata
 
             # Apply score threshold based on index metric
-            # ip (inner product): higher score = more similar, filter if score < threshold
+            # ip (inner product): higher score = more similar, filter if score <
+            # threshold
             # l2 (distance): lower score = more similar, filter if score > threshold
             if score_threshold is not None and self._should_filter_by_threshold(
                 score, score_threshold

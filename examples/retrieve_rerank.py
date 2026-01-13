@@ -397,56 +397,59 @@ def run_pipeline(args):
             rerank_candidate_top_k=args.rerank_top_k,
         )
 
-        # Query the pipeline
-        query = instance["problem_statement"]
-        results = pipeline.query(query=query, top_k=query_top_k)
+        try:
+            # Query the pipeline
+            query = instance["problem_statement"]
+            results = pipeline.query(query=query, top_k=query_top_k)
 
-        metrics = evaluate_predictions(
-            nodes=results,
-            target_files=target_files,
-            target_symbols=target_symbols,
-            ks=metrics_k,
-        )
-        aggregate_metrics(aggregate, metrics)
-        eval_count += 1
-        logger.info("Evaluation metrics for %s:", instance_id)
-        for scope, per_k in metrics.items():
-            for k, stats in per_k.items():
-                logger.info(
-                    "  [%s] k=%d acc=%.3f prec=%.3f recall=%.3f hits=%d",
-                    scope,
-                    k,
-                    stats["accuracy"],
-                    stats["precision"],
-                    stats["recall"],
-                    int(stats["hits"]),
-                )
+            metrics = evaluate_predictions(
+                nodes=results,
+                target_files=target_files,
+                target_symbols=target_symbols,
+                ks=metrics_k,
+            )
+            aggregate_metrics(aggregate, metrics)
+            eval_count += 1
+            logger.info("Evaluation metrics for %s:", instance_id)
+            for scope, per_k in metrics.items():
+                for k, stats in per_k.items():
+                    logger.info(
+                        "  [%s] k=%d acc=%.3f prec=%.3f recall=%.3f hits=%d",
+                        scope,
+                        k,
+                        stats["accuracy"],
+                        stats["precision"],
+                        stats["recall"],
+                        int(stats["hits"]),
+                    )
 
-        # Collect results if result_path is provided
-        if all_results is not None:
-            unique_files_ordered, normalized_symbols = extract_predictions(results)
-            metric_k_files = unique_files_ordered[:metric_max_k]
-            metric_k_node_ids = normalized_symbols[:metric_max_k]
+            # Collect results if result_path is provided
+            if all_results is not None:
+                unique_files_ordered, normalized_symbols = extract_predictions(results)
+                metric_k_files = unique_files_ordered[:metric_max_k]
+                metric_k_node_ids = normalized_symbols[:metric_max_k]
 
-            result_entry = {
-                "instance_id": instance_id,
-                "metric_k_node_ids": metric_k_node_ids,
-                "metric_k_files": metric_k_files,
-                "target_files": (
-                    list(metadata.get("target_files", [])) if metadata else []
-                ),
-                "symbols_modified": (
-                    list(metadata.get("symbols_modified", [])) if metadata else []
-                ),
-                "symbols_added": (
-                    list(metadata.get("symbols_added", [])) if metadata else []
-                ),
-                "symbols_deleted": (
-                    list(metadata.get("symbols_deleted", [])) if metadata else []
-                ),
-                "metrics": metrics,
-            }
-            all_results.append(result_entry)
+                result_entry = {
+                    "instance_id": instance_id,
+                    "metric_k_node_ids": metric_k_node_ids,
+                    "metric_k_files": metric_k_files,
+                    "target_files": (
+                        list(metadata.get("target_files", [])) if metadata else []
+                    ),
+                    "symbols_modified": (
+                        list(metadata.get("symbols_modified", [])) if metadata else []
+                    ),
+                    "symbols_added": (
+                        list(metadata.get("symbols_added", [])) if metadata else []
+                    ),
+                    "symbols_deleted": (
+                        list(metadata.get("symbols_deleted", [])) if metadata else []
+                    ),
+                    "metrics": metrics,
+                }
+                all_results.append(result_entry)
+        finally:
+            pipeline.close()
 
     if aggregate and eval_count:
         averaged = average_metrics(aggregate, eval_count)
