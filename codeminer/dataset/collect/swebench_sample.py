@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from codeminer.dataset.swebench import SwebenchDataset
+from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.log_utils import get_logger
 
 logger = get_logger(__name__)
@@ -25,7 +26,7 @@ PYTHON_LANGUAGE = "Python"
 
 DEFAULT_LANGUAGES = {"Rust", "C", "C++", "JavaScript/TypeScript", PYTHON_LANGUAGE}
 DEFAULT_MULTILINGUAL_DATASET = "SWE-bench/SWE-bench_Multilingual"
-DEFAULT_LITE_DATASET = "princeton-nlp/SWE-bench_Lite"
+DEFAULT_LITE_DATASET = "princeton-nlp/SWE-bench_Verified"
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,20 @@ def read_multilingual_csv(csv_path: str) -> Tuple[Set[str], Dict[str, str]]:
             if repo and lang:
                 repo_to_language[repo] = lang
     return valid_languages, repo_to_language
+
+
+def read_repo_language_map(csv_path: Path) -> Dict[str, str]:
+    repo_to_language: Dict[str, str] = {}
+    if not csv_path.exists():
+        return repo_to_language
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            repo = row.get("repo") or row.get("Repository")
+            lang = row.get("language") or row.get("Language")
+            if repo and lang:
+                repo_to_language[repo] = lang
+    return repo_to_language
 
 
 def select_indices_by_percentile(
@@ -390,7 +405,8 @@ def plot_instance_difficulties(
         plt.ylabel("Count")
         plt.tight_layout()
 
-        plot_path = output_dir / f"instance_difficulty_{group}.png"
+        safe_group = group.replace("/", "_").replace(" ", "_")
+        plot_path = output_dir / f"instance_difficulty_{safe_group}.png"
         plt.savefig(plot_path)
         plt.close()
         plot_paths.append(plot_path)
@@ -422,7 +438,7 @@ def load_multilingual_dataset(
     split: str,
     filter_instance: str,
 ) -> Iterable[Dict[str, Any]]:
-    dataset = SwebenchDataset(
+    dataset = SwebenchMultilingualDataset(
         dataset=dataset_name,
         split=split,
         filter_instance=filter_instance,
@@ -451,20 +467,6 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
     non_python_languages = target_languages - {PYTHON_LANGUAGE}
 
     repo_to_language: Dict[str, str] = {}
-    if non_python_languages:
-        if config.multilingual_csv_path is None:
-            raise FileNotFoundError(
-                "multilingual_csv_path is required when sampling non-Python languages"
-            )
-        csv_path = config.multilingual_csv_path
-        valid_languages, repo_to_language = read_multilingual_csv(str(csv_path))
-        invalid_languages = non_python_languages - valid_languages
-        if invalid_languages:
-            raise ValueError(
-                f"Invalid languages: {', '.join(sorted(invalid_languages))}. "
-                f"Available: {', '.join(sorted(valid_languages))}"
-            )
-
     multilingual_dataset = None
     lite_dataset = None
     if non_python_languages:
@@ -472,6 +474,26 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
         multilingual_dataset = load_multilingual_dataset(
             config.multilingual_dataset, config.dataset_split, config.filter_instance
         )
+        if config.multilingual_csv_path is None:
+            local_csv = Path(__file__).resolve().parent / "data"
+            local_csv = local_csv / "swebench_multilingual_repos.csv"
+            repo_to_language = read_repo_language_map(local_csv)
+            if not repo_to_language:
+                raise FileNotFoundError(
+                    "Missing multilingual repo map. Provide multilingual_csv_path or "
+                    "add swebench_multilingual_repos.csv under dataset/collect/data."
+                )
+            valid_languages = set(repo_to_language.values())
+        else:
+            csv_path = config.multilingual_csv_path
+            valid_languages, repo_to_language = read_multilingual_csv(str(csv_path))
+
+        invalid_languages = non_python_languages - valid_languages
+        if invalid_languages:
+            raise ValueError(
+                f"Invalid languages: {', '.join(sorted(invalid_languages))}. "
+                f"Available: {', '.join(sorted(valid_languages))}"
+            )
 
     if PYTHON_LANGUAGE in target_languages:
         logger.info("Loading Lite dataset: %s", config.lite_dataset)
