@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build full (non-hybrid) embeddings for SWE-bench Lite dev split using two models:
-#   - Primary: Salesforce/SweRankEmbed-Small
-#   - Secondary: Salesforce/SweRankEmbed-Large
-#
-# Outputs are stored under the specified storage directory, one subdir per instance.
-
 STORAGE_DIR="${STORAGE_DIR:-/mnt/data/codeminer}"
 DATASET="princeton-nlp/SWE-bench_Lite"
 SPLIT="dev"
@@ -16,9 +10,9 @@ PRIMARY_MODEL="Salesforce/SweRankEmbed-Small"
 PRIMARY_PROVIDER="huggingface"
 PRIMARY_DIM=768
 
-SECONDARY_MODEL="Salesforce/SweRankEmbed-Large"
+SECONDARY_MODEL="${SECONDARY_MODEL:-${HOME}/data/SweRankEmbed-Large}"
 SECONDARY_PROVIDER="huggingface"
-SECONDARY_DIM=1024
+SECONDARY_DIM=1536
 
 mkdir -p "${STORAGE_DIR}"
 
