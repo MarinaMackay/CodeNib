@@ -45,7 +45,6 @@ class SamplingConfig:
     repo_cache_dir: Optional[Path] = None
     output_dir: Optional[Path] = None
     write_outputs: bool = True
-    include_plots: bool = True
 
 
 @dataclass
@@ -55,8 +54,6 @@ class SamplingResults:
     repo_sizes: List[Dict[str, Any]]
     instance_difficulties: List[Dict[str, Any]]
     output_dir: Optional[Path]
-    repo_plot_path: Optional[Path]
-    instance_plot_paths: List[Path]
 
 
 @lru_cache(maxsize=1)
@@ -169,6 +166,10 @@ def calculate_instance_difficulties(
                     "language_group": info["language_group"],
                     "instance_id": instance["instance_id"],
                     "changed_loc": parse_patch_changed_loc(instance.get("patch", "")),
+                    "base_commit": instance.get("base_commit"),
+                    "problem_statement": instance.get("problem_statement"),
+                    "hints_text": instance.get("hints_text"),
+                    "patch": instance.get("patch"),
                 }
             )
     logger.info("Calculated difficulty for %d instances", len(difficulties))
@@ -214,6 +215,10 @@ def select_representative_instances(
                     "repo": inst["repo"],
                     "language_group": inst["language_group"],
                     "instance_id": inst["instance_id"],
+                    "base_commit": inst.get("base_commit"),
+                    "problem_statement": inst.get("problem_statement"),
+                    "hints_text": inst.get("hints_text"),
+                    "patch": inst.get("patch"),
                     "changed_loc": inst["changed_loc"],
                     "difficulty_level": level,
                     "rank_in_repo": idx + 1,
@@ -316,102 +321,6 @@ def calculate_repo_sizes(
             }
         )
     return repo_sizes
-
-
-def plot_repo_sizes(
-    repo_sizes: List[Dict[str, Any]],
-    selected_repos: Dict[str, List[Dict[str, Any]]],
-    output_dir: Path,
-) -> Optional[Path]:
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        logger.warning("matplotlib unavailable; skipping repo size plot")
-        return None
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    grouped = defaultdict(list)
-    for entry in repo_sizes:
-        grouped[entry["language_group"]].append(entry)
-
-    plt.figure(figsize=(10, 6))
-    for group, entries in grouped.items():
-        entries_sorted = sorted(entries, key=lambda x: x["file_count"])
-        x_vals = list(range(len(entries_sorted)))
-        y_vals = [e["file_count"] for e in entries_sorted]
-        plt.scatter(x_vals, y_vals, label=group, alpha=0.7)
-
-        selected = {e["repo"] for e in selected_repos.get(group, [])}
-        selected_y = [e["file_count"] for e in entries_sorted if e["repo"] in selected]
-        selected_x = [
-            idx for idx, e in enumerate(entries_sorted) if e["repo"] in selected
-        ]
-        if selected_x:
-            plt.scatter(selected_x, selected_y, marker="*", s=120)
-
-    plt.title("Repo Size Distribution by Language")
-    plt.xlabel("Repo Rank (per language, sorted by size)")
-    plt.ylabel("Non-hidden File Count")
-    plt.legend(loc="best")
-    plt.tight_layout()
-
-    plot_path = output_dir / "repo_sizes.png"
-    plt.savefig(plot_path)
-    plt.close()
-    return plot_path
-
-
-def plot_instance_difficulties(
-    instance_difficulties: List[Dict[str, Any]],
-    selected_repos: Dict[str, List[Dict[str, Any]]],
-    selected_instances: List[Dict[str, Any]],
-    output_dir: Path,
-) -> List[Path]:
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        logger.warning("matplotlib unavailable; skipping instance plots")
-        return []
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    selected_repo_names = {
-        repo_info["repo"] for repos in selected_repos.values() for repo_info in repos
-    }
-
-    grouped = defaultdict(list)
-    for entry in instance_difficulties:
-        if entry["repo"] in selected_repo_names:
-            grouped[entry["language_group"]].append(entry)
-
-    selected_by_group = defaultdict(list)
-    for entry in selected_instances:
-        selected_by_group[entry["language_group"]].append(entry)
-
-    plot_paths = []
-    for group, entries in grouped.items():
-        values = [e["changed_loc"] for e in entries]
-        if not values:
-            continue
-
-        plt.figure(figsize=(8, 5))
-        plt.hist(values, bins=20, alpha=0.7, color="#4C72B0")
-        for selected in selected_by_group.get(group, []):
-            plt.axvline(selected["changed_loc"], color="#C44E52", linestyle="--")
-
-        plt.title(f"Instance Difficulty: {group}")
-        plt.xlabel("Changed LOC")
-        plt.ylabel("Count")
-        plt.tight_layout()
-
-        safe_group = group.replace("/", "_").replace(" ", "_")
-        plot_path = output_dir / f"instance_difficulty_{safe_group}.png"
-        plt.savefig(plot_path)
-        plt.close()
-        plot_paths.append(plot_path)
-
-    return plot_paths
 
 
 def save_json(data: Any, path: str) -> None:
@@ -521,9 +430,6 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
     )
 
     output_dir = None
-    repo_plot_path = None
-    instance_plot_paths: List[Path] = []
-
     if config.write_outputs:
         output_dir = config.output_dir or (cache_dir / "swebench_sampling")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -531,7 +437,18 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
         save_json(selected_repos, str(output_dir / "selected_repos.json"))
         save_json(selected_instances, str(output_dir / "selected_instances.json"))
         save_csv(
-            selected_instances,
+            [
+                {
+                    "language_group": row["language_group"],
+                    "repo": row["repo"],
+                    "instance_id": row["instance_id"],
+                    "changed_loc": row["changed_loc"],
+                    "difficulty_level": row["difficulty_level"],
+                    "rank_in_repo": row["rank_in_repo"],
+                    "total_in_repo": row["total_in_repo"],
+                }
+                for row in selected_instances
+            ],
             str(output_dir / "selected_instances.csv"),
             [
                 "language_group",
@@ -544,18 +461,10 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
             ],
         )
 
-        if config.include_plots:
-            repo_plot_path = plot_repo_sizes(repo_sizes, selected_repos, output_dir)
-            instance_plot_paths = plot_instance_difficulties(
-                instance_difficulties, selected_repos, selected_instances, output_dir
-            )
-
     return SamplingResults(
         selected_repos=selected_repos,
         selected_instances=selected_instances,
         repo_sizes=repo_sizes,
         instance_difficulties=instance_difficulties,
         output_dir=output_dir,
-        repo_plot_path=repo_plot_path,
-        instance_plot_paths=instance_plot_paths,
     )
