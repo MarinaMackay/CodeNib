@@ -231,11 +231,63 @@ class SwebenchDataset(DatasetBase):
                     stderr=subprocess.PIPE,
                 )
             except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to checkout commit {base_commit}: {e}")
-                logger.error(f"STDERR: {e.stderr.decode('utf-8')}")
-                raise RuntimeError(
-                    f"Failed to checkout commit {base_commit} for repo {repo_name}"
-                ) from e
+                stderr = e.stderr.decode("utf-8")
+                logger.warning(
+                    "Initial checkout failed for %s at %s: %s",
+                    repo_name,
+                    base_commit,
+                    stderr.strip(),
+                )
+
+                # Reused repo caches may be shallow clones from sampling.
+                try:
+                    shallow = subprocess.run(
+                        ["git", "rev-parse", "--is-shallow-repository"],
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    ).stdout.strip()
+                    if shallow == "true":
+                        logger.info(
+                            "Repository is shallow; running git fetch --unshallow"
+                        )
+                        subprocess.run(
+                            ["git", "fetch", "--unshallow"],
+                            check=True,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                except subprocess.CalledProcessError:
+                    logger.warning("Failed to determine/expand shallow clone state")
+
+                # Try targeted fetch for detached commit IDs.
+                subprocess.run(
+                    ["git", "fetch", "origin", base_commit],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                subprocess.run(
+                    ["git", "fetch", "--all", "--tags"],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+
+                try:
+                    subprocess.run(
+                        ["git", "checkout", "-f", base_commit],
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                except subprocess.CalledProcessError as e2:
+                    logger.error(f"Failed to checkout commit {base_commit}: {e2}")
+                    logger.error(f"STDERR: {e2.stderr.decode('utf-8')}")
+                    raise RuntimeError(
+                        f"Failed to checkout commit {base_commit} for repo {repo_name}"
+                    ) from e2
 
             logger.info(f"Successfully checked out {repo_name} at commit {base_commit}")
         finally:

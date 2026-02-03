@@ -18,14 +18,12 @@ class QueryType(str, Enum):
 
     Types describe the specificity and kind of hints the query can include:
     - BEHAVIORAL: Pure natural language, no code identifiers
-    - MODULE_HINT: Mentions module/package names but not specific files
     - FILE_HINT: Mentions file paths but not specific symbols
     - SYMBOL_HINT: Mentions function/class names directly
     - REASONING: Mentions symbols but requires understanding relationships/call chains
     """
 
     BEHAVIORAL = "behavioral"
-    MODULE_HINT = "module_hint"
     FILE_HINT = "file_hint"
     SYMBOL_HINT = "symbol_hint"
     REASONING = "reasoning"

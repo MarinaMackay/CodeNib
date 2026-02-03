@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+CACHE_DIR="${CACHE_DIR:-$HOME/.codeminer}"
+OUTPUT_DIR="${OUTPUT_DIR:-$CACHE_DIR/swebench_sampling}"
+LANGS=("Python" "Rust" "JavaScript/TypeScript" "C++" "C")
+
+cd "${ROOT_DIR}"
+PYTHONPATH=. python scripts/collect_swebench.py \
+  --cache-dir "${CACHE_DIR}" \
+  --output-dir "${OUTPUT_DIR}" \
+  --languages "${LANGS[@]}" \
+  --print-sample 5

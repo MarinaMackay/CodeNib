@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Collect SWE-bench samples and optionally synthesize natural-language queries.
+Collect representative SWE-bench instances and save sampling artifacts.
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from codeminer.dataset.collect.swebench_sample import SamplingConfig, run_sampling
-from codeminer.dataset.synthesize import ClaudeQuerySynthesizer
 from codeminer.log_utils import get_logger
 
 logger = get_logger(__name__)
@@ -34,14 +33,7 @@ def _dump_json(data: object, path: Path) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Sample SWE-bench instances and synthesize natural-language queries."
-    )
-    parser.add_argument(
-        "--stage",
-        type=str,
-        choices=["collect", "synthesize", "all"],
-        default="all",
-        help="Run only a specific stage or both (default: all).",
+        description="Collect representative SWE-bench instances."
     )
     parser.add_argument(
         "--languages",
@@ -84,38 +76,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional path to save sampled instances as JSON.",
     )
-
-    parser.add_argument(
-        "--synthesize",
-        action="store_true",
-        help="Generate natural-language queries using an LLM.",
-    )
-    parser.add_argument(
-        "--model-name",
-        type=str,
-        default="sonnet",
-        help="Claude agent model name (e.g., sonnet, opus).",
-    )
-    parser.add_argument("--max-turns", type=int, default=10)
-    parser.add_argument(
-        "--permission-mode",
-        type=str,
-        default="bypassPermissions",
-        help="Claude agent permission mode.",
-    )
-    parser.add_argument(
-        "--allowed-tools",
-        type=str,
-        default="",
-        help="Comma-separated list of allowed tools (optional).",
-    )
-    parser.add_argument(
-        "--synthesis-limit",
-        type=int,
-        default=None,
-        help="Limit the number of instances to synthesize.",
-    )
-
     return parser
 
 
@@ -124,7 +84,6 @@ def main() -> None:
     args = parser.parse_args()
 
     languages = _parse_languages(args.languages)
-
     config = SamplingConfig(
         languages=languages or SamplingConfig().languages,
         shallow_clone=args.shallow_clone,
@@ -143,40 +102,12 @@ def main() -> None:
 
     results = run_sampling(config)
     selected_instances = results.selected_instances
-
     if args.print_sample:
-        preview = selected_instances[: args.print_sample]
         logger.info("Sampled %d instances. Preview:", len(selected_instances))
-        print(json.dumps(preview, indent=2, ensure_ascii=False))
+        print(json.dumps(selected_instances[: args.print_sample], indent=2))
 
     if args.save_sampled:
         _dump_json(selected_instances, Path(args.save_sampled))
-
-    if args.stage == "collect" or not args.synthesize:
-        return
-
-    allowed_tools = [
-        tool.strip() for tool in args.allowed_tools.split(",") if tool.strip()
-    ]
-    synthesizer = ClaudeQuerySynthesizer(
-        model=args.model_name,
-        max_turns=args.max_turns,
-        allowed_tools=allowed_tools,
-        permission_mode=args.permission_mode,
-    )
-
-    limit = args.synthesis_limit or len(selected_instances)
-    synth_inputs = selected_instances[:limit]
-    logger.info("Synthesizing queries for %d instances.", len(synth_inputs))
-    synthesized = synthesizer.synthesize_queries(synth_inputs)
-
-    output_dir = results.output_dir or Path(args.output_dir or ".")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    _dump_json(synthesized, output_dir / "synthesized_queries.json")
-
-    logger.info(
-        "Saved synthesized queries to %s", output_dir / "synthesized_queries.json"
-    )
 
 
 if __name__ == "__main__":
