@@ -73,6 +73,9 @@ jobs:
           if ! command -v rustup >/dev/null 2>&1; then
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           fi
+          if [ -f "$HOME/.cargo/env" ]; then
+            . "$HOME/.cargo/env"
+          fi
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           rustup toolchain install stable
           rustup component add rust-analyzer --toolchain stable
