@@ -67,6 +67,31 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[test]"
 
+      - name: Install Rust toolchain + rust-analyzer
+        shell: bash -l {0}
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup toolchain install stable
+          rustup component add rust-analyzer --toolchain stable
+
+      - name: Install scip-clang
+        shell: bash -l {0}
+        run: |
+          SCIP_CLANG_VERSION="v0.3.2"
+          mkdir -p "$HOME/.local/bin"
+          curl -L "https://github.com/sourcegraph/scip-clang/releases/download/${SCIP_CLANG_VERSION}/scip-clang-x86_64-linux" -o "$HOME/.local/bin/scip-clang"
+          chmod +x "$HOME/.local/bin/scip-clang"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install scip-typescript
+        shell: bash -l {0}
+        run: |
+          npm install -g @sourcegraph/scip-typescript
+          npm bin -g >> "$GITHUB_PATH"
+
       - name: Run test suite
         shell: bash -l {0}
         run: pytest
