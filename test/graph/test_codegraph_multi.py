@@ -10,19 +10,29 @@ This script tests the complete pipeline for all three languages:
 5. Export to JSON for manual verification
 
 Usage:
-    # Simple mode - test with local repository
-    python test/graph/test_codegraph_multi.py --lang cpp --repo test/scip/simple_repos/cpp_simple
-    python test/graph/test_codegraph_multi.py --lang rust --repo test/scip/simple_repos/rust_simple
-    python test/graph/test_codegraph_multi.py --lang ts --repo test/scip/simple_repos/typescript_simple
+    # Local mode - test with local repository
+    python test/graph/test_codegraph_multi.py --lang cpp --repo \\
+        test/scip/simple_repos/cpp_simple
+    python test/graph/test_codegraph_multi.py --lang rust --repo \\
+        test/scip/simple_repos/rust_simple
+    python test/graph/test_codegraph_multi.py --lang ts --repo \\
+        test/scip/simple_repos/typescript_simple
 
-    # Multi-SWE-bench mode - test with dataset
-    python test/graph/test_codegraph_multi.py --lang cpp --multisweb --num-instances 5
-    python test/graph/test_codegraph_multi.py --lang rust --multisweb --num-instances 3
-    python test/graph/test_codegraph_multi.py --lang ts --multisweb --num-instances 2
+    # SWE-bench_Multilingual mode - test with dataset
+    python test/graph/test_codegraph_multi.py --lang cpp --swebench-multilingual \\
+        --num-instances 5
+    python test/graph/test_codegraph_multi.py --lang rust --swebench-multilingual \\
+        --num-instances 3
+    python test/graph/test_codegraph_multi.py --lang ts --swebench-multilingual \\
+        --num-instances 2
 
     # Sample mode - test 5 instances from each language
     python test/graph/test_codegraph_multi.py --sample
-    python test/graph/test_codegraph_multi.py --sample --num-instances 3  # Test 3 from each language
+    python test/graph/test_codegraph_multi.py --sample --num-instances 3 \\
+        # Test 3 from each language
+
+    # Pytest mode
+    pytest test/graph/test_codegraph_multi.py -k test_cpp_multi -q
 """
 
 import argparse
@@ -31,11 +41,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import pytest
 
-from codeminer.dataset.swebench import SwebenchDataset
-from codeminer.scip_interface import SCIPClangIndexer, SCIPRustIndexer, SCIPTypeScriptIndexer
+from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
+from codeminer.scip_interface import (
+    SCIPClangIndexer,
+    SCIPRustIndexer,
+    SCIPTypeScriptIndexer,
+)
 
 
 def analyze_graph(graph):
@@ -81,7 +94,9 @@ def analyze_graph(graph):
         if "file" in node.attributes():
             file_path = node["file"]
             if file_path and file_path != node_name:
-                print(f"  [{i:2d}] {node_type:15s} | {node_name[:50]:50s} @ {file_path}")
+                print(
+                    f"  [{i:2d}] {node_type:15s} | {node_name[:50]:50s} @ {file_path}"
+                )
             else:
                 print(f"  [{i:2d}] {node_type:15s} | {node_name[:50]}")
         else:
@@ -238,8 +253,9 @@ def export_graph_to_json(graph, output_file, language, indexer):
 # C++ Tests
 # ==============================================================================
 
-def test_cpp_simple(repo_path=None):
-    """Test C++ CodeGraph generation with simple project."""
+
+def run_cpp_local(repo_path=None):
+    """Test C++ CodeGraph generation with local project."""
     print("=" * 80)
     print("C++ SCIP CodeGraph Test")
     print("=" * 80)
@@ -304,23 +320,26 @@ def test_cpp_simple(repo_path=None):
     return True
 
 
-def test_cpp_multisweb(args):
-    """Test C++ SCIP CodeGraph with Multi-SWE-bench dataset."""
+def run_cpp_multi(args):
+    """Test C++ SCIP CodeGraph with SWE-bench_Multilingual dataset."""
     # SWE-bench Multilingual dataset configuration
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
+    dataset_obj = SwebenchMultilingualDataset(split="test", filter_instance=".*")
 
     all_dataset = dataset_obj.load()
 
     # Filter for C/C++ projects
     cpp_instances = []
-    cpp_repo_keywords = ['fmtlib/', 'nlohmann/', 'jqlang/', 'redis/', 'valkey-io/', 'micropython/']
+    cpp_repo_keywords = [
+        "fmtlib/",
+        "nlohmann/",
+        "jqlang/",
+        "redis/",
+        "valkey-io/",
+        "micropython/",
+    ]
 
     for inst in all_dataset:
-        repo = inst['repo']
+        repo = inst["repo"]
         if any(keyword in repo for keyword in cpp_repo_keywords):
             cpp_instances.append(inst)
 
@@ -334,7 +353,9 @@ def test_cpp_multisweb(args):
     else:
         dataset = cpp_instances
 
-    print(f"\n✓ Found {len(cpp_instances)} total C/C++ instances, testing {len(dataset)}")
+    print(
+        f"\n✓ Found {len(cpp_instances)} total C/C++ instances, testing {len(dataset)}"
+    )
 
     # Statistics tracking
     success_count = 0
@@ -356,9 +377,8 @@ def test_cpp_multisweb(args):
             # Set output path
             output_path = f"./scip_output/cpp/{instance_id}"
 
-            # Check for CMakeLists.txt or Makefile
+            # Check for CMakeLists.txt
             cmake_file = Path(repo_path) / "CMakeLists.txt"
-            makefile = Path(repo_path) / "Makefile"
 
             if cmake_file.exists():
                 # Try to generate compilation database
@@ -413,8 +433,9 @@ def test_cpp_multisweb(args):
 # Rust Tests
 # ==============================================================================
 
-def test_rust_simple(repo_path=None):
-    """Test Rust CodeGraph generation with simple project."""
+
+def run_rust_local(repo_path=None):
+    """Test Rust CodeGraph generation with local project."""
     print("=" * 80)
     print("Rust SCIP CodeGraph Test")
     print("=" * 80)
@@ -482,24 +503,26 @@ def test_rust_simple(repo_path=None):
     return True
 
 
-def test_rust_multisweb(args):
-    """Test Rust SCIP CodeGraph with Multi-SWE-bench dataset."""
+def run_rust_multi(args):
+    """Test Rust SCIP CodeGraph with SWE-bench_Multilingual dataset."""
     # SWE-bench Multilingual dataset configuration
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
+    dataset_obj = SwebenchMultilingualDataset(split="test", filter_instance=".*")
 
     all_dataset = dataset_obj.load()
 
     # Filter for Rust projects only
     rust_instances = []
-    rust_repo_keywords = ['tokio-rs/', 'serde-rs/', 'clap-rs/', 'rayon-rs/',
-                          'sharkdp/', 'nushell/']
+    rust_repo_keywords = [
+        "tokio-rs/",
+        "serde-rs/",
+        "clap-rs/",
+        "rayon-rs/",
+        "sharkdp/",
+        "nushell/",
+    ]
 
     for inst in all_dataset:
-        repo = inst['repo']
+        repo = inst["repo"]
         if any(keyword in repo for keyword in rust_repo_keywords):
             rust_instances.append(inst)
 
@@ -513,7 +536,9 @@ def test_rust_multisweb(args):
     else:
         dataset = rust_instances
 
-    print(f"\n✓ Found {len(rust_instances)} total Rust instances, testing {len(dataset)}")
+    print(
+        f"\n✓ Found {len(rust_instances)} total Rust instances, testing {len(dataset)}"
+    )
 
     # Statistics tracking
     success_count = 0
@@ -562,7 +587,9 @@ def test_rust_multisweb(args):
 
             # Export to JSON
             json_file = Path(output_path) / "codegraph.json"
-            export_graph_to_json(graph, json_file, language="Rust", indexer="rust-analyzer")
+            export_graph_to_json(
+                graph, json_file, language="Rust", indexer="rust-analyzer"
+            )
 
             print(f"\n✅ Successfully processed {instance_id}")
             print(f"   Nodes: {stats['total_nodes']}, Edges: {stats['total_edges']}")
@@ -581,8 +608,9 @@ def test_rust_multisweb(args):
 # TypeScript Tests
 # ==============================================================================
 
-def test_ts_simple(repo_path=None):
-    """Test TypeScript CodeGraph generation with simple project."""
+
+def run_ts_local(repo_path=None):
+    """Test TypeScript CodeGraph generation with local project."""
     print("=" * 80)
     print("TypeScript SCIP CodeGraph Test")
     print("=" * 80)
@@ -591,7 +619,9 @@ def test_ts_simple(repo_path=None):
     if repo_path:
         project_path = Path(repo_path).absolute()
     else:
-        project_path = Path(__file__).parent.parent / "scip" / "simple_repos" / "typescript_simple"
+        project_path = (
+            Path(__file__).parent.parent / "scip" / "simple_repos" / "typescript_simple"
+        )
 
     if not project_path.exists():
         print(f"\n❌ Test project not found at {project_path}")
@@ -627,7 +657,9 @@ def test_ts_simple(repo_path=None):
 
     # Export to JSON
     json_file = Path(output_path) / "codegraph.json"
-    export_graph_to_json(graph, json_file, language="TypeScript", indexer="scip-typescript")
+    export_graph_to_json(
+        graph, json_file, language="TypeScript", indexer="scip-typescript"
+    )
 
     print("\n" + "=" * 80)
     print("Test Summary")
@@ -643,14 +675,10 @@ def test_ts_simple(repo_path=None):
     return True
 
 
-def test_ts_multisweb(args):
-    """Test TypeScript SCIP CodeGraph with Multi-SWE-bench dataset."""
+def run_ts_multi(args):
+    """Test TypeScript SCIP CodeGraph with SWE-bench_Multilingual dataset."""
     # Load dataset
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
+    dataset_obj = SwebenchMultilingualDataset(split="test", filter_instance=".*")
     all_dataset = dataset_obj.load()
 
     # Filter for TypeScript/JavaScript projects
@@ -681,7 +709,9 @@ def test_ts_multisweb(args):
     else:
         dataset = ts_instances
 
-    print(f"\n✓ Found {len(ts_instances)} total TypeScript instances, testing {len(dataset)}")
+    print(
+        f"\n✓ Found {len(ts_instances)} total TypeScript instances, testing {len(dataset)}"
+    )
 
     # Statistics
     success_count = 0
@@ -691,7 +721,9 @@ def test_ts_multisweb(args):
     for idx, instance in enumerate(dataset):
         instance_id = instance["instance_id"]
         print(f"\n{'=' * 80}")
-        print(f"Processing TypeScript instance [{idx + 1}/{len(dataset)}]: {instance_id}")
+        print(
+            f"Processing TypeScript instance [{idx + 1}/{len(dataset)}]: {instance_id}"
+        )
         print(f"{'=' * 80}")
 
         try:
@@ -710,7 +742,9 @@ def test_ts_multisweb(args):
             infer_tsconfig = not tsconfig.exists()
 
             if infer_tsconfig:
-                print("  ⚠️  No tsconfig.json found, will infer TypeScript configuration")
+                print(
+                    "  ⚠️  No tsconfig.json found, will infer TypeScript configuration"
+                )
 
             # Install dependencies if package.json exists
             package_json = Path(repo_path) / "package.json"
@@ -748,7 +782,9 @@ def test_ts_multisweb(args):
 
             # Export to JSON
             json_file = Path(output_path) / "codegraph.json"
-            export_graph_to_json(graph, json_file, language="TypeScript", indexer="scip-typescript")
+            export_graph_to_json(
+                graph, json_file, language="TypeScript", indexer="scip-typescript"
+            )
 
             print(f"\n✅ Successfully processed {instance_id}")
             print(f"   Nodes: {stats['total_nodes']}, Edges: {stats['total_edges']}")
@@ -758,6 +794,7 @@ def test_ts_multisweb(args):
         except Exception as e:
             print(f"\n❌ Error processing {instance_id}: {str(e)}")
             import traceback
+
             traceback.print_exc()
             failed_instances.append((instance_id, str(e)))
             continue
@@ -769,7 +806,8 @@ def test_ts_multisweb(args):
 # Sample Mode - Test N instances from each language
 # ==============================================================================
 
-def test_sample_mode(num_instances=5):
+
+def run_sample_mode(num_instances=5):
     """
     Test N instances from EACH language (C++, Rust, TypeScript).
 
@@ -793,7 +831,7 @@ def test_sample_mode(num_instances=5):
     print("\n" + "=" * 80)
     print(f"Testing C++ ({num_instances} instances)")
     print("=" * 80)
-    cpp_success, cpp_failed = test_cpp_multisweb(args)
+    cpp_success, cpp_failed = run_cpp_multi(args)
     results["C++"] = {"success": cpp_success, "failed_count": len(cpp_failed)}
     all_failed.extend([("C++", f) for f in cpp_failed])
 
@@ -801,7 +839,7 @@ def test_sample_mode(num_instances=5):
     print("\n" + "=" * 80)
     print(f"Testing Rust ({num_instances} instances)")
     print("=" * 80)
-    rust_success, rust_failed = test_rust_multisweb(args)
+    rust_success, rust_failed = run_rust_multi(args)
     results["Rust"] = {"success": rust_success, "failed_count": len(rust_failed)}
     all_failed.extend([("Rust", f) for f in rust_failed])
 
@@ -809,7 +847,7 @@ def test_sample_mode(num_instances=5):
     print("\n" + "=" * 80)
     print(f"Testing TypeScript ({num_instances} instances)")
     print("=" * 80)
-    ts_success, ts_failed = test_ts_multisweb(args)
+    ts_success, ts_failed = run_ts_multi(args)
     results["TypeScript"] = {"success": ts_success, "failed_count": len(ts_failed)}
     all_failed.extend([("TypeScript", f) for f in ts_failed])
 
@@ -819,7 +857,11 @@ def test_sample_mode(num_instances=5):
     print("=" * 80)
 
     for lang, result in results.items():
-        status = "✅ PASSED" if result["success"] else f"❌ FAILED ({result['failed_count']} failures)"
+        status = (
+            "✅ PASSED"
+            if result["success"]
+            else f"❌ FAILED ({result['failed_count']} failures)"
+        )
         print(f"\n{lang}: {status}")
 
     if all_failed:
@@ -834,11 +876,46 @@ def test_sample_mode(num_instances=5):
     return all(r["success"] for r in results.values())
 
 
-# ==============================================================================
-# Main
-# ==============================================================================
+@pytest.fixture(scope="session")
+def swebench_cpp_args() -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(
+        ["--lang", "cpp", "--swebench-multilingual", "--num-instances", "1"]
+    )
 
-def main():
+
+@pytest.fixture(scope="session")
+def swebench_rust_args() -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(
+        ["--lang", "rust", "--swebench-multilingual", "--num-instances", "1"]
+    )
+
+
+@pytest.fixture(scope="session")
+def swebench_ts_args() -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(
+        ["--lang", "ts", "--swebench-multilingual", "--num-instances", "1"]
+    )
+
+
+def test_cpp_multi(swebench_cpp_args: argparse.Namespace) -> None:
+    success, failed = run_cpp_multi(swebench_cpp_args)
+    assert success, f"C++ failures: {failed}"
+
+
+def test_rust_multi(swebench_rust_args: argparse.Namespace) -> None:
+    success, failed = run_rust_multi(swebench_rust_args)
+    assert success, f"Rust failures: {failed}"
+
+
+def test_ts_multi(swebench_ts_args: argparse.Namespace) -> None:
+    success, failed = run_ts_multi(swebench_ts_args)
+    assert success, f"TypeScript failures: {failed}"
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Unified SCIP CodeGraph test for C++, Rust, and TypeScript"
     )
@@ -851,21 +928,28 @@ def main():
         help="Test N instances from EACH language (C++, Rust, TypeScript)",
     )
     mode_group.add_argument(
-        "--multisweb",
+        "--swebench-multilingual",
+        dest="swebench_multilingual",
         action="store_true",
-        help="Test with Multi-SWE-bench dataset for selected language",
+        help="Test with SWE-bench_Multilingual dataset for selected language",
+    )
+    mode_group.add_argument(
+        "--multisweb",
+        dest="swebench_multilingual",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     mode_group.add_argument(
         "--repo",
         type=str,
-        help="Path to local repository (simple mode)",
+        help="Path to local repository (local mode)",
     )
 
     # Language selection (not used in sample mode)
     parser.add_argument(
         "--lang",
         choices=["cpp", "rust", "ts"],
-        help="Language to test (required for --repo and --multisweb modes)",
+        help="Language to test (required for --repo and --swebench-multilingual modes)",
     )
 
     # Number of instances
@@ -876,49 +960,61 @@ def main():
         help="Number of instances to test (default: 5)",
     )
 
+    return parser
+
+
+# ==============================================================================
+# Main
+# ==============================================================================
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     # Sample mode - test all languages
     if args.sample:
         print("\n=== Running in Sample mode ===")
         print(f"Testing {args.num_instances} instances from EACH language\n")
-        success = test_sample_mode(args.num_instances)
+        success = run_sample_mode(args.num_instances)
         sys.exit(0 if success else 1)
 
     # For other modes, language is required
     if not args.lang:
         parser.error("--lang is required when not using --sample mode")
 
-    # Multi-SWE-bench mode
-    if args.multisweb:
-        print(f"\n=== Running in Multi-SWE-bench mode ({args.lang.upper()}) ===\n")
+    # SWE-bench_Multilingual mode
+    if args.swebench_multilingual:
+        print(
+            f"\n=== Running in SWE-bench_Multilingual mode ({args.lang.upper()}) ===\n"
+        )
         if args.lang == "cpp":
-            success, _ = test_cpp_multisweb(args)
+            success, _ = run_cpp_multi(args)
         elif args.lang == "rust":
-            success, _ = test_rust_multisweb(args)
+            success, _ = run_rust_multi(args)
         elif args.lang == "ts":
-            success, _ = test_ts_multisweb(args)
+            success, _ = run_ts_multi(args)
         sys.exit(0 if success else 1)
 
-    # Simple mode with custom repo
+    # Local mode with custom repo
     if args.repo:
-        print(f"\n=== Running in Simple mode ({args.lang.upper()}) ===\n")
+        print(f"\n=== Running in Local mode ({args.lang.upper()}) ===\n")
         if args.lang == "cpp":
-            success = test_cpp_simple(args.repo)
+            success = run_cpp_local(args.repo)
         elif args.lang == "rust":
-            success = test_rust_simple(args.repo)
+            success = run_rust_local(args.repo)
         elif args.lang == "ts":
-            success = test_ts_simple(args.repo)
+            success = run_ts_local(args.repo)
         sys.exit(0 if success else 1)
 
-    # Default: simple mode with default repo
-    print(f"\n=== Running in Simple mode (default, {args.lang.upper()}) ===\n")
+    # Default: local mode with default repo
+    print(f"\n=== Running in Local mode (default, {args.lang.upper()}) ===\n")
     if args.lang == "cpp":
-        success = test_cpp_simple(None)
+        success = run_cpp_local(None)
     elif args.lang == "rust":
-        success = test_rust_simple(None)
+        success = run_rust_local(None)
     elif args.lang == "ts":
-        success = test_ts_simple(None)
+        success = run_ts_local(None)
 
     sys.exit(0 if success else 1)
 
