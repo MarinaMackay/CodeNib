@@ -4,41 +4,54 @@ Unified SCIP indexer test for C++, Rust, and TypeScript.
 
 This test supports indexing and decoding SCIP indexes for all three languages.
 It supports two modes:
-1. Simple mode: Test with a local repository
-2. Multi-SWE-bench mode: Test with SWE-bench Multilingual dataset
+1. Local mode: Test with a local repository
+2. SWE-bench_Multilingual mode: Test with SWE-bench_Multilingual dataset
 
 Usage:
-    # Simple mode - C++
-    python test/scip/test_scip_multilingual.py --lang cpp --repo test/scip/simple_repos/cpp_simple
-    python test/scip/test_scip_multilingual.py --lang cpp --repo test/scip/simple_repos/cpp_simple --clean
+    # Local mode - C++
+    python test/scip/test_scip_multilingual.py --lang cpp \
+        --repo test/scip/simple_repos/cpp_simple
+    python test/scip/test_scip_multilingual.py --lang cpp \
+        --repo test/scip/simple_repos/cpp_simple --clean
 
-    # Simple mode - Rust
-    python test/scip/test_scip_multilingual.py --lang rust --repo test/scip/simple_repos/rust_simple
-    python test/scip/test_scip_multilingual.py --lang rust --repo test/scip/simple_repos/rust_simple --clean
+    # Local mode - Rust
+    python test/scip/test_scip_multilingual.py --lang rust \
+        --repo test/scip/simple_repos/rust_simple
+    python test/scip/test_scip_multilingual.py --lang rust \
+        --repo test/scip/simple_repos/rust_simple --clean
 
-    # Simple mode - TypeScript
-    python test/scip/test_scip_multilingual.py --lang ts --repo test/scip/simple_repos/typescript_simple
+    # Local mode - TypeScript
+    python test/scip/test_scip_multilingual.py --lang ts \
+        --repo test/scip/simple_repos/typescript_simple
 
-    # Multi-SWE-bench mode
-    python test/scip/test_scip_multilingual.py --lang cpp --multisweb --num-instances 10
-    python test/scip/test_scip_multilingual.py --lang rust --multisweb --num-instances 5
-    python test/scip/test_scip_multilingual.py --lang ts --multisweb --num-instances 3
+    # SWE-bench_Multilingual mode
+    python test/scip/test_scip_multilingual.py --lang cpp \
+        --swebench-multilingual --num-instances 10
+    python test/scip/test_scip_multilingual.py --lang rust \
+        --swebench-multilingual --num-instances 5
+    python test/scip/test_scip_multilingual.py --lang ts \
+        --swebench-multilingual --num-instances 3
+
+    # Pytest mode
+    pytest test/scip/test_scip_multilingual.py -k test_cpp_multi -q
 """
 
 import argparse
-import json
 import subprocess
 from pathlib import Path
 
-from codeminer.scip_interface import SCIPIndexer
+import pytest
 
+from codeminer.scip_interface import SCIPIndexer
 
 # ==============================================================================
 # Common Utilities
 # ==============================================================================
 
 
-def verify_scip_output(decoded_file: Path, language: str, expected_symbols=None) -> bool:
+def verify_scip_output(
+    decoded_file: Path, language: str, expected_symbols=None
+) -> bool:
     """
     Verify the SCIP output contains expected symbols.
 
@@ -241,7 +254,7 @@ def generate_cpp_compilation_database(repo_path: Path) -> bool:
     return False
 
 
-def test_cpp_simple(args):
+def run_cpp_simple(args):
     """Test C++ SCIP indexer with a local repository."""
     repo_path = Path(args.repo).absolute()
 
@@ -262,7 +275,7 @@ def test_cpp_simple(args):
             print("\n❌ Build failed")
             return False
     else:
-        print("\n⚠️  No CMakeLists.txt found, skipping build")
+        print("\n ⚠️ No CMakeLists.txt found, skipping build")
 
     # Check for compilation database
     compdb = repo_path / "compile_commands.json"
@@ -276,7 +289,11 @@ def test_cpp_simple(args):
     print(f"\n✅ Found compilation database: {compdb}")
 
     # Set output directory
-    output_dir = Path(args.output_dir).absolute() if args.output_dir else repo_path / "scip_output"
+    output_dir = (
+        Path(args.output_dir).absolute()
+        if args.output_dir
+        else repo_path / "scip_output"
+    )
     print(f"Output directory: {output_dir}")
 
     # Create the indexer
@@ -330,21 +347,24 @@ def test_cpp_simple(args):
     return True
 
 
-def test_cpp_multisweb(args):
-    """Test C++ SCIP indexer with Multi-SWE-bench dataset."""
-    from codeminer.dataset.swebench import SwebenchDataset
+def run_cpp_multi(args):
+    """Test C++ SCIP indexer with SWE-bench_Multilingual dataset."""
+    from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
+    dataset_obj = SwebenchMultilingualDataset(split="test", filter_instance=".*")
 
     all_dataset = dataset_obj.load()
 
     # Filter for C/C++ projects
     cpp_instances = []
-    cpp_repo_keywords = ["fmtlib/", "nlohmann/", "jqlang/", "redis/", "valkey-io/", "micropython/"]
+    cpp_repo_keywords = [
+        "fmtlib/",
+        "nlohmann/",
+        "jqlang/",
+        "redis/",
+        "valkey-io/",
+        "micropython/",
+    ]
 
     for inst in all_dataset:
         repo = inst["repo"]
@@ -361,7 +381,9 @@ def test_cpp_multisweb(args):
     else:
         dataset = cpp_instances
 
-    print(f"\n✓ Found {len(cpp_instances)} total C/C++ instances, testing {len(dataset)}")
+    print(
+        f"\n✓ Found {len(cpp_instances)} total C/C++ instances, testing {len(dataset)}"
+    )
 
     success_count = 0
     failed_instances = []
@@ -378,7 +400,9 @@ def test_cpp_multisweb(args):
             output_path = f"./scip_output/cpp/{instance_id}"
 
             if not generate_cpp_compilation_database(Path(repo_path)):
-                failed_instances.append((instance_id, "Could not generate compilation database"))
+                failed_instances.append(
+                    (instance_id, "Could not generate compilation database")
+                )
                 continue
 
             indexer = SCIPIndexer(repo_path, output_dir=output_path, language="cpp")
@@ -399,7 +423,9 @@ def test_cpp_multisweb(args):
             failed_instances.append((instance_id, str(e)))
 
     print(f"\n{'=' * 80}")
-    print(f"Total: {len(dataset)} | Success: {success_count} | Failed: {len(failed_instances)}")
+    print(
+        f"Total: {len(dataset)} | Success: {success_count} | Failed: {len(failed_instances)}"
+    )
     print(f"{'=' * 80}")
 
     return success_count == len(dataset)
@@ -452,7 +478,7 @@ def build_rust_project(repo_path: Path, clean: bool = False) -> bool:
     return True
 
 
-def test_rust_simple(args):
+def run_rust_simple(args):
     """Test Rust SCIP indexer with a local repository."""
     repo_path = Path(args.repo).absolute()
 
@@ -478,11 +504,17 @@ def test_rust_simple(args):
         return False
 
     # Set output directory
-    output_dir = Path(args.output_dir).absolute() if args.output_dir else repo_path / "scip_output"
+    output_dir = (
+        Path(args.output_dir).absolute()
+        if args.output_dir
+        else repo_path / "scip_output"
+    )
     print(f"\nOutput directory: {output_dir}")
 
     # Create the indexer
-    indexer = SCIPIndexer(project_root=repo_path, output_dir=output_dir, language="rust")
+    indexer = SCIPIndexer(
+        project_root=repo_path, output_dir=output_dir, language="rust"
+    )
 
     # Generate SCIP index
     print("\n" + "=" * 80)
@@ -531,21 +563,24 @@ def test_rust_simple(args):
     return True
 
 
-def test_rust_multisweb(args):
-    """Test Rust SCIP indexer with Multi-SWE-bench dataset."""
-    from codeminer.dataset.swebench import SwebenchDataset
+def run_rust_multi(args):
+    """Test Rust SCIP indexer with SWE-bench_Multilingual dataset."""
+    from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
+    dataset_obj = SwebenchMultilingualDataset(split="test", filter_instance=".*")
 
     all_dataset = dataset_obj.load()
 
     # Filter for Rust projects
     rust_instances = []
-    rust_repo_keywords = ["tokio-rs/", "serde-rs/", "clap-rs/", "rayon-rs/", "sharkdp/", "nushell/"]
+    rust_repo_keywords = [
+        "tokio-rs/",
+        "serde-rs/",
+        "clap-rs/",
+        "rayon-rs/",
+        "sharkdp/",
+        "nushell/",
+    ]
 
     for inst in all_dataset:
         repo = inst["repo"]
@@ -562,7 +597,9 @@ def test_rust_multisweb(args):
     else:
         dataset = rust_instances
 
-    print(f"\n✓ Found {len(rust_instances)} total Rust instances, testing {len(dataset)}")
+    print(
+        f"\n✓ Found {len(rust_instances)} total Rust instances, testing {len(dataset)}"
+    )
 
     success_count = 0
     failed_instances = []
@@ -600,7 +637,9 @@ def test_rust_multisweb(args):
             failed_instances.append((instance_id, str(e)))
 
     print(f"\n{'=' * 80}")
-    print(f"Total: {len(dataset)} | Success: {success_count} | Failed: {len(failed_instances)}")
+    print(
+        f"Total: {len(dataset)} | Success: {success_count} | Failed: {len(failed_instances)}"
+    )
     print(f"{'=' * 80}")
 
     return success_count == len(dataset)
@@ -611,7 +650,7 @@ def test_rust_multisweb(args):
 # ==============================================================================
 
 
-def test_ts_simple(args):
+def run_ts_simple(args):
     """Test TypeScript SCIP indexer with a local repository."""
     repo_path = Path(args.repo).absolute()
 
@@ -642,7 +681,11 @@ def test_ts_simple(args):
             print(f"⚠️  npm install failed: {result.stderr[:200]}")
 
     # Set output directory
-    output_dir = Path(args.output_dir).absolute() if args.output_dir else repo_path / "scip_output"
+    output_dir = (
+        Path(args.output_dir).absolute()
+        if args.output_dir
+        else repo_path / "scip_output"
+    )
     print(f"\nOutput directory: {output_dir}")
 
     # Create the indexer
@@ -700,15 +743,11 @@ def test_ts_simple(args):
     return True
 
 
-def test_ts_multisweb(args):
-    """Test TypeScript SCIP indexer with Multi-SWE-bench dataset."""
-    from codeminer.dataset.swebench import SwebenchDataset
+def run_ts_multi(args):
+    """Test TypeScript SCIP indexer with SWE-bench_Multilingual dataset."""
+    from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
+    dataset_obj = SwebenchMultilingualDataset(split="test", filter_instance=".*")
 
     all_dataset = dataset_obj.load()
 
@@ -740,7 +779,9 @@ def test_ts_multisweb(args):
     else:
         dataset = ts_instances
 
-    print(f"\n✓ Found {len(ts_instances)} total TypeScript instances, testing {len(dataset)}")
+    print(
+        f"\n✓ Found {len(ts_instances)} total TypeScript instances, testing {len(dataset)}"
+    )
 
     success_count = 0
     failed_instances = []
@@ -748,7 +789,9 @@ def test_ts_multisweb(args):
     for idx, instance in enumerate(dataset):
         instance_id = instance["instance_id"]
         print(f"\n{'=' * 80}")
-        print(f"Processing TypeScript instance [{idx + 1}/{len(dataset)}]: {instance_id}")
+        print(
+            f"Processing TypeScript instance [{idx + 1}/{len(dataset)}]: {instance_id}"
+        )
         print(f"{'=' * 80}")
 
         try:
@@ -790,18 +833,20 @@ def test_ts_multisweb(args):
             failed_instances.append((instance_id, str(e)))
 
     print(f"\n{'=' * 80}")
-    print(f"Total: {len(dataset)} | Success: {success_count} | Failed: {len(failed_instances)}")
+    print(
+        f"Total: {len(dataset)} | Success: {success_count} | Failed: {len(failed_instances)}"
+    )
     print(f"{'=' * 80}")
 
     return success_count == len(dataset)
 
 
 # ==============================================================================
-# Main
+# Main / Pytest Entry
 # ==============================================================================
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Unified SCIP indexer test for C++, Rust, and TypeScript"
     )
@@ -819,24 +864,31 @@ def main():
     mode_group.add_argument(
         "--repo",
         type=str,
-        help="Path to local repository (simple mode)",
+        help="Path to local repository (local mode)",
+    )
+    mode_group.add_argument(
+        "--swebench-multilingual",
+        dest="swebench_multilingual",
+        action="store_true",
+        help="Test with SWE-bench_Multilingual dataset",
     )
     mode_group.add_argument(
         "--multisweb",
+        dest="swebench_multilingual",
         action="store_true",
-        help="Test with Multi-SWE-bench dataset",
+        help=argparse.SUPPRESS,
     )
 
     # Common arguments
     parser.add_argument(
         "--clean",
         action="store_true",
-        help="[Simple mode] Clean build artifacts before building",
+        help="[Local mode] Clean build artifacts before building",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        help="[Simple mode] Output directory for SCIP files",
+        help="[Local mode] Output directory for SCIP files",
     )
 
     # C++ specific arguments
@@ -854,48 +906,93 @@ def main():
         help="[Rust only] Exclude vendored libraries from indexing (default: True)",
     )
 
-    # Multi-SWE-bench mode arguments
+    # SWE-bench_Multilingual mode arguments
     parser.add_argument(
         "--num-instances",
         type=int,
         default=None,
-        help="[Multi-SWE-bench mode] Number of instances to test",
+        help="[SWE-bench_Multilingual mode] Number of instances to test",
     )
 
-    args = parser.parse_args()
+    return parser
 
+
+def run(args: argparse.Namespace) -> bool:
     # Run test based on language and mode
     if args.lang == "cpp":
-        if args.multisweb:
-            print("\n=== Running C++ Multi-SWE-bench mode ===\n")
-            success = test_cpp_multisweb(args)
-        elif args.repo:
-            print("\n=== Running C++ Simple mode ===\n")
-            success = test_cpp_simple(args)
-        else:
-            parser.error("Please specify either --repo or --multisweb")
+        if args.swebench_multilingual:
+            print("\n=== Running C++ SWE-bench_Multilingual mode ===\n")
+            return run_cpp_multi(args)
+        if args.repo:
+            print("\n=== Running C++ Local mode ===\n")
+            return run_cpp_simple(args)
+        raise ValueError("Please specify either --repo or --swebench-multilingual")
 
-    elif args.lang == "rust":
-        if args.multisweb:
-            print("\n=== Running Rust Multi-SWE-bench mode ===\n")
-            success = test_rust_multisweb(args)
-        elif args.repo:
-            print("\n=== Running Rust Simple mode ===\n")
-            success = test_rust_simple(args)
-        else:
-            parser.error("Please specify either --repo or --multisweb")
+    if args.lang == "rust":
+        if args.swebench_multilingual:
+            print("\n=== Running Rust SWE-bench_Multilingual mode ===\n")
+            return run_rust_multi(args)
+        if args.repo:
+            print("\n=== Running Rust Local mode ===\n")
+            return run_rust_simple(args)
+        raise ValueError("Please specify either --repo or --swebench-multilingual")
 
-    elif args.lang == "ts":
-        if args.multisweb:
-            print("\n=== Running TypeScript Multi-SWE-bench mode ===\n")
-            success = test_ts_multisweb(args)
-        elif args.repo:
-            print("\n=== Running TypeScript Simple mode ===\n")
-            success = test_ts_simple(args)
-        else:
-            parser.error("Please specify either --repo or --multisweb")
+    if args.lang == "ts":
+        if args.swebench_multilingual:
+            print("\n=== Running TypeScript SWE-bench_Multilingual mode ===\n")
+            return run_ts_multi(args)
+        if args.repo:
+            print("\n=== Running TypeScript Local mode ===\n")
+            return run_ts_simple(args)
+        raise ValueError("Please specify either --repo or --swebench-multilingual")
 
+    raise ValueError(f"Unsupported language: {args.lang}")
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        success = run(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     exit(0 if success else 1)
+
+
+@pytest.fixture(scope="session")
+def swebench_cpp_args() -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(
+        ["--lang", "cpp", "--swebench-multilingual", "--num-instances", "1"]
+    )
+
+
+@pytest.fixture(scope="session")
+def swebench_rust_args() -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(
+        ["--lang", "rust", "--swebench-multilingual", "--num-instances", "1"]
+    )
+
+
+@pytest.fixture(scope="session")
+def swebench_ts_args() -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(
+        ["--lang", "ts", "--swebench-multilingual", "--num-instances", "1"]
+    )
+
+
+def test_cpp_multi(swebench_cpp_args: argparse.Namespace) -> None:
+    assert run(swebench_cpp_args)
+
+
+def test_rust_multi(swebench_rust_args: argparse.Namespace) -> None:
+    assert run(swebench_rust_args)
+
+
+def test_ts_multi(swebench_ts_args: argparse.Namespace) -> None:
+    assert run(swebench_ts_args)
 
 
 if __name__ == "__main__":

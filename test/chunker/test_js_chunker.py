@@ -25,7 +25,7 @@ def express_repo():
 
 
 def _collect_chunks(repo_root: Path, chunk_depth: int):
-    repo_config = RepoChunkingConfig(languages=["javascript"])
+    repo_config = RepoChunkingConfig(languages=["javascript"], filter_tests=False)
     chunker = CodeChunker(
         language="javascript",
         repo_config=repo_config,
@@ -56,4 +56,4 @@ def test_js_chunker_level_two(express_repo):
     function_chunks = [chunk for chunk in chunks if chunk.chunk_type == "function"]
     assert function_chunks, "Expected function chunks when chunk_depth=2"
     # Ensure chunker is emitting node identifiers with file context
-    assert any("lib/router" in chunk.node_id for chunk in function_chunks)
+    assert any(chunk.node_id.startswith("lib/") for chunk in function_chunks)

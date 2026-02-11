@@ -10,6 +10,7 @@ Test Usage:
 """
 
 import argparse
+import gc
 import json
 import logging
 import sys
@@ -189,6 +190,7 @@ def build_embeddings(args):
         logger.info(f"Processing [{idx+1}/{len(dataset_instances)}]: {instance_id}")
         logger.info(f"{'='*80}")
 
+        vector_store = None
         try:
             # Create profiler for this instance
             instance_profiler = Profiler(
@@ -237,7 +239,7 @@ def build_embeddings(args):
             logger.info("Building hierarchical vector store...")
             plan_name = args.plan_name
             with instance_profiler.section("build_vector_store"):
-                build_hierarchical_vector_store(
+                vector_store = build_hierarchical_vector_store(
                     repo_path=repo_path,
                     index_path=str(instance_final_dir),
                     plan_name=plan_name,
@@ -300,8 +302,18 @@ def build_embeddings(args):
             import traceback
 
             logger.error(traceback.format_exc())
-            continue
+        finally:
+            if vector_store is not None:
+                vector_store.close()
+                vector_store = None
+            gc.collect()
+            try:
+                import torch
 
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
     logger.info(f"\n{'='*80}")
     logger.info("Hierarchical embedding build complete!")
     logger.info(f"Processed {len(dataset_instances)} instance(s)")
