@@ -19,6 +19,7 @@ EMBEDDING_MODELS=(
   # "Salesforce/SweRankEmbed-Small:768"
   # "BAAI/bge-code-v1:1536"
   "jinaai/jina-code-embeddings-1.5b:1536"
+  # "fishmingyu/SweRankEmbed-Large:3584"
 )
 
 echo "Running SWE-bench Lite dev retrieval eval (filter: ${FILTER_INSTANCE})"

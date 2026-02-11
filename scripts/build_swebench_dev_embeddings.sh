@@ -10,9 +10,9 @@ PRIMARY_MODEL="Salesforce/SweRankEmbed-Small"
 PRIMARY_PROVIDER="huggingface"
 PRIMARY_DIM=768
 
-SECONDARY_MODEL="${SECONDARY_MODEL:-${HOME}/data/SweRankEmbed-Large}"
+SECONDARY_MODEL="${SECONDARY_MODEL:-fishmingyu/SweRankEmbed-Large}"
 SECONDARY_PROVIDER="huggingface"
-SECONDARY_DIM=1536
+SECONDARY_DIM=3584
 
 mkdir -p "${STORAGE_DIR}"
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Run retrieval + embedding rerank evaluation on SWE-bench Lite dev split using
-# BAAI/bge-code-v1 as the reranker.
+# fishmingyu/SweRankEmbed-Large as the reranker.
 
 DATASET="swebench_lite"
 SPLIT="dev"
@@ -17,9 +17,9 @@ EMBEDDING_PROVIDER="${EMBEDDING_PROVIDER:-huggingface}"
 EMBEDDING_DIM="${EMBEDDING_DIM:-768}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 
-RERANK_EMBEDDING_MODEL="${RERANK_EMBEDDING_MODEL:-BAAI/bge-code-v1}"
+RERANK_EMBEDDING_MODEL="${RERANK_EMBEDDING_MODEL:-fishmingyu/SweRankEmbed-Large}"
 RERANK_EMBEDDING_PROVIDER="${RERANK_EMBEDDING_PROVIDER:-huggingface}"
-RERANK_EMBEDDING_DIM="${RERANK_EMBEDDING_DIM:-1536}"
+RERANK_EMBEDDING_DIM="${RERANK_EMBEDDING_DIM:-3584}"
 RERANK_BATCH_SIZE="${RERANK_BATCH_SIZE:-8}"
 RERANK_TOP_K="${RERANK_TOP_K:-}"
 
