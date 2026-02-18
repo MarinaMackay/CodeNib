@@ -63,7 +63,8 @@ class SCIPRustIndexer(SCIPIndexerBase):
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
             logger.error(
-                "rust-analyzer not found. Please install it with: rustup component add rust-analyzer"
+                "rust-analyzer not found. Please install it with: "
+                "rustup component add rust-analyzer"
             )
             return False
 
@@ -137,4 +138,28 @@ class SCIPRustIndexer(SCIPIndexerBase):
         return super().generate_index(
             config_path=config_path,
             exclude_vendored_libraries=exclude_vendored_libraries,
+        )
+
+    def run_pipeline(
+        self,
+        output_file: Optional[str] = None,
+        skip_level: Optional[str] = None,
+        *,
+        reset_profiler: bool = True,
+        report_profile: bool = True,
+        **kwargs,
+    ):
+        """
+        Run Rust pipeline while ignoring Python-specific kwargs.
+        """
+        kwargs.pop("project_name", None)
+        kwargs.pop("target_dir", None)
+        kwargs.pop("cwd", None)
+
+        return super().run_pipeline(
+            output_file=output_file,
+            skip_level=skip_level,
+            reset_profiler=reset_profiler,
+            report_profile=report_profile,
+            **kwargs,
         )

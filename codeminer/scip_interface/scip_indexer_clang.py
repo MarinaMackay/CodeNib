@@ -2,6 +2,7 @@
 """
 SCIP indexer for C/C++ projects using scip-clang.
 """
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -33,7 +34,8 @@ class SCIPClangIndexer(SCIPIndexerBase):
         Initialize the Clang SCIP indexer.
 
         Args:
-            project_root: Root directory of the C/C++ project (must contain compile_commands.json)
+            project_root: Root directory of the C/C++ project
+                (must contain compile_commands.json)
             output_dir: Directory to store output files (defaults to /tmp/project_name)
             exclude_patterns: List of patterns to exclude from indexing
             profiler: Profiler instance for performance tracking
@@ -189,10 +191,10 @@ class SCIPClangIndexer(SCIPIndexerBase):
             if not comp_db.exists():
                 comp_db = self.project_root / "build" / "compile_commands.json"
 
-        # Check if compilation database exists
-        if not comp_db.exists():
+        # Check if compilation database exists and is valid
+        if not self._is_valid_compdb(comp_db):
             logger.error(
-                f"Compilation database not found. Tried:\n"
+                f"Compilation database missing or invalid. Tried:\n"
                 f"  - {self.project_root / 'compile_commands.json'}\n"
                 f"  - {self.project_root / 'build' / 'compile_commands.json'}\n\n"
                 f"Please generate a compilation database first:\n"
@@ -216,9 +218,191 @@ class SCIPClangIndexer(SCIPIndexerBase):
         if success:
             default_index = self.project_root / "index.scip"
             if default_index.exists() and default_index != self.index_file:
-                logger.info(
-                    f"Moving index from {default_index} to {self.index_file}"
-                )
+                logger.info(f"Moving index from {default_index} to {self.index_file}")
                 default_index.rename(self.index_file)
 
         return success
+
+    def _auto_generate_compdb(self) -> Optional[Path]:
+        """
+        Try generating compile_commands.json with common build flows.
+        Returns the path if successful, otherwise None.
+        """
+        # 1) CMake projects
+        compdb = self._auto_generate_compdb_cmake()
+        if compdb is not None:
+            return compdb
+
+        # 2) Make/Autotools projects via Bear
+        return self._auto_generate_compdb_bear()
+
+    def _is_valid_compdb(self, compdb: Path) -> bool:
+        """Check compile_commands.json is parseable and non-empty."""
+        if not compdb.exists() or not compdb.is_file():
+            return False
+        try:
+            if compdb.stat().st_size < 4:
+                return False
+            with compdb.open("r", encoding="utf-8") as fp:
+                payload = json.load(fp)
+            return isinstance(payload, list) and len(payload) > 0
+        except Exception:
+            return False
+
+    def _auto_generate_compdb_cmake(self) -> Optional[Path]:
+        cmake_lists = self.project_root / "CMakeLists.txt"
+        if not cmake_lists.exists() or not shutil.which("cmake"):
+            return None
+
+        build_dir = self.project_root / "build"
+        build_dir.mkdir(exist_ok=True)
+
+        cmd = [
+            "cmake",
+            "-S",
+            str(self.project_root),
+            "-B",
+            str(build_dir),
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        ]
+        logger.info("Attempting CMake compilation DB generation: %s", " ".join(cmd))
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.warning("Failed to generate compile_commands.json with CMake: %s", e)
+            if e.stderr:
+                logger.warning("cmake stderr: %s", e.stderr.strip())
+            return None
+
+        compdb = build_dir / "compile_commands.json"
+        return compdb if compdb.exists() else None
+
+    def _auto_generate_compdb_bear(self) -> Optional[Path]:
+        if not shutil.which("bear"):
+            logger.info("bear not found; skipping Make-based compilation DB generation")
+            return None
+        if not shutil.which("make"):
+            logger.info("make not found; cannot run bear -- make")
+            return None
+
+        logger.info("Attempting Make compilation DB generation with bear")
+        success = self._run_build_command(["bear", "--", "make", "-j"])
+        if not success:
+            # Fall back to non-parallel in case jobs trigger flaky build scripts.
+            success = self._run_build_command(["bear", "--", "make"])
+        if not success:
+            # Some autotools repos have stale/incomplete Makefiles after checkout.
+            # Try bootstrapping and configuring, then retry.
+            logger.info("Initial bear+make failed; attempting autotools bootstrap")
+            self._bootstrap_autotools()
+            # Clear stale artifacts before rebuilding (best effort).
+            self._run_build_command(["make", "clean"])
+            success = self._run_build_command(["bear", "--", "make", "-j"])
+            if not success:
+                success = self._run_build_command(["bear", "--", "make"])
+        if not success:
+            return None
+
+        for candidate in (
+            self.project_root / "compile_commands.json",
+            self.project_root / "build" / "compile_commands.json",
+        ):
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _bootstrap_autotools(self) -> None:
+        autogen = self.project_root / "autogen.sh"
+        configure = self.project_root / "configure"
+        configure_ac = self.project_root / "configure.ac"
+
+        if autogen.exists():
+            logger.info("Running autogen.sh")
+            self._run_build_command(["sh", str(autogen)])
+        elif configure_ac.exists() and shutil.which("autoreconf"):
+            logger.info("Running autoreconf -fi")
+            self._run_build_command(["autoreconf", "-fi"])
+
+        if configure.exists():
+            configure_cmd = ["sh", str(configure)]
+            # jq recommends builtin oniguruma when building from source.
+            repo_hint = self.project_root.name.lower()
+            if repo_hint in {"jq", "jqlang_jq"}:
+                configure_cmd.append("--with-oniguruma=builtin")
+            logger.info("Running configure command: %s", " ".join(configure_cmd))
+            self._run_build_command(configure_cmd)
+
+    def _run_build_command(self, cmd: List[str], timeout_sec: int = 1200) -> bool:
+        logger.info("Running build command: %s", " ".join(cmd))
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+            )
+            return True
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Command timed out after %ss: %s", timeout_sec, " ".join(cmd)
+            )
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.warning("Command failed: %s", " ".join(cmd))
+            if e.stderr:
+                logger.warning("stderr: %s", e.stderr[:600].strip())
+            return False
+
+    def run_pipeline(
+        self,
+        output_file: Optional[str] = None,
+        skip_level: Optional[str] = None,
+        *,
+        reset_profiler: bool = True,
+        report_profile: bool = True,
+        **kwargs,
+    ):
+        """
+        Run C/C++ pipeline with compile_commands.json auto-discovery/generation.
+        """
+        # Drop Python-specific kwargs that may be forwarded by callers.
+        kwargs.pop("project_name", None)
+        kwargs.pop("target_dir", None)
+        kwargs.pop("cwd", None)
+
+        if "compdb_path" not in kwargs or not kwargs["compdb_path"]:
+            for candidate in (
+                self.project_root / "compile_commands.json",
+                self.project_root / "build" / "compile_commands.json",
+            ):
+                if self._is_valid_compdb(candidate):
+                    kwargs["compdb_path"] = str(candidate)
+                    break
+                if candidate.exists():
+                    logger.warning(
+                        "Ignoring invalid compilation database: %s", candidate
+                    )
+            else:
+                generated = self._auto_generate_compdb()
+                if generated is not None and self._is_valid_compdb(generated):
+                    kwargs["compdb_path"] = str(generated)
+                elif generated is not None:
+                    logger.warning(
+                        "Auto-generated compilation database is invalid: %s", generated
+                    )
+
+        return super().run_pipeline(
+            output_file=output_file,
+            skip_level=skip_level,
+            reset_profiler=reset_profiler,
+            report_profile=report_profile,
+            **kwargs,
+        )

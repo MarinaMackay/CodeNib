@@ -24,6 +24,7 @@ class QueryType(str, Enum):
     """
 
     BEHAVIORAL = "behavioral"
+    MODULE_HINT = "module_hint"
     FILE_HINT = "file_hint"
     SYMBOL_HINT = "symbol_hint"
     REASONING = "reasoning"
@@ -105,7 +106,7 @@ class GroundTruth:
             "secondary_locations": [loc.to_dict() for loc in self.secondary_locations],
             "context_locations": [loc.to_dict() for loc in self.context_locations],
             # Flat lists for compatibility with existing evaluation scripts
-            "target_files": list({loc.file_path for loc in self.primary_locations}),
+            "target_files": sorted({loc.file_path for loc in self.primary_locations}),
             "target_symbols": [
                 loc.node_id for loc in self.primary_locations if loc.symbol
             ],

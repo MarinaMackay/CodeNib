@@ -48,6 +48,7 @@ def _to_compact_record(item: Dict[str, Any]) -> Dict[str, Any]:
         "query": item.get("query"),
         "category": item.get("query_type") or item.get("difficulty"),
         "gt_symbols": item.get("target_symbols") or [],
+        "gt_symbol_nodes": item.get("target_symbol_nodes") or [],
         "gt_files": item.get("target_files") or [],
     }
 
@@ -79,6 +80,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-turns", type=int, default=10)
     parser.add_argument(
+        "--sampling-seed",
+        type=int,
+        default=None,
+        help="Optional random seed for deterministic block sampling.",
+    )
+    parser.add_argument(
+        "--behavioral-consensus-runs",
+        type=int,
+        default=3,
+        help="Number of behavioral generation passes for GT consensus voting.",
+    )
+    parser.add_argument(
         "--permission-mode",
         type=str,
         default="bypassPermissions",
@@ -108,7 +121,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=[QueryType.BEHAVIORAL.value],
         help=(
             "Query types to synthesize (space or comma separated): "
-            "behavioral,module_hint,file_hint,symbol_hint,reasoning"
+            "behavioral,module_hint,file_hint,symbol_hint,reasoning "
+            "(default: behavioral)"
         ),
     )
     parser.add_argument(
@@ -203,6 +217,8 @@ def main() -> None:
             allowed_tools=allowed_tools,
             permission_mode=args.permission_mode,
             query_type=query_type,
+            sampling_seed=args.sampling_seed,
+            behavioral_consensus_runs=args.behavioral_consensus_runs,
         )
         results = synthesizer.synthesize_queries(
             expanded_inputs,
