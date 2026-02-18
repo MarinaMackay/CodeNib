@@ -2,6 +2,8 @@
 """
 SCIP indexer for TypeScript and JavaScript projects using scip-typescript.
 """
+import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Union
@@ -62,7 +64,8 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
             logger.error(
-                "scip-typescript not found. Please install it with: npm install -g @sourcegraph/scip-typescript"
+                "scip-typescript not found. Please install it with: "
+                "npm install -g @sourcegraph/scip-typescript"
             )
             return False
 
@@ -122,6 +125,90 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
 
         return SCIPTypeScriptGraphDecoder
 
+    def _install_dependencies(self, timeout_sec: int = 600) -> None:
+        """
+        Install Node dependencies in project root before indexing.
+
+        scip-typescript requires project dependencies to be available for
+        reliable indexing, especially for JS projects inferred from package.json.
+        """
+        package_json = self.project_root / "package.json"
+        if not package_json.exists():
+            return
+
+        if (self.project_root / "yarn.lock").exists() and shutil.which("yarn"):
+            cmd = ["yarn", "install", "--frozen-lockfile"]
+        elif (self.project_root / "pnpm-lock.yaml").exists() and shutil.which("pnpm"):
+            cmd = ["pnpm", "install", "--frozen-lockfile"]
+        elif (self.project_root / "package-lock.json").exists():
+            cmd = ["npm", "ci"]
+        else:
+            cmd = ["npm", "install"]
+
+        logger.info("Installing TypeScript dependencies: %s", " ".join(cmd))
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                timeout=timeout_sec,
+            )
+        except FileNotFoundError:
+            logger.warning(
+                "Package manager command not found (%s). Continuing without install.",
+                cmd[0],
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Dependency install timed out after %ss. Continuing anyway.",
+                timeout_sec,
+            )
+        except subprocess.CalledProcessError as e:
+            logger.warning("Dependency install failed: %s", e)
+            if e.stderr:
+                logger.warning("install stderr: %s", e.stderr[:500].strip())
+
+    def _normalize_workspace_kwargs(self, kwargs: dict) -> dict:
+        """
+        Ensure workspace flags are consistent with available package managers.
+        """
+        yarn_available = bool(shutil.which("yarn"))
+        pnpm_available = bool(shutil.which("pnpm"))
+        npm_available = bool(shutil.which("npm"))
+
+        if kwargs.get("yarn_workspaces") and not yarn_available:
+            logger.warning(
+                "yarn_workspaces requested but yarn is not installed; disabling."
+            )
+            kwargs["yarn_workspaces"] = False
+            if npm_available:
+                kwargs["npm_workspaces"] = True
+
+        if kwargs.get("pnpm_workspaces") and not pnpm_available:
+            logger.warning(
+                "pnpm_workspaces requested but pnpm is not installed; disabling."
+            )
+            kwargs["pnpm_workspaces"] = False
+            if npm_available:
+                kwargs["npm_workspaces"] = True
+
+        if kwargs.get("npm_workspaces") and not npm_available:
+            logger.warning(
+                "npm_workspaces requested but npm is not installed; disabling."
+            )
+            kwargs["npm_workspaces"] = False
+
+        # Keep flags mutually exclusive.
+        if kwargs.get("yarn_workspaces"):
+            kwargs["pnpm_workspaces"] = False
+            kwargs["npm_workspaces"] = False
+        elif kwargs.get("pnpm_workspaces"):
+            kwargs["npm_workspaces"] = False
+
+        return kwargs
+
     def generate_index(
         self,
         project_name: Optional[str] = None,
@@ -143,10 +230,82 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
         Returns:
             bool: True if index generation was successful, False otherwise
         """
+        # Guardrail: if no explicit ts/js config exists, force infer mode.
+        has_tsconfig = (self.project_root / "tsconfig.json").exists()
+        has_jsconfig = (self.project_root / "jsconfig.json").exists()
+        if not infer_tsconfig and not has_tsconfig and not has_jsconfig:
+            infer_tsconfig = True
+            logger.info(
+                "No tsconfig.json/jsconfig.json in %s; forcing infer_tsconfig=True",
+                self.project_root,
+            )
+
         return super().generate_index(
             project_name=project_name,
             infer_tsconfig=infer_tsconfig,
             yarn_workspaces=yarn_workspaces,
             pnpm_workspaces=pnpm_workspaces,
             npm_workspaces=npm_workspaces,
+        )
+
+    def run_pipeline(
+        self,
+        output_file: Optional[str] = None,
+        skip_level: Optional[str] = None,
+        *,
+        reset_profiler: bool = True,
+        report_profile: bool = True,
+        **kwargs,
+    ):
+        """
+        Run TypeScript pipeline with language-specific defaults.
+
+        If neither tsconfig.json nor jsconfig.json exists, enable
+        --infer-tsconfig automatically unless caller explicitly sets it.
+        """
+        # Drop Python-specific kwargs that may be forwarded by callers.
+        kwargs.pop("target_dir", None)
+        kwargs.pop("cwd", None)
+
+        # Auto-select workspace mode when not explicitly provided.
+        workspace_flags = ("yarn_workspaces", "pnpm_workspaces", "npm_workspaces")
+        has_workspace_mode = any(kwargs.get(flag) for flag in workspace_flags)
+        if not has_workspace_mode:
+            package_json = self.project_root / "package.json"
+            if package_json.exists():
+                try:
+                    payload = json.loads(package_json.read_text(encoding="utf-8"))
+                    has_workspaces = bool(payload.get("workspaces"))
+                except Exception:
+                    has_workspaces = False
+                if has_workspaces:
+                    if (
+                        self.project_root / "pnpm-workspace.yaml"
+                    ).exists() and shutil.which("pnpm"):
+                        kwargs["pnpm_workspaces"] = True
+                        logger.info("Detected pnpm workspace in %s", self.project_root)
+                    elif (self.project_root / "yarn.lock").exists() and shutil.which(
+                        "yarn"
+                    ):
+                        kwargs["yarn_workspaces"] = True
+                        logger.info("Detected yarn workspace in %s", self.project_root)
+                    else:
+                        kwargs["npm_workspaces"] = True
+                        logger.info("Detected npm workspace in %s", self.project_root)
+
+        # Forced default for dataset-style repos:
+        # scip-typescript frequently fails on root projects without tsconfig.
+        if "infer_tsconfig" not in kwargs:
+            kwargs["infer_tsconfig"] = True
+            logger.info("Enabling infer_tsconfig for %s", self.project_root)
+
+        kwargs = self._normalize_workspace_kwargs(kwargs)
+        self._install_dependencies()
+        logger.info("TypeScript run_pipeline kwargs: %s", kwargs)
+        return super().run_pipeline(
+            output_file=output_file,
+            skip_level=skip_level,
+            reset_profiler=reset_profiler,
+            report_profile=report_profile,
+            **kwargs,
         )

@@ -214,7 +214,6 @@ class SCIPTypeScriptGraphDecoder:
         package_prefix = None
         parts = original_symbol.split(" ")
         if len(parts) >= 5 and parts[0] == "scip-typescript":
-            manager = parts[1]  # npm, yarn, pnpm
             package_name = parts[2]
             version = parts[3]
 
@@ -290,7 +289,9 @@ class SCIPTypeScriptGraphDecoder:
             original_symbol: Original symbol name (for additional context)
 
         Returns:
-            Symbol type: NODE_TYPE_CLASS, NODE_TYPE_METHOD, NODE_TYPE_FIELD, or NODE_TYPE_FUNCTION
+            Symbol type:
+            NODE_TYPE_CLASS, NODE_TYPE_METHOD, NODE_TYPE_FIELD,
+            or NODE_TYPE_FUNCTION
         """
 
         if ":" in unified_symbol:
@@ -319,7 +320,8 @@ class SCIPTypeScriptGraphDecoder:
 
     def _process_symbol(self, symbol, line, symbol_roles, enclosing_ranges, file_path):
         self.logger.scip_debug(
-            f"Processing TS symbol: {symbol} at line {line}, roles: {symbol_roles}, file: {file_path}"
+            f"Processing TS symbol: {symbol} at line {line}, "
+            f"roles: {symbol_roles}, file: {file_path}"
         )
 
         # Skip function arguments (symbols ending with .(xxx))
@@ -328,19 +330,18 @@ class SCIPTypeScriptGraphDecoder:
 
         # Exit scopes that have ended based on current line
         try:
-            self.logger.scip_debug(
-                f"Scope stack before exit: {[list(s.keys())[0] for s in self.code_graph.scope_stack]}"
-            )
+            scope_stack_names = [list(s.keys())[0] for s in self.code_graph.scope_stack]
+            self.logger.scip_debug(f"Scope stack before exit: {scope_stack_names}")
             self.code_graph.exit_scopes_by_line(line)
-            self.logger.scip_debug(
-                f"Scope stack after exit: {[list(s.keys())[0] for s in self.code_graph.scope_stack]}"
-            )
+            scope_stack_names = [list(s.keys())[0] for s in self.code_graph.scope_stack]
+            self.logger.scip_debug(f"Scope stack after exit: {scope_stack_names}")
         except Exception as e:
             self.logger.error(f"Error exiting scopes at line {line}: {e}")
             raise
 
         # Clean up the symbol by simply splitting on spaces and taking the last part
-        # For example: "scip-typescript npm test-project 1.0.0 src/`calculator.ts`/Calculator#add()."
+        # For example:
+        # "scip-typescript npm test-project 1.0.0 src/`calculator.ts`/Calculator#add()."
         # Will become: "src/`calculator.ts`/Calculator#add()."
         # IMPORTANT: Keep original symbol for hash and package extraction
         cleaned_symbol = symbol.split(" ")[-1]
@@ -351,9 +352,8 @@ class SCIPTypeScriptGraphDecoder:
         if not match:
             return
 
-        module_path = match.group(1)
-
-        # Unify symbol name format (pass original symbol for hash/package extraction, file_path for extension)
+        # Unify symbol name format (pass original symbol for hash/package
+        # extraction, file_path for extension)
         unified_symbol = self._unify_symbol_name(cleaned_symbol, symbol, file_path)
 
         # Classify symbol type (pass both original and unified for context)
@@ -395,11 +395,14 @@ class SCIPTypeScriptGraphDecoder:
             if unified_symbol in self.code_graph.name_to_vertex:
                 vertex_id = self.code_graph.name_to_vertex[unified_symbol]
                 self.code_graph.graph.vs[vertex_id]["scip_symbol"] = symbol
-                self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol)
+                self.code_graph.graph.vs[vertex_id]["display_name"] = (
+                    self._get_display_name(unified_symbol)
+                )
 
             # Add containment edge
             self.logger.scip_debug(
-                f"Adding containment edge for {unified_symbol}, current scope: {self.code_graph.current_scope}"
+                f"Adding containment edge for {unified_symbol}, "
+                f"current scope: {self.code_graph.current_scope}"
             )
             self.code_graph.add_containment_edge(unified_symbol)
 
@@ -408,7 +411,8 @@ class SCIPTypeScriptGraphDecoder:
             if symbol_type in [NODE_TYPE_CLASS, NODE_TYPE_FUNCTION, NODE_TYPE_METHOD]:
                 try:
                     self.logger.scip_debug(
-                        f"Updating scope to {unified_symbol} [{scope_start_line}-{scope_end_line}]"
+                        f"Updating scope to {unified_symbol} "
+                        f"[{scope_start_line}-{scope_end_line}]"
                     )
                     self.code_graph.update_current_scope(
                         unified_symbol, scope_start_line, scope_end_line
@@ -420,7 +424,8 @@ class SCIPTypeScriptGraphDecoder:
         # Handle definition with no enclosing range
         elif is_definition:
             self.logger.scip_debug(
-                f"Adding symbol without enclosing range: {unified_symbol}, current scope: {self.code_graph.current_scope}"
+                f"Adding symbol without enclosing range: {unified_symbol}, "
+                f"current scope: {self.code_graph.current_scope}"
             )
             self.code_graph.add_symbol_node(
                 unified_symbol, line, symbol_type=symbol_type
@@ -430,7 +435,9 @@ class SCIPTypeScriptGraphDecoder:
             if unified_symbol in self.code_graph.name_to_vertex:
                 vertex_id = self.code_graph.name_to_vertex[unified_symbol]
                 self.code_graph.graph.vs[vertex_id]["scip_symbol"] = symbol
-                self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol)
+                self.code_graph.graph.vs[vertex_id]["display_name"] = (
+                    self._get_display_name(unified_symbol)
+                )
 
             # Add 'contain' edge from current scope to symbol
             self.code_graph._add_edge(
@@ -440,9 +447,7 @@ class SCIPTypeScriptGraphDecoder:
         # Handle reference (not a definition)
         # Use bitwise check instead of exact match to handle all reference types
         else:
-            self.code_graph.add_symbol_reference(
-                unified_symbol, module_path, symbol_type
-            )
+            self.code_graph.add_symbol_reference(unified_symbol, file_path, symbol_type)
 
     def save_graph(self, output_path):
         self.code_graph.save_graph(output_path)

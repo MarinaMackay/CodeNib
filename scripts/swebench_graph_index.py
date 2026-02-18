@@ -1,129 +1,456 @@
 """
-This script preprocesses and creates graph indexes for SWE-bench instances.
-It generates SCIP-based code graphs for each instance in the dataset.
+Build SCIP graph indexes for multiple benchmark sources.
 
-Usage example:
-    python scripts/swebench_graph_index.py --dataset princeton-nlp/SWE-bench_Lite \
-        --split test --filter-instance "^(django__django-11099)$" \
-        --output-path /tmp/swebench_indexes
+Supported sources:
+- swebench
+- swebench_multilingual
+- locbench
+- sampled_csv (for sampled instance lists like selected.csv/selected_instances.csv)
 """
 
+from __future__ import annotations
+
 import argparse
+import csv
 import json
 import logging
+import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+from codeminer.dataset.locbench import LocbenchDataset
 from codeminer.dataset.swebench import SwebenchDataset
+from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.log_utils import get_logger
 from codeminer.profiler import Profiler
 from codeminer.scip_interface.scip_indexer import SCIPIndexer
 
 logger = get_logger(__name__)
 
+DEFAULT_MULTILINGUAL_REPO_LANG_CSV = (
+    Path(__file__).resolve().parents[1]
+    / "codeminer"
+    / "dataset"
+    / "collect"
+    / "data"
+    / "swebench_multilingual_repos.csv"
+)
 
-def parse_args():
-    """Parse command line arguments."""
+
+@dataclass
+class IndexTask:
+    instance: Dict[str, Any]
+    dataset_obj: Any
+    language: str
+    source_kind: str
+
+
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Preprocess and create graph indexes for SWE-bench instances",
+        description="Create SCIP graph indexes for benchmark instances.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    # Dataset configuration
+    parser.add_argument(
+        "--source",
+        type=str,
+        choices=["swebench", "swebench_multilingual", "locbench", "sampled_csv"],
+        default="swebench",
+        help="Source type for instances to index.",
+    )
     parser.add_argument(
         "--dataset",
         type=str,
         default="princeton-nlp/SWE-bench_Verified",
-        help="SWE-bench dataset name",
+        help="Dataset name used when source is swebench.",
     )
     parser.add_argument(
-        "--split",
+        "--multilingual-dataset",
         type=str,
-        default="test",
-        help="Dataset split to use",
+        default="SWE-bench/SWE-bench_Multilingual",
+        help="Dataset name used when source is swebench_multilingual.",
+    )
+    parser.add_argument(
+        "--locbench-dataset",
+        type=str,
+        default="czlll/Loc-Bench_V1",
+        help="Dataset name used when source is locbench.",
+    )
+    parser.add_argument(
+        "--sampled-csv",
+        type=str,
+        default=None,
+        help="CSV file for sampled_csv source (e.g., selected.csv/selected_instances.csv).",
+    )
+    parser.add_argument(
+        "--sampled-python-dataset",
+        type=str,
+        default="princeton-nlp/SWE-bench_Verified",
+        help="Python backing dataset used to enrich sampled CSV rows if needed.",
+    )
+    parser.add_argument(
+        "--sampled-multilingual-dataset",
+        type=str,
+        default="SWE-bench/SWE-bench_Multilingual",
+        help="Multilingual backing dataset used to enrich sampled CSV rows if needed.",
+    )
+    parser.add_argument(
+        "--sampled-locbench-dataset",
+        type=str,
+        default=None,
+        help="Optional LocBench backing dataset to enrich sampled CSV rows.",
+    )
+    parser.add_argument(
+        "--split", type=str, default="test", help="Dataset split to use."
     )
     parser.add_argument(
         "--filter-instance",
         type=str,
         default=".*",
-        help="Regex pattern to filter instances (default: .* processes all instances)",
+        help="Regex pattern to filter instance IDs.",
     )
-
-    # # Index selection
-    # parser.add_argument(
-    #     "--idx-range",
-    #     type=int,
-    #     nargs=2,
-    #     default=None,
-    #     help="Range of instance indices to process (e.g., 0 10 for instances 0-9)",
-    # )
-
-    # Output configuration
     parser.add_argument(
         "--output-path",
         type=str,
         default=None,
-        help="Path to store the generated graph indexes (default: ~/.codeminer/)",
+        help="Path to store generated graph indexes.",
     )
-
-    # SCIP indexer configuration
     parser.add_argument(
         "--exclude-patterns",
         type=str,
         nargs="+",
         default=["test*"],
-        help="Patterns to exclude from indexing (e.g., test/ docs/)",
+        help="Patterns to exclude from indexing.",
     )
     parser.add_argument(
         "--skip-level",
         type=str,
-        choices=["graph", "decode", "raw", None],
+        choices=["graph", "decode", "raw", "none"],
         default="graph",
-        help=(
-            "Cache/skip level: 'graph' (check graph.pkl), 'decode' (check "
-            "index.decoded), 'raw' (check index.scip), or None (run full pipeline)"
-        ),
+        help="Cache/skip level for indexing pipeline.",
     )
-
-    # Repository cache
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force full re-index (equivalent to skip-level=none).",
+    )
     parser.add_argument(
         "--cache-dir",
         type=str,
         default="~/.codeminer",
-        help="Directory to cache repositories",
+        help="Cache directory for datasets.",
+    )
+    parser.add_argument(
+        "--repo-cache-dir",
+        type=str,
+        default=None,
+        help="Directory for checked-out repositories (defaults to cache-dir).",
     )
     parser.add_argument(
         "--profile-dir",
         type=str,
         default=None,
-        help=(
-            "Directory to store profiler summaries (default: "
-            "<output-path>/profile_log)"
-        ),
+        help="Directory to store profiler summaries (default: <output-path>/profile_log).",
     )
-
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="auto",
+        choices=["auto", "python", "rust", "ts", "cpp"],
+        help="SCIP index language. Use auto to infer per instance.",
+    )
+    parser.add_argument(
+        "--default-language",
+        type=str,
+        default="python",
+        choices=["python", "rust", "ts", "cpp"],
+        help="Fallback language when auto inference is inconclusive.",
+    )
+    parser.add_argument(
+        "--multilingual-repo-language-csv",
+        type=str,
+        default=str(DEFAULT_MULTILINGUAL_REPO_LANG_CSV),
+        help="Repo->language CSV used for multilingual language inference.",
+    )
     return parser.parse_args()
 
 
-def main():
-    """Main function to process SWE-bench instances and create graph indexes."""
+def _dataset_kwargs(args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "split": args.split,
+        "filter_instance": args.filter_instance,
+        "root": args.cache_dir,
+        "repo_root": args.repo_cache_dir or args.cache_dir,
+        "log": True,
+    }
+
+
+def _map_language_label(label: Optional[str], default_language: str) -> str:
+    if not label:
+        return default_language
+    text = label.lower()
+    if "rust" in text:
+        return "rust"
+    if "javascript" in text or "typescript" in text or text == "ts" or text == "js":
+        return "ts"
+    if "c++" in text or text == "cpp" or text == "c":
+        return "cpp"
+    if "python" in text:
+        return "python"
+    return default_language
+
+
+def _load_repo_language_map(csv_path: Path) -> Dict[str, str]:
+    if not csv_path.exists():
+        return {}
+    mapping: Dict[str, str] = {}
+    with csv_path.open("r", encoding="utf-8") as fp:
+        reader = csv.DictReader(fp)
+        for row in reader:
+            repo = row.get("repo") or row.get("Repository")
+            lang = row.get("language") or row.get("Language")
+            if repo and lang:
+                mapping[repo] = lang
+    return mapping
+
+
+def _normalize_rows(rows: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    return [dict(r) for r in rows]
+
+
+def _build_dataset(source: str, args: argparse.Namespace):
+    kwargs = _dataset_kwargs(args)
+    if source == "swebench":
+        return SwebenchDataset(dataset=args.dataset, **kwargs)
+    if source == "swebench_multilingual":
+        return SwebenchMultilingualDataset(dataset=args.multilingual_dataset, **kwargs)
+    if source == "locbench":
+        return LocbenchDataset(dataset=args.locbench_dataset, **kwargs)
+    raise ValueError(f"Unsupported source: {source}")
+
+
+def _read_sampled_csv(csv_path: Path, pattern: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    regex = re.compile(pattern)
+    with csv_path.open("r", encoding="utf-8") as fp:
+        reader = csv.DictReader(fp)
+        for row in reader:
+            iid = row.get("instance_id", "")
+            if iid and regex.match(iid):
+                rows.append(dict(row))
+    return rows
+
+
+def _load_instance_map(dataset_obj: Any) -> Dict[str, Dict[str, Any]]:
+    records = _normalize_rows(dataset_obj.load())
+    return {
+        record["instance_id"]: record for record in records if record.get("instance_id")
+    }
+
+
+def _resolve_sampled_instances(
+    args: argparse.Namespace,
+    repo_language_map: Dict[str, str],
+) -> List[IndexTask]:
+    if not args.sampled_csv:
+        raise ValueError("--sampled-csv is required when --source sampled_csv")
+
+    sampled_rows = _read_sampled_csv(
+        Path(args.sampled_csv).expanduser(), args.filter_instance
+    )
+    logger.info("Loaded %d sampled CSV rows", len(sampled_rows))
+
+    kwargs = _dataset_kwargs(args)
+    py_obj = SwebenchDataset(dataset=args.sampled_python_dataset, **kwargs)
+    ml_obj = SwebenchMultilingualDataset(
+        dataset=args.sampled_multilingual_dataset, **kwargs
+    )
+    py_map = _load_instance_map(py_obj)
+    ml_map = _load_instance_map(ml_obj)
+
+    loc_obj = None
+    loc_map: Dict[str, Dict[str, Any]] = {}
+    if args.sampled_locbench_dataset:
+        loc_obj = LocbenchDataset(dataset=args.sampled_locbench_dataset, **kwargs)
+        loc_map = _load_instance_map(loc_obj)
+
+    tasks: List[IndexTask] = []
+    missing: List[str] = []
+    for row in sampled_rows:
+        instance_id = row.get("instance_id")
+        if not instance_id:
+            continue
+
+        lang_label = row.get("language_group") or row.get("language")
+        preferred = _map_language_label(lang_label, default_language="python")
+
+        source_obj = py_obj
+        source_kind = "swebench"
+        source_row = py_map.get(instance_id)
+
+        if preferred != "python":
+            source_obj = ml_obj
+            source_kind = "swebench_multilingual"
+            source_row = ml_map.get(instance_id)
+        if source_row is None and instance_id in py_map:
+            source_obj = py_obj
+            source_kind = "swebench"
+            source_row = py_map[instance_id]
+        if source_row is None and instance_id in ml_map:
+            source_obj = ml_obj
+            source_kind = "swebench_multilingual"
+            source_row = ml_map[instance_id]
+        if source_row is None and instance_id in loc_map and loc_obj is not None:
+            source_obj = loc_obj
+            source_kind = "locbench"
+            source_row = loc_map[instance_id]
+
+        merged: Dict[str, Any]
+        if source_row is None:
+            merged = dict(row)
+            if not merged.get("repo") or not merged.get("base_commit"):
+                missing.append(instance_id)
+                continue
+        else:
+            merged = {**source_row, **row}
+            merged["repo"] = merged.get("repo") or source_row.get("repo")
+            merged["base_commit"] = merged.get("base_commit") or source_row.get(
+                "base_commit"
+            )
+
+        language = _infer_language(
+            instance=merged,
+            source_kind=source_kind,
+            forced_language=args.language,
+            default_language=args.default_language,
+            repo_language_map=repo_language_map,
+        )
+        tasks.append(
+            IndexTask(
+                instance=merged,
+                dataset_obj=source_obj,
+                language=language,
+                source_kind=source_kind,
+            )
+        )
+
+    if missing:
+        preview = ", ".join(missing[:5])
+        raise ValueError(
+            "Sampled CSV rows missing repo/base_commit and not found in backing datasets: "
+            f"{preview} (total={len(missing)})"
+        )
+    return tasks
+
+
+def _infer_language(
+    *,
+    instance: Mapping[str, Any],
+    source_kind: str,
+    forced_language: str,
+    default_language: str,
+    repo_language_map: Mapping[str, str],
+) -> str:
+    if forced_language != "auto":
+        return forced_language
+    if source_kind in {"swebench", "locbench"}:
+        return "python"
+
+    label = (
+        instance.get("language_group")
+        or instance.get("language")
+        or repo_language_map.get(instance.get("repo", ""))
+    )
+    return _map_language_label(str(label) if label else None, default_language)
+
+
+def _resolve_tasks(
+    args: argparse.Namespace,
+    repo_language_map: Dict[str, str],
+) -> List[IndexTask]:
+    if args.source == "sampled_csv":
+        return _resolve_sampled_instances(args, repo_language_map)
+
+    dataset_obj = _build_dataset(args.source, args)
+    dataset_rows = _normalize_rows(dataset_obj.load())
+    logger.info("Loaded %d instances from %s", len(dataset_rows), args.source)
+    return [
+        IndexTask(
+            instance=instance,
+            dataset_obj=dataset_obj,
+            language=_infer_language(
+                instance=instance,
+                source_kind=args.source,
+                forced_language=args.language,
+                default_language=args.default_language,
+                repo_language_map=repo_language_map,
+            ),
+            source_kind=args.source,
+        )
+        for instance in dataset_rows
+    ]
+
+
+def _ensure_required_fields(tasks: List[IndexTask]) -> None:
+    missing: List[str] = []
+    for task in tasks:
+        instance = task.instance
+        if not instance.get("repo") or not instance.get("base_commit"):
+            missing.append(instance.get("instance_id", "unknown"))
+    if missing:
+        preview = ", ".join(missing[:5])
+        raise ValueError(
+            "Missing required fields repo/base_commit for instances: "
+            f"{preview} (total={len(missing)})"
+        )
+
+
+def _write_profile(
+    profile_output_dir: Path,
+    *,
+    instance: Mapping[str, Any],
+    source_kind: str,
+    language: str,
+    profile_summary: Any,
+) -> None:
+    sections_payload = [
+        {
+            "label": label,
+            "total": stats.total,
+            "count": stats.count,
+            "average": stats.average,
+            "min": stats.safe_min,
+            "max": stats.max_duration,
+            "errors": stats.errors,
+        }
+        for label, stats in profile_summary
+    ]
+    profile_payload = {
+        "instance_id": instance.get("instance_id"),
+        "repo": instance.get("repo"),
+        "base_commit": instance.get("base_commit"),
+        "source": source_kind,
+        "language": language,
+        "total_duration": sum(section["total"] for section in sections_payload),
+        "sections": sections_payload,
+    }
+    profile_file = (
+        profile_output_dir
+        / f"{str(instance.get('instance_id')).replace('/', '__')}.json"
+    )
+    profile_file.write_text(json.dumps(profile_payload, indent=2), encoding="utf-8")
+    logger.info("Saved profiler results to %s", profile_file)
+
+
+def main() -> None:
     args = parse_args()
 
-    # Load and filter dataset
-    logger.info(f"Loading dataset: {args.dataset}, split: {args.split}")
-    logger.info(f"Filter pattern: {args.filter_instance}")
-
-    dataset_obj = SwebenchDataset.from_args(args)
-    dataset = dataset_obj.load()
-
-    logger.info(f"Loaded {len(dataset)} instances from dataset")
-
-    # Set default output index path if not specified
     if args.output_path is None:
         args.output_path = str(Path.home() / ".codeminer")
-
-    output_path = Path(args.output_path)
+    output_path = Path(args.output_path).expanduser()
     output_path.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Graph indexes will be stored in: {output_path}")
+    logger.info("Graph indexes will be stored in: %s", output_path)
 
     profile_output_dir = (
         Path(args.profile_dir).expanduser()
@@ -131,31 +458,49 @@ def main():
         else output_path / "profile_log"
     )
     profile_output_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Profiler summaries will be stored in: {profile_output_dir}")
+    logger.info("Profiler summaries will be stored in: %s", profile_output_dir)
 
-    # Process each instance
-    for idx, instance in enumerate(dataset):
+    repo_language_map = _load_repo_language_map(
+        Path(args.multilingual_repo_language_csv).expanduser()
+    )
+    tasks = _resolve_tasks(args, repo_language_map)
+    _ensure_required_fields(tasks)
+
+    logger.info("Prepared %d indexing tasks from source=%s", len(tasks), args.source)
+    effective_skip_level: Optional[str] = None
+    if not args.force:
+        effective_skip_level = None if args.skip_level == "none" else args.skip_level
+    logger.info(
+        "Index mode: force=%s, skip_level=%s",
+        args.force,
+        effective_skip_level if effective_skip_level is not None else "none",
+    )
+
+    for idx, task in enumerate(tasks):
+        instance = task.instance
         instance_id = instance["instance_id"]
         repo = instance["repo"]
         base_commit = instance["base_commit"]
 
-        logger.info(f"\n{'='*80}")
-        logger.info(f"Processing instance {idx + 1}/{len(dataset)}: {instance_id}")
-        logger.info(f"Repository: {repo}")
-        logger.info(f"Base commit: {base_commit}")
-        logger.info(f"{'='*80}")
+        logger.info("\n%s", "=" * 80)
+        logger.info("Processing instance %d/%d: %s", idx + 1, len(tasks), instance_id)
+        logger.info("Repository: %s", repo)
+        logger.info("Base commit: %s", base_commit)
+        logger.info("Source/language: %s / %s", task.source_kind, task.language)
+        logger.info("%s", "=" * 80)
 
         try:
-            # Process the instance (clone repo and checkout commit)
-            dataset_obj.process_instance(instance, repo_root=args.cache_dir)
-            repo_path = dataset_obj.get_repo_path(instance, repo_root=args.cache_dir)
-            logger.info(f"Repository checked out at: {repo_path}")
+            task.dataset_obj.process_instance(
+                instance, repo_root=args.repo_cache_dir or args.cache_dir
+            )
+            repo_path = task.dataset_obj.get_repo_path(
+                instance, repo_root=args.repo_cache_dir or args.cache_dir
+            )
+            logger.info("Repository checked out at: %s", repo_path)
 
-            # Create output directory for this instance
             instance_output_dir = output_path / instance_id.replace("/", "__")
             instance_output_dir.mkdir(parents=True, exist_ok=True)
 
-            # Initialize SCIP indexer
             profiler = Profiler(
                 name=f"scip_indexer[{instance_id}]",
                 logger=logger,
@@ -167,67 +512,46 @@ def main():
                 output_dir=instance_output_dir,
                 exclude_patterns=args.exclude_patterns,
                 profiler=profiler,
+                language=task.language,
             )
 
-            # Run the indexing pipeline
-            logger.info(f"Starting graph indexing for {instance_id}")
+            logger.info("Starting graph indexing for %s", instance_id)
             graph = indexer.run_pipeline(
-                project_name=instance_id,
-                skip_level=args.skip_level,
+                skip_level=effective_skip_level,
                 report_profile=False,
             )
-            logger.info(f"Profiler summary for {instance_id}:")
+            logger.info("Profiler summary for %s:", instance_id)
             profile_summary = profiler.report(reset=True)
-
-            sections_payload = [
-                {
-                    "label": label,
-                    "total": stats.total,
-                    "count": stats.count,
-                    "average": stats.average,
-                    "min": stats.safe_min,
-                    "max": stats.max_duration,
-                    "errors": stats.errors,
-                }
-                for label, stats in profile_summary
-            ]
-            profile_payload = {
-                "instance_id": instance_id,
-                "repo": repo,
-                "base_commit": base_commit,
-                "total_duration": sum(section["total"] for section in sections_payload),
-                "sections": sections_payload,
-            }
-            profile_file = profile_output_dir / f"{instance_id.replace('/', '__')}.json"
-            profile_file.write_text(json.dumps(profile_payload, indent=2))
-            logger.info(f"Saved profiler results to {profile_file}")
-
-            # indexer.clear_cache(level="decode")
+            _write_profile(
+                profile_output_dir,
+                instance=instance,
+                source_kind=task.source_kind,
+                language=task.language,
+                profile_summary=profile_summary,
+            )
 
             if graph:
-                logger.info(f"  Successfully created graph index for {instance_id}")
-                logger.info(f"   Graph saved to: {indexer.graph_file}")
+                logger.info("Successfully created graph index for %s", instance_id)
+                logger.info("Graph saved to: %s", indexer.graph_file)
                 logger.info(
-                    (
-                        f"   Graph stats: {len(graph.graph.vs)} nodes, "
-                        f"{len(graph.graph.es)} edges"
-                    )
+                    "Graph stats: %d nodes, %d edges",
+                    len(graph.graph.vs),
+                    len(graph.graph.es),
                 )
             else:
-                logger.error(f"L Failed to create graph index for {instance_id}")
+                logger.error("Failed to create graph index for %s", instance_id)
 
-        except Exception as e:
-            logger.error(f"L Error processing instance {instance_id}: {e}")
-            import traceback
-
-            logger.error(traceback.format_exc())
+        except Exception as exc:
+            logger.error(
+                "Error processing instance %s: %s", instance_id, exc, exc_info=True
+            )
             continue
 
-    logger.info(f"\n{'='*80}")
+    logger.info("\n%s", "=" * 80)
     logger.info("Graph indexing complete!")
-    logger.info(f"Processed {len(dataset)} instances")
-    logger.info(f"Indexes stored in: {output_path}")
-    logger.info(f"{'='*80}")
+    logger.info("Processed %d instances", len(tasks))
+    logger.info("Indexes stored in: %s", output_path)
+    logger.info("%s", "=" * 80)
 
 
 if __name__ == "__main__":
