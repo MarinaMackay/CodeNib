@@ -9,6 +9,7 @@ Decodes SCIP index files into CodeGraph format, focusing on:
 - Traits (treated as classes)
 """
 import re
+import tomllib
 from pathlib import Path
 
 from ..code_chunking import RustCodeChunker
@@ -18,6 +19,7 @@ from ..types import (
     EDGE_TYPE_CONTAIN,
     EDGE_TYPE_REFERENCE,
     NODE_TYPE_CLASS,
+    NODE_TYPE_FIELD,
     NODE_TYPE_FUNCTION,
     NODE_TYPE_METHOD,
     ROOT_NODE,
@@ -60,6 +62,9 @@ class SCIPRustGraphDecoder:
 
         # Cache for file chunks to avoid repeated chunking
         self.file_chunks_cache = {}
+
+        # Internal workspace crate names (loaded lazily on first document)
+        self.internal_crates = None
 
     def decode(self):
         """
@@ -129,10 +134,69 @@ class SCIPRustGraphDecoder:
             str(Path(file_path).parent), file_path, EDGE_TYPE_CONTAIN
         )
 
+        # Load workspace crate names once (for third-party filtering)
+        if self.internal_crates is None:
+            self.internal_crates = self._load_workspace_crates()
+
         # Process occurrences
         occurrences = re.findall(r"occurrences\s*{(.*?)}", document_text, re.DOTALL)
         for occurrence in occurrences:
             self._process_occurrence(occurrence, file_path)
+
+    def _load_workspace_crates(self):
+        """
+        Parse Cargo.toml to extract internal workspace crate names.
+
+        Reads [workspace.members] glob patterns, resolves them to directories,
+        then reads each member's Cargo.toml to get [package].name.
+
+        Returns:
+            Set of internal crate names, or empty set if parsing fails.
+        """
+        if not self.project_root:
+            return set()
+
+        cargo_toml_path = self.project_root / "Cargo.toml"
+        if not cargo_toml_path.exists():
+            return set()
+
+        try:
+            with open(cargo_toml_path, "rb") as f:
+                cargo_data = tomllib.load(f)
+        except Exception as e:
+            self.logger.warning(f"Failed to parse {cargo_toml_path}: {e}")
+            return set()
+
+        # Get workspace member patterns
+        workspace = cargo_data.get("workspace", {})
+        member_patterns = workspace.get("members", [])
+        if not member_patterns:
+            # Single-crate project: use [package].name
+            pkg_name = cargo_data.get("package", {}).get("name")
+            return {pkg_name} if pkg_name else set()
+
+        # Resolve glob patterns to actual member directories
+        internal_crates = set()
+        for pattern in member_patterns:
+            for member_dir in self.project_root.glob(pattern):
+                if not member_dir.is_dir():
+                    continue
+                member_cargo = member_dir / "Cargo.toml"
+                if not member_cargo.exists():
+                    continue
+                try:
+                    with open(member_cargo, "rb") as f:
+                        member_data = tomllib.load(f)
+                    crate_name = member_data.get("package", {}).get("name")
+                    if crate_name:
+                        internal_crates.add(crate_name)
+                except Exception:
+                    continue
+
+        self.logger.info(
+            f"Loaded {len(internal_crates)} internal workspace crates"
+        )
+        return internal_crates
 
     def _process_occurrence(self, occurrence_text, file_path):
         """
@@ -158,25 +222,22 @@ class SCIPRustGraphDecoder:
 
         symbol = symbol_match.group(1)
 
-        # Skip stdlib/builtin symbols
-        if any(
-            lib in symbol
-            for lib in [
-                " rust-analyzer ",
-                "rust-lang/",
-                "core/",
-                "std/",
-                "alloc/",
-                "test",
-            ]
-        ):
-            # Allow project symbols but skip standard library
-            if not any(proj in symbol for proj in ["cargo ", "crate "]):
-                return
-
-        # Skip local symbols
+        # Skip local symbols (anonymous/unnamed)
         if "local " in symbol:
             return
+
+        # Filter symbols by origin
+        # Format: "rust-analyzer <manager> <crate_name> ..."
+        #   cargo <crate>  -> internal or third-party crate
+        #   crate          -> current project crate (always keep)
+        #   rust-lang/rust -> stdlib (always skip)
+        parts = symbol.split(" ")
+        if len(parts) >= 3:
+            if parts[1] == "cargo":
+                if self.internal_crates and parts[2] not in self.internal_crates:
+                    return
+            elif parts[1] != "crate":
+                return
 
         # Extract symbol_roles
         symbol_roles_match = re.search(r"symbol_roles:\s*(\d+)", occurrence_text)
@@ -311,12 +372,18 @@ class SCIPRustGraphDecoder:
         # Remove hash for classification
         symbol_no_hash = self._remove_hash(unified_symbol)
 
-        # Method: has # with something after it
+        # Member: has # with something after it
         if "#" in symbol_no_hash:
             parts = symbol_no_hash.split("#")
             if len(parts) > 1 and parts[1]:
-                # Has member after #
-                return NODE_TYPE_METHOD
+                # Distinguish field vs method using original SCIP symbol:
+                # method ends with "()." (e.g. "impl#[Type]method().")
+                # field ends with "."  (e.g. "Type#field.")
+                original_part = original_symbol.split(" ")[-1] if original_symbol else ""
+                if original_part.endswith("()."):
+                    return NODE_TYPE_METHOD
+                else:
+                    return NODE_TYPE_FIELD
             else:
                 # Just type (ends with #)
                 return NODE_TYPE_CLASS

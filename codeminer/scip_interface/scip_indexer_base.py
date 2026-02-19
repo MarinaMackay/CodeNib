@@ -304,7 +304,15 @@ class SCIPIndexerBase(ABC):
             if should_generate_index:
                 logger.info("Generating SCIP index")
                 if not self.generate_index(**kwargs):
-                    return None
+                    # The indexer reported failure (non-zero exit), but the index file may still have been written 
+                    # (e.g. scip-typescript crashes during cleanup after emitting index.scip).
+                    # Continue if the file exists.
+                    if not self.index_file.exists():
+                        return None
+                    logger.warning(
+                        "Index generation returned failure but %s exists; continuing.",
+                        self.index_file,
+                    )
 
             # Decode the index if needed
             if should_decode_index:

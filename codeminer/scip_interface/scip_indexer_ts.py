@@ -3,6 +3,7 @@
 SCIP indexer for TypeScript and JavaScript projects using scip-typescript.
 """
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -136,10 +137,31 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
         if not package_json.exists():
             return
 
+        needs_pnpm = (self.project_root / "pnpm-lock.yaml").exists() or (
+            self.project_root / "pnpm-workspace.yaml"
+        ).exists()
+        if needs_pnpm and not shutil.which("pnpm"):
+            logger.info("pnpm needed but not installed; installing via npm...")
+            try:
+                subprocess.run(
+                    ["npm", "install", "-g", "pnpm"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                logger.info("pnpm installed successfully")
+            except Exception as e:
+                logger.warning("Failed to install pnpm: %s", e)
+
         if (self.project_root / "yarn.lock").exists() and shutil.which("yarn"):
             cmd = ["yarn", "install", "--frozen-lockfile"]
         elif (self.project_root / "pnpm-lock.yaml").exists() and shutil.which("pnpm"):
             cmd = ["pnpm", "install", "--frozen-lockfile"]
+        elif (self.project_root / "pnpm-workspace.yaml").exists() and shutil.which(
+            "pnpm"
+        ):
+            cmd = ["pnpm", "install", "--no-frozen-lockfile"]
         elif (self.project_root / "package-lock.json").exists():
             cmd = ["npm", "ci"]
         else:
@@ -169,6 +191,47 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
             logger.warning("Dependency install failed: %s", e)
             if e.stderr:
                 logger.warning("install stderr: %s", e.stderr[:500].strip())
+
+    def _ensure_allow_js(self) -> Optional[str]:
+        """Patch tsconfig.json to include ``allowJs: true`` so that
+        scip-typescript indexes JavaScript source files as well.
+
+        Returns the original tsconfig content so the caller can restore it
+        after indexing, or *None* if no patching was needed.
+        """
+        tsconfig_path = self.project_root / "tsconfig.json"
+
+        original_content: Optional[str] = None
+        config: dict = {}
+        if tsconfig_path.exists():
+            original_content = tsconfig_path.read_text(encoding="utf-8")
+            try:
+                config = json.loads(original_content)
+            except json.JSONDecodeError:
+                config = {}
+
+        compiler_opts = config.setdefault("compilerOptions", {})
+        if compiler_opts.get("allowJs") is True:
+            return None
+
+        compiler_opts["allowJs"] = True
+        logger.info("Patching tsconfig.json with allowJs:true")
+        tsconfig_path.write_text(
+            json.dumps(config, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return original_content if original_content is not None else ""
+
+    def _restore_tsconfig(self, original_content: Optional[str]) -> None:
+        """Restore the original tsconfig.json after indexing."""
+        if original_content is None:
+            return
+        tsconfig_path = self.project_root / "tsconfig.json"
+        if original_content == "":
+            # tsconfig didn't exist before; remove the one we created
+            tsconfig_path.unlink(missing_ok=True)
+        else:
+            tsconfig_path.write_text(original_content, encoding="utf-8")
 
     def _normalize_workspace_kwargs(self, kwargs: dict) -> dict:
         """
@@ -301,11 +364,18 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
 
         kwargs = self._normalize_workspace_kwargs(kwargs)
         self._install_dependencies()
+
+        # Ensure JS files are included in the SCIP index.
+        original_tsconfig = self._ensure_allow_js()
+
         logger.info("TypeScript run_pipeline kwargs: %s", kwargs)
-        return super().run_pipeline(
-            output_file=output_file,
-            skip_level=skip_level,
-            reset_profiler=reset_profiler,
-            report_profile=report_profile,
-            **kwargs,
-        )
+        try:
+            return super().run_pipeline(
+                output_file=output_file,
+                skip_level=skip_level,
+                reset_profiler=reset_profiler,
+                report_profile=report_profile,
+                **kwargs,
+            )
+        finally:
+            self._restore_tsconfig(original_tsconfig)

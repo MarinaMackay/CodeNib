@@ -17,6 +17,7 @@ from ..types import (
     EDGE_TYPE_CONTAIN,
     EDGE_TYPE_REFERENCE,
     NODE_TYPE_CLASS,
+    NODE_TYPE_FIELD,
     NODE_TYPE_FUNCTION,
     NODE_TYPE_METHOD,
     ROOT_NODE,
@@ -322,9 +323,13 @@ class SCIPCppGraphDecoder:
         if "#" in original_part:
             parts = original_part.split("#", 1)
             if len(parts) > 1 and parts[1]:
-                # Has something after #, it's a method or field
-                # In C++, we treat all class members as methods for now
-                return NODE_TYPE_METHOD
+                # Distinguish field vs method using original SCIP symbol:
+                # method has "(" in the part after # (e.g. "Class#method(hash).")
+                # field has no "(" (e.g. "Class#field.")
+                if "(" in parts[1]:
+                    return NODE_TYPE_METHOD
+                else:
+                    return NODE_TYPE_FIELD
             else:
                 # Just class name with #
                 return NODE_TYPE_CLASS

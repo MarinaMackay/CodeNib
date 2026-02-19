@@ -29,6 +29,7 @@ class SCIPTypeScriptGraphDecoder:
 
     def decode(self):
         self.logger.info(f"Starting SCIP TypeScript decode from {self.index_file_path}")
+
         try:
             with open(self.index_file_path, "r") as f:
                 content = f.read()
@@ -47,6 +48,12 @@ class SCIPTypeScriptGraphDecoder:
         # Process all documents
         for document in document_blocks:
             self._process_document(document)
+
+        self.logger.info(
+            f"Decoded {len(document_blocks)} documents, "
+            f"nodes={self.code_graph.graph.vcount()}, "
+            f"edges={self.code_graph.graph.ecount()}"
+        )
 
         return self.code_graph
 
@@ -282,41 +289,45 @@ class SCIPTypeScriptGraphDecoder:
 
     def _classify_symbol_type(self, unified_symbol, original_symbol=None):
         """
-        Classify symbol type based on unified symbol format.
+        Classify symbol type based on the SCIP symbol descriptor suffix.
+
+        SCIP encodes the symbol kind in the trailing descriptor characters:
+          - ``().``  → method (if after ``#``) or function
+          - ``#``    → type definition (class / interface / enum / type alias)
+          - ``.``    → field / property / variable
 
         Args:
             unified_symbol: Unified symbol name
-            original_symbol: Original symbol name (for additional context)
+            original_symbol: Original cleaned SCIP symbol (with descriptor suffixes)
 
         Returns:
-            Symbol type:
-            NODE_TYPE_CLASS, NODE_TYPE_METHOD, NODE_TYPE_FIELD,
-            or NODE_TYPE_FUNCTION
+            Symbol type constant
         """
+        if not original_symbol:
+            return NODE_TYPE_FIELD
 
-        if ":" in unified_symbol:
-            symbol_part = unified_symbol.split(":", 1)[1]
-            if "." in symbol_part:
-                # Has a dot - could be method or field
-                # Check if the original symbol had parentheses (indicating method)
-                has_parentheses = False
-                if original_symbol:
-                    has_parentheses = "()" in original_symbol or "(" in original_symbol
+        sym = original_symbol.rstrip()
 
-                # If original had parentheses, it's a method; otherwise it's a field
-                if has_parentheses:
-                    return NODE_TYPE_METHOD
-                else:
-                    return NODE_TYPE_FIELD
-            else:
-                # Could be class or function - check if it looks like a class
-                # In TypeScript, classes typically start with capital letter
-                if symbol_part and symbol_part[0].isupper():
-                    return NODE_TYPE_CLASS
-                else:
-                    return NODE_TYPE_FUNCTION
-        else:
+        # "Foo#bar()." or "bar()." → method / function
+        if sym.endswith("()."):
+            # If there's a '#' before the method name it's a class method
+            # Strip the trailing method part and check
+            base = sym[:-3]  # remove "()."
+            # Find the last path separator
+            last_sep = max(base.rfind("/"), base.rfind("#"))
+            if last_sep != -1 and base[last_sep] == "#":
+                return NODE_TYPE_METHOD
             return NODE_TYPE_FUNCTION
+
+        # "Foo#" → class / interface / type
+        if sym.endswith("#"):
+            return NODE_TYPE_CLASS
+
+        # "Foo#bar." → field / property
+        if sym.endswith("."):
+            return NODE_TYPE_FIELD
+
+        return NODE_TYPE_FIELD
 
     def _process_symbol(self, symbol, line, symbol_roles, enclosing_ranges, file_path):
         self.logger.scip_debug(
@@ -340,10 +351,6 @@ class SCIPTypeScriptGraphDecoder:
             raise
 
         # Clean up the symbol by simply splitting on spaces and taking the last part
-        # For example:
-        # "scip-typescript npm test-project 1.0.0 src/`calculator.ts`/Calculator#add()."
-        # Will become: "src/`calculator.ts`/Calculator#add()."
-        # IMPORTANT: Keep original symbol for hash and package extraction
         cleaned_symbol = symbol.split(" ")[-1]
         cleaned_symbol = re.sub(r"`", "", cleaned_symbol)
 
@@ -352,34 +359,27 @@ class SCIPTypeScriptGraphDecoder:
         if not match:
             return
 
-        # Unify symbol name format (pass original symbol for hash/package
-        # extraction, file_path for extension)
+        # Unify symbol name format
         unified_symbol = self._unify_symbol_name(cleaned_symbol, symbol, file_path)
 
-        # Classify symbol type (pass both original and unified for context)
+        # Classify symbol type
         symbol_type = self._classify_symbol_type(unified_symbol, cleaned_symbol)
 
-        # Handle index file exports - use actual file_path instead of constructed path
-        # If current file is an index file and symbol has no class/method (#),
-        # it's likely a re-export, point reference to this file
+        # Handle index file exports
         is_index_file = file_path and "/index." in file_path
         symbol_no_hash = self._remove_hash(unified_symbol)
-
-        # Check if symbol is a simple export (no class/method marker)
         is_simple_symbol = "#" not in symbol_no_hash
 
         if is_index_file and is_simple_symbol:
-            # Use bitwise check for reference (not a definition)
             if not (symbol_roles & 1):
-                # This is a reference in an index file, likely a re-export
-                # Point to the index file itself
-                self.code_graph._add_edge(
-                    self.code_graph.current_scope, file_path, EDGE_TYPE_REFERENCE
-                )
+                if self.code_graph.current_scope != file_path:
+                    self.code_graph._add_edge(
+                        self.code_graph.current_scope, file_path, EDGE_TYPE_REFERENCE
+                    )
                 return
 
-        # Check if this is a definition using bitwise AND (not exact match)
-        is_definition = symbol_roles & 1  # Check if definition bit is set
+        # Check if this is a definition using bitwise AND
+        is_definition = symbol_roles & 1
 
         # Update current scope if this is a definition with enclosing range
         if is_definition and enclosing_ranges and len(enclosing_ranges) >= 4:
@@ -407,7 +407,6 @@ class SCIPTypeScriptGraphDecoder:
             self.code_graph.add_containment_edge(unified_symbol)
 
             # Update current scope for classes and functions with enclosing ranges
-            # Now with proper scope exit handling, functions can safely become scopes
             if symbol_type in [NODE_TYPE_CLASS, NODE_TYPE_FUNCTION, NODE_TYPE_METHOD]:
                 try:
                     self.logger.scip_debug(

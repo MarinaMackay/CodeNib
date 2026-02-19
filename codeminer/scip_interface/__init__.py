@@ -26,7 +26,7 @@ Usage:
 """
 
 # Unified interfaces (recommended)
-from .scip_decode import SCIPDecoder, SCIPGraphDecoder  # SCIPGraphDecoder for backward compatibility
+from .scip_decode import SCIPGraphDecoder
 from .scip_indexer import SCIPIndexer
 
 # Language-specific indexers (for advanced use)
@@ -39,10 +39,8 @@ from .scip_indexer_rust import SCIPRustIndexer
 from .scip_indexer_ts import SCIPTypeScriptIndexer
 
 __all__ = [
-    # Unified interfaces (recommended for new code)
+    # Unified interfaces
     "SCIPIndexer",
-    "SCIPDecoder",
-    # Backward compatibility
     "SCIPGraphDecoder",
     # Language-specific classes (for advanced use)
     "SCIPIndexerBase",

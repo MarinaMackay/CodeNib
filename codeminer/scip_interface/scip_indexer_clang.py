@@ -307,6 +307,11 @@ class SCIPClangIndexer(SCIPIndexerBase):
             if not success:
                 success = self._run_build_command(["bear", "--", "make"])
         if not success:
+            # Last resort: look for Makefile in well-known subdirectories
+            # (e.g. micropython has ports/unix/Makefile instead of top-level)
+            compdb = self._try_subdirectory_make()
+            if compdb:
+                return compdb
             return None
 
         for candidate in (
@@ -317,10 +322,59 @@ class SCIPClangIndexer(SCIPIndexerBase):
                 return candidate
         return None
 
+    def _try_subdirectory_make(self) -> Optional[Path]:
+        """Try building from a subdirectory that has a Makefile.
+
+        Some projects (e.g. micropython) keep the actual build in a
+        subdirectory like ports/unix/.  We search a small set of known
+        patterns and attempt ``bear -- make`` there, copying the resulting
+        compile_commands.json to the project root so scip-clang can find it.
+        """
+        candidates = [
+            self.project_root / "ports" / "unix",
+            self.project_root / "src",
+        ]
+        for subdir in candidates:
+            makefile = subdir / "Makefile"
+            if not makefile.exists():
+                continue
+            logger.info(
+                "Found Makefile in subdirectory %s, attempting bear -- make there",
+                subdir,
+            )
+            # Clean stale build artifacts from previous commits sharing this repo dir.
+            self._run_build_command(["make", "-C", str(subdir), "clean"])
+            # micropython ports/unix needs submodules
+            self._run_build_command(["make", "-C", str(subdir), "submodules"])
+            if self._run_build_command(
+                ["bear", "--", "make", "-C", str(subdir), "-j"]
+            ) or self._run_build_command(
+                ["bear", "--", "make", "-C", str(subdir)]
+            ):
+                # bear writes compile_commands.json in cwd (project root)
+                compdb = self.project_root / "compile_commands.json"
+                if compdb.exists():
+                    with open(compdb) as f:
+                        entries = json.load(f)
+                    if entries:
+                        logger.info(
+                            "Generated compile_commands.json from %s (%d entries)",
+                            subdir,
+                            len(entries),
+                        )
+                        return compdb
+        return None
+
     def _bootstrap_autotools(self) -> None:
         autogen = self.project_root / "autogen.sh"
         configure = self.project_root / "configure"
         configure_ac = self.project_root / "configure.ac"
+
+        # Initialize git submodules if .gitmodules exists (e.g. jq's oniguruma)
+        gitmodules = self.project_root / ".gitmodules"
+        if gitmodules.exists():
+            logger.info("Initializing git submodules")
+            self._run_build_command(["git", "submodule", "update", "--init"])
 
         if autogen.exists():
             logger.info("Running autogen.sh")
