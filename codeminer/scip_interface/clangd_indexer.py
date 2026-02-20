@@ -2,7 +2,7 @@
 """
 Indexer for C/C++ projects using clangd.
 Uses clangd's background indexer to generate .idx files, then
-ClangdIdxDecoder (idx_decode + idx_parser) to build a CodeGraph
+ClangdGraphDecoder (idx_decode + idx_parser) to build a CodeGraph
 directly from the binary .idx format.
 """
 import json
@@ -28,7 +28,7 @@ class ClangdIndexer(SCIPIndexerBase):
 
     Pipeline:
       1. generate_index  — run clangd to produce .idx files
-      2. decode_index    — ClangdIdxDecoder reads .idx → CodeGraph
+      2. decode_index    — ClangdGraphDecoder reads .idx → CodeGraph
     """
 
     def __init__(
@@ -111,10 +111,10 @@ class ClangdIndexer(SCIPIndexerBase):
         return cmd
 
     def _get_decoder_class(self):
-        """Return ClangdIdxDecoder (not used directly — process_index is overridden)."""
-        from .clangd_decode import ClangdIdxDecoder
+        """Return ClangdGraphDecoder (not used directly — process_index is overridden)."""
+        from .clangd_decode import ClangdGraphDecoder
 
-        return ClangdIdxDecoder
+        return ClangdGraphDecoder
 
     # ------------------------------------------------------------------
     # LSP helpers
@@ -441,7 +441,7 @@ class ClangdIndexer(SCIPIndexerBase):
 
     def decode_index(self) -> bool:
         """
-        No-op: clangd .idx files are parsed directly by ClangdIdxDecoder.
+        No-op: clangd .idx files are parsed directly by ClangdGraphDecoder.
 
         There is no protoc decode step for the clangd binary format.
         """
@@ -451,7 +451,7 @@ class ClangdIndexer(SCIPIndexerBase):
         return True
 
     # ------------------------------------------------------------------
-    # process_index — ClangdIdxDecoder
+    # process_index — ClangdGraphDecoder
     # ------------------------------------------------------------------
 
     def process_index(
@@ -480,10 +480,10 @@ class ClangdIndexer(SCIPIndexerBase):
         )
 
         try:
-            from .clangd_decode import ClangdIdxDecoder
+            from .clangd_decode import ClangdGraphDecoder
 
             with self.profiler.section("process_index.decode") as section:
-                decoder = ClangdIdxDecoder(
+                decoder = ClangdGraphDecoder(
                     idx_directory=str(self.idx_directory),
                     project_root=str(self.project_root),
                 )

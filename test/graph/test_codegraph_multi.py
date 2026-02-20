@@ -37,6 +37,7 @@ Usage:
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -45,10 +46,21 @@ import pytest
 
 from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.scip_interface import (
-    SCIPClangIndexer,
+    ClangdIndexer,
     SCIPRustIndexer,
     SCIPTypeScriptIndexer,
 )
+
+
+def _tools_ready(language: str) -> bool:
+    """Check if required external tooling is available."""
+    if language == "cpp":
+        return bool(shutil.which("clangd")) and bool(shutil.which("cmake"))
+    if language == "rust":
+        return bool(shutil.which("rust-analyzer"))
+    if language == "ts":
+        return bool(shutil.which("scip-typescript")) or bool(shutil.which("npx"))
+    return False
 
 
 def analyze_graph(graph):
@@ -282,7 +294,7 @@ def run_cpp_local(repo_path=None):
     print(f"Output path: {output_path}")
 
     # Create C++ indexer
-    indexer = SCIPClangIndexer(
+    indexer = ClangdIndexer(
         str(project_path),
         output_dir=output_path,
     )
@@ -398,7 +410,7 @@ def run_cpp_multi(args):
                     continue
 
             # Create C++ indexer
-            indexer = SCIPClangIndexer(repo_path, output_dir=output_path)
+            indexer = ClangdIndexer(repo_path, output_dir=output_path)
 
             # Run complete pipeline
             print("\n[Running CodeGraph pipeline...]")
@@ -901,16 +913,22 @@ def swebench_ts_args() -> argparse.Namespace:
 
 
 def test_cpp_multi(swebench_cpp_args: argparse.Namespace) -> None:
+    if not _tools_ready("cpp"):
+        pytest.skip("clangd/cmake not available")
     success, failed = run_cpp_multi(swebench_cpp_args)
     assert success, f"C++ failures: {failed}"
 
 
 def test_rust_multi(swebench_rust_args: argparse.Namespace) -> None:
+    if not _tools_ready("rust"):
+        pytest.skip("rust-analyzer not available")
     success, failed = run_rust_multi(swebench_rust_args)
     assert success, f"Rust failures: {failed}"
 
 
 def test_ts_multi(swebench_ts_args: argparse.Namespace) -> None:
+    if not _tools_ready("ts"):
+        pytest.skip("scip-typescript/npx not available")
     success, failed = run_ts_multi(swebench_ts_args)
     assert success, f"TypeScript failures: {failed}"
 

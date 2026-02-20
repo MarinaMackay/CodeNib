@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""
+SCIP indexer for Python projects using scip-python (via conda environment).
+"""
+import subprocess
+from pathlib import Path
+from typing import List, Optional, Union
+
+from ..log_utils import get_logger
+from ..profiler import Profiler
+from .scip_indexer_base import SCIPIndexerBase
+
+logger = get_logger("scip_python_indexer")
+
+
+class SCIPPythonIndexer(SCIPIndexerBase):
+    """
+    SCIP indexer for Python projects.
+
+    Uses the scip-python tool (installed in a conda environment) to generate
+    SCIP indices for Python codebases.
+    """
+
+    def __init__(
+        self,
+        project_root: Union[str, Path],
+        output_dir: Optional[Union[str, Path]] = None,
+        exclude_patterns: Optional[List] = None,
+        profiler: Optional[Profiler] = None,
+    ):
+        """
+        Initialize the Python SCIP indexer.
+
+        Args:
+            project_root: Root directory of the Python project
+            output_dir: Directory to store output files (defaults to /tmp/project_name)
+            exclude_patterns: List of patterns to exclude from indexing
+            profiler: Profiler instance for performance tracking
+        """
+        # Python uses /tmp/project_name as default output dir for backward compatibility
+        if output_dir is None:
+            output_dir = Path("/tmp") / Path(project_root).absolute().name
+
+        super().__init__(
+            project_root=project_root,
+            output_dir=output_dir,
+            exclude_patterns=exclude_patterns,
+            profiler=profiler,
+            language="python",
+        )
+
+        # Conda environment configuration
+        self.conda_env_name = "scip-env"
+        self.env_file = self.module_dir / "scip-environment.yml"
+
+    def _check_indexer_available(self) -> bool:
+        """
+        Check if the conda environment for scip-python is available.
+
+        Returns:
+            bool: True if the environment is available, False otherwise
+        """
+        return self._ensure_conda_env()
+
+    def _build_index_command(
+        self,
+        cwd: Optional[str] = None,
+        project_name: Optional[str] = None,
+        target_dir: Optional[str] = None,
+        **kwargs,
+    ) -> List[str]:
+        """
+        Build the command to generate the SCIP index for Python.
+
+        Args:
+            cwd: Working directory to run the index command
+            project_name: Project name to use in the index
+            target_dir: Optional subdirectory to target for indexing
+            **kwargs: Additional arguments (ignored)
+
+        Returns:
+            List[str]: Command as list of strings
+        """
+        cmd = ["scip-python", "index"]
+
+        if cwd:
+            cmd.append("--cwd")
+            cmd.append(str(Path(cwd).absolute()))
+
+        if project_name:
+            cmd.extend(["--project-name", project_name])
+        else:
+            cmd.extend(["--project-name", self.project_root.name])
+
+        cmd.extend(["--output", str(self.index_file)])
+
+        if target_dir:
+            cmd.extend(["--target-only", target_dir])
+
+        for pattern in self.exclude_patterns:
+            cmd.extend(["--exclude", pattern])
+
+        return cmd
+
+    def _get_decoder_class(self):
+        """
+        Get the decoder class for Python.
+
+        Returns:
+            SCIPPythonGraphDecoder class for Python-specific symbol handling
+        """
+        from .scip_decode_python import SCIPPythonGraphDecoder
+
+        return SCIPPythonGraphDecoder
+
+    def generate_index(
+        self,
+        cwd: Optional[str] = None,
+        project_name: Optional[str] = None,
+        target_dir: Optional[str] = None,
+        **kwargs,
+    ) -> bool:
+        """
+        Generate SCIP index for the Python project.
+
+        Uses conda environment to run scip-python.
+
+        Args:
+            cwd: Working directory (defaults to project_root)
+            project_name: Project name to use in the index
+            target_dir: Optional subdirectory to target for indexing
+            **kwargs: Additional arguments (ignored)
+
+        Returns:
+            bool: True if index generation was successful, False otherwise
+        """
+        if not self._check_indexer_available():
+            return False
+
+        cmd = self._build_index_command(
+            cwd=cwd or str(self.project_root),
+            project_name=project_name,
+            target_dir=target_dir,
+        )
+
+        logger.debug(f"Running command: {' '.join(cmd)}")
+
+        with self.profiler.section("generate_index") as section:
+            success = self._run_in_conda_env(cmd, self.project_root)
+        duration = section.duration
+
+        if success:
+            logger.info(f"Successfully generated SCIP index at {self.index_file}")
+            logger.info(f"Index generation took: {duration:.2f} seconds")
+            return True
+        else:
+            logger.error(f"Index generation failed after {duration:.2f} seconds")
+            # Remove partial index file so pipeline does not continue with broken data
+            if self.index_file.exists():
+                self.index_file.unlink()
+                logger.info("Removed partial index file")
+            return False
+
+    def run_pipeline(
+        self,
+        output_file: Optional[str] = None,
+        skip_level: Optional[str] = None,
+        *,
+        reset_profiler: bool = True,
+        report_profile: bool = True,
+        **kwargs,
+    ):
+        """
+        Run Python pipeline while ignoring non-Python kwargs.
+        """
+        # Pop kwargs from other languages
+        kwargs.pop("config_path", None)
+        kwargs.pop("exclude_vendored_libraries", None)
+        kwargs.pop("infer_tsconfig", None)
+        kwargs.pop("yarn_workspaces", None)
+        kwargs.pop("pnpm_workspaces", None)
+        kwargs.pop("npm_workspaces", None)
+        kwargs.pop("compdb_path", None)
+        kwargs.pop("show_compiler_diagnostics", None)
+
+        return super().run_pipeline(
+            output_file=output_file,
+            skip_level=skip_level,
+            reset_profiler=reset_profiler,
+            report_profile=report_profile,
+            **kwargs,
+        )
+
+    # ── Conda environment helpers ──────────────────────────────────────
+
+    def _ensure_conda_env(self) -> bool:
+        """
+        Ensure that the conda environment for SCIP is available.
+
+        Returns:
+            bool: True if environment is available, False otherwise
+        """
+        try:
+            subprocess.run(["conda", "--version"], check=True, capture_output=True)
+
+            result = subprocess.run(
+                ["conda", "env", "list"], check=True, capture_output=True, text=True
+            )
+
+            if self.conda_env_name in result.stdout:
+                logger.info(f"Conda environment '{self.conda_env_name}' already exists")
+                return True
+
+            if self.env_file.exists():
+                logger.info(f"Creating conda environment '{self.conda_env_name}'...")
+
+                create_cmd = [
+                    "conda",
+                    "env",
+                    "create",
+                    "--quiet",
+                    "--file",
+                    str(self.env_file),
+                    "--solver=libmamba",
+                ]
+
+                try:
+                    subprocess.run(create_cmd, check=True, timeout=300)
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                    logger.warning(
+                        f"Fast environment creation failed: {e}. "
+                        "Falling back to standard method..."
+                    )
+                    subprocess.run(
+                        ["conda", "env", "create", "--file", str(self.env_file)],
+                        check=True,
+                    )
+
+                logger.info(
+                    f"Conda environment '{self.conda_env_name}' created successfully"
+                )
+                return True
+            else:
+                logger.error(f"Environment file not found at {self.env_file}")
+                return False
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error setting up conda environment: {e}")
+            if hasattr(e, "output") and e.output:
+                logger.error(f"Command output: {e.output}")
+            if hasattr(e, "stderr") and e.stderr:
+                logger.error(f"Error details: {e.stderr}")
+            return False
+        except FileNotFoundError:
+            logger.error(
+                "Conda not found in PATH. Please install conda or add it to PATH."
+            )
+            return False
+
+    def _run_in_conda_env(
+        self, cmd: list, cwd: Optional[Union[str, Path]] = None
+    ) -> bool:
+        """
+        Run a command in the SCIP conda environment.
+
+        Args:
+            cmd: Command to run
+            cwd: Working directory
+
+        Returns:
+            bool: True if command succeeded, False otherwise
+        """
+        try:
+            conda_cmd = ["conda", "run", "-n", self.conda_env_name] + cmd
+
+            logger.info(f"Running in conda environment: {cmd}")
+
+            subprocess.run(
+                conda_cmd,
+                check=True,
+                cwd=cwd if cwd else self.project_root,
+            )
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error running command in conda environment: {e}")
+            return False

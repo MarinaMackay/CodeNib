@@ -332,15 +332,15 @@ def parse_idx_file(filepath: str) -> dict:
 
 
 # ===================================================================
-# ClangdIdxDecoder — .idx directory → CodeGraph
+# ClangdGraphDecoder — .idx directory → CodeGraph
 # ===================================================================
 
-class ClangdIdxDecoder:
+class ClangdGraphDecoder:
     """
     Decoder that builds a CodeGraph from clangd .idx files.
 
     Usage:
-        decoder = ClangdIdxDecoder(
+        decoder = ClangdGraphDecoder(
             idx_directory=".cache/clangd/index",
             project_root="/path/to/project"
         )
