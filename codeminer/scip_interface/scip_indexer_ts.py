@@ -4,6 +4,7 @@ SCIP indexer for TypeScript and JavaScript projects using scip-typescript.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -35,7 +36,7 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
 
         Args:
             project_root: Root directory of the TypeScript/JavaScript project
-            output_dir: Directory to store output files (defaults to /tmp/project_name)
+            output_dir: Directory to store output files (defaults to ~/.codeminer/{project_name})
             exclude_patterns: List of patterns to exclude from indexing
             profiler: Profiler instance for performance tracking
         """
@@ -77,6 +78,7 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
         yarn_workspaces: bool = False,
         pnpm_workspaces: bool = False,
         npm_workspaces: bool = False,
+        patched_tsconfig: Optional[str] = None,
         **kwargs,
     ) -> List[str]:
         """
@@ -84,10 +86,11 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
 
         Args:
             project_name: Project name (not used by scip-typescript, kept for compatibility)
-            infer_tsconfig: Infer tsconfig for JavaScript projects without tsconfig.json
+            infer_tsconfig: Infer tsconfig for JavaScript projects without tsconfig.json and jsconfig.json
             yarn_workspaces: Enable Yarn workspaces support
             pnpm_workspaces: Enable pnpm workspaces support
             npm_workspaces: Enable npm workspaces support
+            patched_tsconfig: Path to a patched tsconfig file to use instead of the default
             **kwargs: Additional arguments (ignored)
 
         Returns:
@@ -112,6 +115,10 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
         # Infer tsconfig for JavaScript projects
         if infer_tsconfig:
             cmd.append("--infer-tsconfig")
+
+        # Use patched tsconfig via positional [projects...] argument
+        if patched_tsconfig:
+            cmd.append(patched_tsconfig)
 
         return cmd
 
@@ -154,19 +161,45 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
             except Exception as e:
                 logger.warning("Failed to install pnpm: %s", e)
 
-        if (self.project_root / "yarn.lock").exists() and shutil.which("yarn"):
+        has_bun_lock = (
+            (self.project_root / "bun.lockb").exists()
+            or (self.project_root / "bun.lock").exists()
+        )
+
+        # Determine install command and a fallback without --frozen-lockfile.
+        # The fallback is used when the lock file is out of sync with
+        # package.json (common for old swebench commits).
+        cmd: List[str]
+        fallback_cmd: Optional[List[str]] = None
+
+        if has_bun_lock and shutil.which("bun"):
+            cmd = ["bun", "install", "--frozen-lockfile"]
+            fallback_cmd = ["bun", "install"]
+        elif (self.project_root / "yarn.lock").exists() and shutil.which("yarn"):
             cmd = ["yarn", "install", "--frozen-lockfile"]
+            fallback_cmd = ["yarn", "install"]
         elif (self.project_root / "pnpm-lock.yaml").exists() and shutil.which("pnpm"):
             cmd = ["pnpm", "install", "--frozen-lockfile"]
+            fallback_cmd = ["pnpm", "install", "--no-frozen-lockfile"]
         elif (self.project_root / "pnpm-workspace.yaml").exists() and shutil.which(
             "pnpm"
         ):
             cmd = ["pnpm", "install", "--no-frozen-lockfile"]
         elif (self.project_root / "package-lock.json").exists():
             cmd = ["npm", "ci"]
+            fallback_cmd = ["npm", "install"]
         else:
             cmd = ["npm", "install"]
 
+        self._run_install(cmd, fallback_cmd, timeout_sec)
+
+    def _run_install(
+        self,
+        cmd: List[str],
+        fallback_cmd: Optional[List[str]],
+        timeout_sec: int,
+    ) -> None:
+        """Execute an install command, retrying with fallback on failure."""
         logger.info("Installing TypeScript dependencies: %s", " ".join(cmd))
         try:
             subprocess.run(
@@ -177,61 +210,150 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
                 text=True,
                 timeout=timeout_sec,
             )
+            return
         except FileNotFoundError:
             logger.warning(
                 "Package manager command not found (%s). Continuing without install.",
                 cmd[0],
             )
+            return
         except subprocess.TimeoutExpired:
             logger.warning(
                 "Dependency install timed out after %ss. Continuing anyway.",
                 timeout_sec,
             )
+            return
         except subprocess.CalledProcessError as e:
             logger.warning("Dependency install failed: %s", e)
             if e.stderr:
                 logger.warning("install stderr: %s", e.stderr[:500].strip())
 
-    def _ensure_allow_js(self) -> Optional[str]:
-        """Patch tsconfig.json to include ``allowJs: true`` so that
+        # Retry without --frozen-lockfile if the strict install failed.
+        if fallback_cmd is not None:
+            logger.info(
+                "Retrying without frozen lockfile: %s", " ".join(fallback_cmd)
+            )
+            try:
+                subprocess.run(
+                    fallback_cmd,
+                    check=True,
+                    cwd=self.project_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_sec,
+                )
+            except Exception as e2:
+                logger.warning("Fallback install also failed: %s", e2)
+
+    _PATCHED_TSCONFIG_NAME = ".tsconfig.scip.json"
+
+    def _ensure_allow_js(self) -> Optional[Path]:
+        """Create a patched tsconfig that includes ``allowJs: true`` so that
         scip-typescript indexes JavaScript source files as well.
 
-        Returns the original tsconfig content so the caller can restore it
-        after indexing, or *None* if no patching was needed.
+        The patched config is written to ``.tsconfig.scip.json`` in the
+        project root — the original ``tsconfig.json`` is never modified.
+
+        If the tsconfig has an ``include`` list with ``*.ts`` globs, also
+        adds corresponding ``*.js`` / ``*.jsx`` / ``*.mjs`` globs so that
+        JS source files in the same directories are covered.
+
+        Returns the path to the patched tsconfig, or *None* if no patching
+        was needed.
         """
         tsconfig_path = self.project_root / "tsconfig.json"
+        jsconfig_path = self.project_root / "jsconfig.json"
 
-        original_content: Optional[str] = None
-        config: dict = {}
-        if tsconfig_path.exists():
-            original_content = tsconfig_path.read_text(encoding="utf-8")
-            try:
-                config = json.loads(original_content)
-            except json.JSONDecodeError:
-                config = {}
+        # scip-typescript won't recognise jsconfig.json.
+        # Read jsconfig.json as a base when tsconfig.json is absent.
+        created_from_jsconfig = False
+        if not tsconfig_path.exists():
+            if jsconfig_path.exists():
+                created_from_jsconfig = True
+                raw_content = jsconfig_path.read_text(encoding="utf-8")
+                logger.info(
+                    "No tsconfig.json found; using jsconfig.json as base in %s",
+                    self.project_root,
+                )
+            else:
+                return None
+        else:
+            raw_content = tsconfig_path.read_text(encoding="utf-8")
 
-        compiler_opts = config.setdefault("compilerOptions", {})
-        if compiler_opts.get("allowJs") is True:
+        try:
+            # Strip JS-style comments while preserving string contents.
+            # A naive /\*.*?\*/ regex corrupts glob patterns like
+            # "src/**/*.ts" by treating /**/ as a comment delimiter.
+            # Instead, skip over quoted strings so that only real
+            # comments outside of strings are removed.
+            stripped = re.sub(
+                r'"(?:[^"\\]|\\.)*"|(/\*.*?\*/|//[^\n]*)',
+                lambda m: "" if m.group(1) else m.group(0),
+                raw_content,
+                flags=re.DOTALL,
+            )
+            stripped = re.sub(r",\s*([}\]])", r"\1", stripped)
+            config = json.loads(stripped)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Failed to parse %s; skipping patch",
+                "jsconfig.json" if created_from_jsconfig else "tsconfig.json",
+            )
             return None
 
-        compiler_opts["allowJs"] = True
-        logger.info("Patching tsconfig.json with allowJs:true")
-        tsconfig_path.write_text(
+        needs_patch = False
+
+        # 1. Ensure allowJs is enabled
+        compiler_opts = config.setdefault("compilerOptions", {})
+        if compiler_opts.get("allowJs") is not True:
+            compiler_opts["allowJs"] = True
+            needs_patch = True
+
+        # 2. Broaden include: *.ts → also *.js / *.jsx / *.mjs
+        include = config.get("include")
+        if isinstance(include, list):
+            extra = []
+            existing = set(include)
+            for pat in include:
+                if pat.endswith("*.ts"):
+                    base = pat[: -len("*.ts")]
+                    for ext in ("*.js", "*.jsx", "*.mjs"):
+                        candidate = base + ext
+                        if candidate not in existing and candidate not in extra:
+                            extra.append(candidate)
+                elif pat.endswith("*.tsx"):
+                    base = pat[: -len("*.tsx")]
+                    for ext in ("*.jsx",):
+                        candidate = base + ext
+                        if candidate not in existing and candidate not in extra:
+                            extra.append(candidate)
+            if extra:
+                config["include"] = include + extra
+                needs_patch = True
+                logger.info(
+                    "Broadened tsconfig include with %d JS patterns (e.g. %s)",
+                    len(extra), extra[0],
+                )
+
+        if not needs_patch and not created_from_jsconfig:
+            return None
+
+        patched_path = self.project_root / self._PATCHED_TSCONFIG_NAME
+        logger.info(
+            "Writing patched tsconfig to %s (allowJs:true, source: %s)",
+            patched_path,
+            "jsconfig.json" if created_from_jsconfig else "tsconfig.json",
+        )
+        patched_path.write_text(
             json.dumps(config, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-        return original_content if original_content is not None else ""
+        return patched_path
 
-    def _restore_tsconfig(self, original_content: Optional[str]) -> None:
-        """Restore the original tsconfig.json after indexing."""
-        if original_content is None:
-            return
-        tsconfig_path = self.project_root / "tsconfig.json"
-        if original_content == "":
-            # tsconfig didn't exist before; remove the one we created
-            tsconfig_path.unlink(missing_ok=True)
-        else:
-            tsconfig_path.write_text(original_content, encoding="utf-8")
+    def _cleanup_patched_tsconfig(self) -> None:
+        """Remove the temporary patched tsconfig after indexing."""
+        patched_path = self.project_root / self._PATCHED_TSCONFIG_NAME
+        patched_path.unlink(missing_ok=True)
 
     def _normalize_workspace_kwargs(self, kwargs: dict) -> dict:
         """
@@ -279,6 +401,7 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
         yarn_workspaces: bool = False,
         pnpm_workspaces: bool = False,
         npm_workspaces: bool = False,
+        patched_tsconfig: Optional[str] = None,
     ) -> bool:
         """
         Generate SCIP index for the TypeScript/JavaScript project.
@@ -289,6 +412,7 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
             yarn_workspaces: Enable Yarn workspaces support
             pnpm_workspaces: Enable pnpm workspaces support
             npm_workspaces: Enable npm workspaces support
+            patched_tsconfig: Path to a patched tsconfig file to use
 
         Returns:
             bool: True if index generation was successful, False otherwise
@@ -309,6 +433,7 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
             yarn_workspaces=yarn_workspaces,
             pnpm_workspaces=pnpm_workspaces,
             npm_workspaces=npm_workspaces,
+            patched_tsconfig=patched_tsconfig,
         )
 
     def run_pipeline(
@@ -334,39 +459,62 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
         workspace_flags = ("yarn_workspaces", "pnpm_workspaces", "npm_workspaces")
         has_workspace_mode = any(kwargs.get(flag) for flag in workspace_flags)
         if not has_workspace_mode:
+            # pnpm defines workspaces in pnpm-workspace.yaml (not package.json),
+            # so check for it independently.
+            has_pnpm_workspace_yaml = (
+                self.project_root / "pnpm-workspace.yaml"
+            ).exists()
+
+            has_pkg_workspaces = False
             package_json = self.project_root / "package.json"
             if package_json.exists():
                 try:
                     payload = json.loads(package_json.read_text(encoding="utf-8"))
-                    has_workspaces = bool(payload.get("workspaces"))
+                    has_pkg_workspaces = bool(payload.get("workspaces"))
                 except Exception:
-                    has_workspaces = False
-                if has_workspaces:
-                    if (
-                        self.project_root / "pnpm-workspace.yaml"
-                    ).exists() and shutil.which("pnpm"):
-                        kwargs["pnpm_workspaces"] = True
-                        logger.info("Detected pnpm workspace in %s", self.project_root)
-                    elif (self.project_root / "yarn.lock").exists() and shutil.which(
-                        "yarn"
-                    ):
-                        kwargs["yarn_workspaces"] = True
-                        logger.info("Detected yarn workspace in %s", self.project_root)
-                    else:
-                        kwargs["npm_workspaces"] = True
-                        logger.info("Detected npm workspace in %s", self.project_root)
+                    pass
 
-        # Forced default for dataset-style repos:
-        # scip-typescript frequently fails on root projects without tsconfig.
+            if has_pnpm_workspace_yaml and shutil.which("pnpm"):
+                kwargs["pnpm_workspaces"] = True
+                logger.info("Detected pnpm workspace in %s", self.project_root)
+            elif has_pkg_workspaces:
+                if (self.project_root / "yarn.lock").exists() and shutil.which("yarn"):
+                    kwargs["yarn_workspaces"] = True
+                    logger.info("Detected yarn workspace in %s", self.project_root)
+                else:
+                    kwargs["npm_workspaces"] = True
+                    logger.info("Detected npm workspace in %s", self.project_root)
+
+        # Only enable --infer-tsconfig when no tsconfig/jsconfig exists.
         if "infer_tsconfig" not in kwargs:
-            kwargs["infer_tsconfig"] = True
-            logger.info("Enabling infer_tsconfig for %s", self.project_root)
+            has_tsconfig = (self.project_root / "tsconfig.json").exists()
+            has_jsconfig = (self.project_root / "jsconfig.json").exists()
+            if not has_tsconfig and not has_jsconfig:
+                kwargs["infer_tsconfig"] = True
+                logger.info("No tsconfig.json/jsconfig.json; enabling infer_tsconfig for %s", self.project_root)
+            else:
+                kwargs["infer_tsconfig"] = False
+                logger.info("Using existing tsconfig/jsconfig for %s", self.project_root)
 
         kwargs = self._normalize_workspace_kwargs(kwargs)
-        self._install_dependencies()
 
-        # Ensure JS files are included in the SCIP index.
-        original_tsconfig = self._ensure_allow_js()
+        # Determine whether index generation will actually run. 
+        # and dependency installation / tsconfig patching
+        needs_generate = True
+        if skip_level == "graph" and self.graph_file.exists():
+            needs_generate = False
+        elif skip_level in ("graph", "decode") and self.decoded_file.exists():
+            needs_generate = False
+        elif skip_level in ("graph", "decode", "raw") and self.index_file.exists():
+            needs_generate = False
+
+        if needs_generate:
+            self._install_dependencies()
+            patched_tsconfig = self._ensure_allow_js()
+            if patched_tsconfig is not None:
+                kwargs["patched_tsconfig"] = str(patched_tsconfig)
+        else:
+            logger.info("Skipping dependency install and tsconfig patching (cached artifacts exist)")
 
         logger.info("TypeScript run_pipeline kwargs: %s", kwargs)
         try:
@@ -378,4 +526,4 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
                 **kwargs,
             )
         finally:
-            self._restore_tsconfig(original_tsconfig)
+            self._cleanup_patched_tsconfig()

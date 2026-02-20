@@ -177,6 +177,13 @@ class SCIPRustGraphDecoder:
 
         # Resolve glob patterns to actual member directories
         internal_crates = set()
+
+        # Include the root package itself (e.g. ripgrep defines both
+        # [package] name="ripgrep" and [workspace] members=["crates/*"]).
+        root_pkg_name = cargo_data.get("package", {}).get("name")
+        if root_pkg_name:
+            internal_crates.add(root_pkg_name)
+
         for pattern in member_patterns:
             for member_dir in self.project_root.glob(pattern):
                 if not member_dir.is_dir():
@@ -282,59 +289,72 @@ class SCIPRustGraphDecoder:
         """
         return re.sub(r"\([0-9a-f]+\)", "", symbol_part)
 
-    def _get_display_name(self, unified_symbol):
+    def _clean_trait_syntax(self, name):
+        """Clean Rust trait impl syntax markers ([Type], backticks) from a name."""
+        name = name.replace("`", "")
+        name = re.sub(r"\[([^\]]+)\]", r"\1::", name)
+        name = re.sub(r"::+", "::", name)
+        name = name.rstrip(":")
+        return name
+
+    def _get_display_name(self, unified_symbol, symbol_type=None):
         """
         Generate human-readable display name from unified symbol.
 
         Args:
-            unified_symbol: Unified symbol like "myapp/shapes/Rectangle#area" or "math_utils/add"
+            unified_symbol: Unified symbol like "crate/module/Rectangle#area"
+            symbol_type: Symbol type constant (to control () suffix for fields vs methods)
 
         Returns:
-            Display name like "shapes::Rectangle.area" or "math_utils::add"
+            Display name like "crate::module::Rectangle::area()"
         """
-        # Remove hash for display
         symbol_no_hash = self._remove_hash(unified_symbol)
 
-        # Convert SCIP separators to Rust style
         if "#" in symbol_no_hash:
-            # Method: "shapes/Rectangle#area" -> "shapes::Rectangle.area"
             type_path, member_name = symbol_no_hash.split("#", 1)
             type_path = type_path.replace("/", "::")
+            # Strip trailing ::impl (not a real type name)
+            type_path = re.sub(r"::impl$", "", type_path)
+
             if member_name:
-                # Remove trailing () from member if present
-                member_name = member_name.rstrip("()")
-                return f"{type_path}.{member_name}()"
+                member_clean = self._clean_trait_syntax(member_name)
+                suffix = "" if symbol_type == NODE_TYPE_FIELD else "()"
+                return f"{type_path}::{member_clean}{suffix}"
             else:
                 return type_path
         elif "/" in symbol_no_hash:
-            # Module/function: "math_utils/add" -> "math_utils::add"
-            return symbol_no_hash.replace("/", "::")
+            return self._clean_trait_syntax(symbol_no_hash.replace("/", "::"))
         else:
-            return symbol_no_hash
+            return self._clean_trait_syntax(symbol_no_hash)
 
     def _unify_symbol_name(self, symbol, file_path):
         """
         Unify Rust symbol names, preserving SCIP format with hash for uniqueness.
+        Prepends crate name to avoid cross-crate collisions in workspace projects.
 
         Examples:
-        - rust-analyzer cargo test_rust_simple 0.1.0 math_utils/add().
-          -> math_utils/add
-        - rust-analyzer cargo test_rust_simple 0.1.0 shapes/Rectangle#
-          -> shapes/Rectangle#
-        - rust-analyzer cargo test_rust_simple 0.1.0 shapes/Shape#area().
-          -> shapes/Shape#area
+        - rust-analyzer cargo nu-cli 0.93.1 commands/main().
+          -> nu-cli/commands/main
+        - rust-analyzer cargo nu-cli 0.93.1 Options#
+          -> nu-cli/Options
+        - rust-analyzer cargo nu-cli 0.93.1 Options#area().
+          -> nu-cli/Options#area
 
         Args:
             symbol: Original symbol name from SCIP
             file_path: File path where the symbol was found (stored as node attribute)
 
         Returns:
-            Unified symbol name in SCIP format (module/Type#method or module/function)
+            Unified symbol name in SCIP format (crate/module/Type#method or crate/module/function)
         """
         # Extract the actual symbol part (after version or URL)
         parts = symbol.split(" ")
         if len(parts) < 4:
             return None
+
+        # Extract crate name for scoping
+        # Format: "rust-analyzer cargo <crate_name> <version> <symbol_path>"
+        crate_prefix = parts[2] if parts[1] == "cargo" else None
 
         symbol_part = parts[-1].rstrip(".")
 
@@ -350,11 +370,13 @@ class SCIPRustGraphDecoder:
         # Build unified symbol keeping SCIP format
         # Rust SCIP format: crate/module/Type#method or crate/module/function
         if hash_part:
-            # Rare case: has hash
             unified = f"{symbol_no_hash}({hash_part})"
         else:
-            # Normal case: no hash, just clean symbol
             unified = symbol_no_hash
+
+        # Prepend crate name to avoid cross-crate collisions
+        if crate_prefix:
+            unified = f"{crate_prefix}/{unified}"
 
         return unified
 
@@ -590,11 +612,11 @@ class SCIPRustGraphDecoder:
                 self.code_graph.add_symbol_node(
                     unified_symbol, line, start_line, end_line, symbol_type
                 )
-                # Store original SCIP symbol
+                # Store display name
                 if unified_symbol in self.code_graph.name_to_vertex:
                     vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-                    self.code_graph.graph.vs[vertex_id]["scip_symbol"] = symbol
-                    self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol)
+
+                    self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol, symbol_type)
 
                 self.code_graph.add_containment_edge(unified_symbol)
 
@@ -611,11 +633,11 @@ class SCIPRustGraphDecoder:
                 self.code_graph.add_symbol_node(
                     unified_symbol, line, scope_start_line, scope_end_line, symbol_type
                 )
-                # Store original SCIP symbol
+                # Store display name
                 if unified_symbol in self.code_graph.name_to_vertex:
                     vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-                    self.code_graph.graph.vs[vertex_id]["scip_symbol"] = symbol
-                    self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol)
+
+                    self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol, symbol_type)
 
                 self.code_graph.add_containment_edge(unified_symbol)
 
@@ -626,11 +648,11 @@ class SCIPRustGraphDecoder:
             else:
                 # No range information available
                 self.code_graph.add_symbol_node(unified_symbol, line, symbol_type=symbol_type)
-                # Store original SCIP symbol
+                # Store display name
                 if unified_symbol in self.code_graph.name_to_vertex:
                     vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-                    self.code_graph.graph.vs[vertex_id]["scip_symbol"] = symbol
-                    self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol)
+
+                    self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol, symbol_type)
 
                 self.code_graph._add_edge(
                     self.code_graph.current_scope, unified_symbol, EDGE_TYPE_CONTAIN
@@ -639,6 +661,12 @@ class SCIPRustGraphDecoder:
         # Handle reference (not a definition)
         else:
             self.code_graph.add_symbol_reference(unified_symbol, file_path, symbol_type)
+            if unified_symbol in self.code_graph.name_to_vertex:
+                vid = self.code_graph.name_to_vertex[unified_symbol]
+                if not self.code_graph.graph.vs[vid].attributes().get("display_name"):
+                    self.code_graph.graph.vs[vid]["display_name"] = (
+                        self._get_display_name(unified_symbol, symbol_type)
+                    )
 
     def save_graph(self, output_path):
         """
