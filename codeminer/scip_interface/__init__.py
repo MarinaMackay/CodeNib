@@ -8,7 +8,7 @@ Main Classes:
     - SCIPDecoder: Unified decoder supporting C++, Rust, TypeScript, and Python
 
 Language-Specific Classes (for advanced use):
-    - SCIPClangIndexer, SCIPCppGraphDecoder: C++ specific
+    - ClangdIndexer, ClangdGraphDecoder: C++ specific
     - SCIPRustIndexer, SCIPRustGraphDecoder: Rust specific
     - SCIPTypeScriptIndexer, SCIPTypeScriptGraphDecoder: TypeScript specific
 
@@ -21,7 +21,7 @@ Usage:
     graph = decoder.decode()
 
     # Language-specific interface (advanced)
-    indexer = SCIPClangIndexer(project_root="/path/to/cpp/project")
+    indexer = ClangdIndexer(project_root="/path/to/cpp/project")
     graph = indexer.run_pipeline()
 """
 
@@ -34,7 +34,7 @@ from .scip_decode_clang import SCIPCppGraphDecoder
 from .scip_decode_rust import SCIPRustGraphDecoder
 from .scip_decode_ts import SCIPTypeScriptGraphDecoder
 from .scip_indexer_base import SCIPIndexerBase
-from .scip_indexer_clang import SCIPClangIndexer
+from .clangd_indexer import ClangdIndexer
 from .scip_indexer_rust import SCIPRustIndexer
 from .scip_indexer_ts import SCIPTypeScriptIndexer
 
@@ -44,7 +44,7 @@ __all__ = [
     "SCIPGraphDecoder",
     # Language-specific classes (for advanced use)
     "SCIPIndexerBase",
-    "SCIPClangIndexer",
+    "ClangdIndexer",
     "SCIPCppGraphDecoder",
     "SCIPRustIndexer",
     "SCIPRustGraphDecoder",

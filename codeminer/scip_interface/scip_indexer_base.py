@@ -45,11 +45,11 @@ class SCIPIndexerBase(ABC):
         self.project_root = Path(project_root).absolute()
         self.language = language
 
-        # Set output directory to /tmp/project_name by default
+        # Set output directory to ~/.codeminer/project_name by default
         if output_dir:
             self.output_dir = Path(output_dir).absolute()
         else:
-            self.output_dir = Path("/tmp") / self.project_root.name
+            self.output_dir = Path.home() / ".codeminer" / self.project_root.name
 
         # Create output directory if it doesn't exist
         os.makedirs(self.output_dir, exist_ok=True)

@@ -72,6 +72,7 @@ class SCIPIndexer:
         exclude_patterns: Optional[List] = None,
         profiler: Optional[Profiler] = None,
         language: Optional[str] = None,
+        idx_directory: Optional[Union[str, Path]] = None,
     ):
         """
         Initialize the SCIP indexer.
@@ -82,11 +83,14 @@ class SCIPIndexer:
             exclude_patterns: List of patterns to exclude from indexing
             profiler: Profiler instance for performance tracking
             language: Programming language ('cpp', 'rust', 'ts', 'python', or None for Python)
+            idx_directory: (C/C++ only) Path to directory containing clangd .idx files.
+                          Defaults to <project_root>/.cache/clangd/index/
 
         Raises:
             ValueError: If the language is not supported
         """
         self.project_root = Path(project_root).absolute()
+        self._idx_directory = idx_directory
 
         # Normalize language name (None means Python for backward compatibility)
         if language is None:
@@ -163,12 +167,13 @@ class SCIPIndexer:
             Language-specific indexer instance
         """
         if self.language == 'cpp':
-            from .scip_indexer_clang import SCIPClangIndexer
-            return SCIPClangIndexer(
+            from .clangd_indexer import ClangdIndexer
+            return ClangdIndexer(
                 project_root=project_root,
                 output_dir=output_dir,
                 exclude_patterns=exclude_patterns,
                 profiler=profiler,
+                idx_directory=self._idx_directory,
             )
 
         elif self.language == 'rust':
