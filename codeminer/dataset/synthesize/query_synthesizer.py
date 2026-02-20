@@ -1391,19 +1391,41 @@ class ClaudeQuerySynthesizer:
             cwd=cwd,
         )
         text_chunks: List[str] = []
-        async for message in query(prompt=prompt, options=options):
-            if message.__class__.__name__ != "AssistantMessage":
-                continue
-            content = getattr(message, "content", None)
-            if not content:
-                continue
-            block_texts: List[str] = []
-            for block in content:
-                text = getattr(block, "text", None)
-                if isinstance(text, str) and text.strip():
-                    block_texts.append(text.strip())
-            if block_texts:
-                text_chunks.append("\n".join(block_texts))
+        query_gen = query(prompt=prompt, options=options)
+
+        try:
+            async for message in query_gen:
+                msg_type = message.__class__.__name__
+                logger.debug(f"Agent message type: {msg_type}")
+
+                if msg_type == "ResultMessage":
+                    # Get result directly from ResultMessage
+                    result = getattr(message, "result", None)
+                    if result and isinstance(result, str):
+                        return result.strip()
+                    # If no result in ResultMessage, return accumulated text
+                    return "\n".join(text_chunks).strip()
+
+                if msg_type == "ErrorMessage":
+                    error_msg = getattr(message, "error", "Unknown error")
+                    logger.error(f"Agent error message: {error_msg}")
+                    raise RuntimeError(f"Agent returned error: {error_msg}")
+
+                if msg_type == "AssistantMessage":
+                    content = getattr(message, "content", None)
+                    if not content:
+                        continue
+                    block_texts: List[str] = []
+                    for block in content:
+                        text = getattr(block, "text", None)
+                        if isinstance(text, str) and text.strip():
+                            block_texts.append(text.strip())
+                    if block_texts:
+                        text_chunks.append("\n".join(block_texts))
+        finally:
+            # Ensure generator is properly closed
+            await query_gen.aclose()
+
         return "\n".join(text_chunks).strip()
 
     def _extract_json_blob(self, text: str) -> str:
