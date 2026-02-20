@@ -11,6 +11,8 @@ INDEX_CACHE_DIR="${INDEX_CACHE_DIR:-/mnt/data/codeminer}"
 REPO_CACHE_DIR="${REPO_CACHE_DIR:-~/.codeminer}"
 RESULT_PATH="${RESULT_PATH:-}"
 EVAL_INSTANCES="${EVAL_INSTANCES:-$HOME/.codeminer/swebench_lite_gt_dev.json}"
+PROFILE_DIR="${PROFILE_DIR:-}"
+PROFILE_TAG="${PROFILE_TAG:-dev_dense_embedding_rerank}"
 
 EMBEDDING_MODEL="${EMBEDDING_MODEL:-Salesforce/SweRankEmbed-Small}"
 EMBEDDING_PROVIDER="${EMBEDDING_PROVIDER:-huggingface}"
@@ -48,6 +50,11 @@ fi
 
 if [[ -n "${RESULT_PATH}" ]]; then
   CMD+=(--result-path "${RESULT_PATH}")
+fi
+if [[ -n "${PROFILE_DIR}" ]]; then
+  CMD+=(--profile-dir "${PROFILE_DIR}")
+  CMD+=(--enable-profiler)
+  CMD+=(--profile-tag "${PROFILE_TAG}")
 fi
 
 echo "Running SWE-bench Lite dev rerank eval (filter: ${FILTER_INSTANCE})"

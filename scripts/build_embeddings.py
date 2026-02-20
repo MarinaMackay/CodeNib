@@ -151,6 +151,15 @@ def parse_args():
         action="store_true",
         help="Enable profiler summaries even if --profile-dir is not provided.",
     )
+    parser.add_argument(
+        "--profile-tag",
+        type=str,
+        default=None,
+        help=(
+            "Optional tag appended to profiler output filename to avoid "
+            "overwriting runs (e.g., dev_run1, rerank_expA)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -277,7 +286,9 @@ def build_embeddings(args):
                     "repo": instance.get("repo", "unknown"),
                     "base_commit": instance.get("base_commit", "unknown"),
                     "embedding_model": args.embedding_model,
+                    "embedding_provider": args.embedding_provider,
                     "embedding_dimension": args.embedding_dimension,
+                    "profile_tag": args.profile_tag,
                     "total_duration": sum(
                         section["total"] for section in sections_payload
                     ),
@@ -285,10 +296,17 @@ def build_embeddings(args):
                 }
 
                 model_suffix = args.embedding_model.replace("/", "__")
-                profile_file = (
-                    profile_output_dir
-                    / f"{instance_id.replace('/', '__')}__{model_suffix}.json"
-                )
+                provider_suffix = args.embedding_provider.replace("/", "__")
+                dim_suffix = f"dim{args.embedding_dimension}"
+                profile_parts = [
+                    instance_id.replace("/", "__"),
+                    model_suffix,
+                    provider_suffix,
+                    dim_suffix,
+                ]
+                if args.profile_tag:
+                    profile_parts.append(args.profile_tag.replace("/", "__"))
+                profile_file = profile_output_dir / f"{'__'.join(profile_parts)}.json"
                 profile_file.write_text(json.dumps(profile_payload, indent=2))
                 logger.info(f"Saved profiler results to {profile_file}")
 
