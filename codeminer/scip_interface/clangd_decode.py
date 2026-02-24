@@ -691,7 +691,11 @@ class ClangdGraphDecoder:
             # Set extra clangd-specific attributes
             if node_key in self.code_graph.name_to_vertex:
                 vid = self.code_graph.name_to_vertex[node_key]
-                self.code_graph.graph.vs[vid]["display_name"] = qualified_name
+                # unified_name uses "." as member separator (cross-language convention)
+                unified_display = qualified_name.replace("::", ".")
+                if node_type in (NODE_TYPE_FUNCTION, NODE_TYPE_METHOD):
+                    unified_display = f"{unified_display}()"
+                self.code_graph.graph.vs[vid]["unified_name"] = f"{relative_file}:{unified_display}"
                 self.code_graph.graph.vs[vid]["file"] = relative_file
                 self.code_graph.graph.vs[vid]["macro_expanded"] = def_info["macro_expanded"]
                 if def_info["spelling_file"]:

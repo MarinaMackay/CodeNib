@@ -156,75 +156,84 @@ class SCIPTypeScriptGraphDecoder:
         # Process the symbol (pass file_path for index handling)
         self._process_symbol(symbol, line, symbol_roles, enclosing_ranges, file_path)
 
-    def _extract_hash(self, symbol_part):
+    def _extract_symbol_display(self, unified_symbol):
+        """Extract human-readable symbol display from the unified_symbol key.
+
+        The unified_symbol key format: [pkg@ver:]file.ts:Symbol[.member]
+
+        Examples:
+            axios@0.27.2:index.d.ts:AxiosError         → AxiosError
+            src/utils.ts:Class.method                   → Class.method
+            index.d.ts:Axios.request                    → Axios.request
+            index.d.ts:Axios.<constructor>              → Axios.constructor
+            index.d.ts:Class.<get>location              → Class.location
+            index.d.ts:Class.typeLiteral14:username     → Class.username
+            index.d.ts:__BROWSER__0                     → __BROWSER__
         """
-        Extract hash from TypeScript SCIP symbol part.
+        sym = unified_symbol
 
-        Args:
-            symbol_part: Symbol part like "add(9b79fb6aee4c0440)" or "Class#method(hash)"
+        # Strip package prefix (pkg@ver:...)
+        if re.match(r"^[^:]+@[^:]+:", sym):
+            sym = sym.split(":", 1)[1]
 
-        Returns:
-            Full hash string (16 chars) or None if no hash found
-        """
-        hash_match = re.search(r"\(([0-9a-f]{8,16})\)", symbol_part)
-        if hash_match:
-            full_hash = hash_match.group(1)
-            return full_hash  # Return full hash to avoid collisions
-        return None
-
-    def _remove_hash(self, symbol_part):
-        """
-        Remove hash from symbol part for display/matching purposes.
-
-        Args:
-            symbol_part: Symbol with hash like "add(hash)" or "Class#method(hash)"
-
-        Returns:
-            Symbol without hash: "add" or "Class#method"
-        """
-        return re.sub(r"\([0-9a-f]+\)", "", symbol_part)
-
-    def _get_display_name(self, unified_symbol):
-        """
-        Generate human-readable display name from unified symbol.
-
-        Format: ``package@ver:file/path.ext:Symbol`` →
-                ``package@ver.file/path.ext:Symbol``
-        """
-        # Remove hash for display
-        symbol_no_hash = self._remove_hash(unified_symbol)
-
-        # Clean trailing digit+colon suffix:  isArray0: -> isArray
-        symbol_no_hash = re.sub(r"\d+:$", "", symbol_no_hash)
-        symbol_no_hash = symbol_no_hash.rstrip(":")
-
-        # Replace the first ':' with '.' for readability
-        if ":" in symbol_no_hash:
-            first_colon = symbol_no_hash.index(":")
-            display = symbol_no_hash[:first_colon] + "." + symbol_no_hash[first_colon + 1:]
+        # Now sym = file.ts:Symbol.member or file.ts:Symbol
+        if ":" in sym:
+            symbol_part = sym.split(":", 1)[1]
         else:
-            display = symbol_no_hash
+            symbol_part = sym
 
-        return display
+        # Clean numeric index suffix: name0 → name, __BROWSER__0 → __BROWSER__
+        symbol_part = re.sub(r"(\D)\d+$", r"\1", symbol_part)
+        symbol_part = symbol_part.rstrip(":")
+
+        # Handle <constructor>, <get>, <set>
+        symbol_part = re.sub(r"<constructor>", "constructor", symbol_part)
+        symbol_part = re.sub(r"<get>(\w+)", r"\1", symbol_part)
+        symbol_part = re.sub(r"<set>(\w+)", r"\1", symbol_part)
+
+        # Skip typeLiteral intermediate layers: Type.typeLiteral14:field → Type.field
+        symbol_part = re.sub(r"\.?typeLiteral\d*:", ".", symbol_part)
+        symbol_part = symbol_part.strip(".")
+
+        return symbol_part
+
+    def _get_unified_name(self, unified_symbol, file_path, symbol_type=None):
+        """Generate unified_name in format file_path:SymbolDisplay.
+
+        Args:
+            unified_symbol: The name key (e.g. 'index.d.ts:Axios.request')
+            file_path: File path of the symbol (e.g. 'index.d.ts')
+            symbol_type: NODE_TYPE_* constant
+
+        Returns:
+            Unified name like 'index.d.ts:Axios.request()'
+        """
+        symbol_display = self._extract_symbol_display(unified_symbol)
+
+        # Add () suffix for methods/functions
+        if symbol_type in (NODE_TYPE_METHOD, NODE_TYPE_FUNCTION) and not symbol_display.endswith("()"):
+            symbol_display = f"{symbol_display}()"
+
+        if file_path and symbol_display:
+            return f"{file_path}:{symbol_display}"
+        return file_path or symbol_display or unified_symbol
 
     def _unify_symbol_name(self, symbol, original_symbol, file_path):
         """
         Unify symbol names to a consistent format for TypeScript/JavaScript,
-        preserving hash AND package/workspace context for uniqueness.
+        preserving package/workspace context for uniqueness.
 
         Uses backtick boundaries in the SCIP symbol to extract the correct
         file path (e.g. ``lib/utils.js`` from ```lib/utils.js```).
 
         Args:
             symbol: Cleaned symbol name (after removing prefix)
-            original_symbol: Original full SCIP symbol (for hash and package extraction)
+            original_symbol: Original full SCIP symbol (for package extraction)
             file_path: Current file path from document (for extension inference)
 
         Returns:
-            Unified symbol name WITH package scope and hash for uniqueness
+            Unified symbol name WITH package scope for uniqueness
         """
-        hash_part = self._extract_hash(original_symbol)
-
         # --- Package prefix ---
         package_prefix = None
         scip_parts = original_symbol.split(" ")
@@ -257,10 +266,10 @@ class SCIPTypeScriptGraphDecoder:
         else:
             # Fallback: no backticks — use the document file path
             module_path = file_path or "unknown"
-            symbol_descriptor = self._remove_hash(symbol.replace("`", ""))
+            symbol_descriptor = symbol.replace("`", "")
 
         # Clean descriptor
-        symbol_descriptor = self._remove_hash(symbol_descriptor).rstrip()
+        symbol_descriptor = symbol_descriptor.rstrip()
 
         # --- Build symbol_id ---
         if symbol_descriptor:
@@ -281,13 +290,8 @@ class SCIPTypeScriptGraphDecoder:
 
         # --- Assemble unified name ---
         if package_prefix:
-            unified_no_hash = f"{package_prefix}:{symbol_id}"
-        else:
-            unified_no_hash = symbol_id
-
-        if hash_part:
-            return f"{unified_no_hash}({hash_part})"
-        return unified_no_hash
+            return f"{package_prefix}:{symbol_id}"
+        return symbol_id
 
     def _classify_symbol_type(self, unified_symbol, original_symbol=None):
         """
@@ -308,8 +312,7 @@ class SCIPTypeScriptGraphDecoder:
         if not original_symbol:
             return NODE_TYPE_FIELD
 
-        # Strip hash before checking suffix so that (hash). becomes ().
-        sym = self._remove_hash(original_symbol).rstrip()
+        sym = original_symbol.rstrip()
 
         # "Foo#bar()." or "bar()." → method / function
         if sym.endswith("()."):
@@ -383,8 +386,7 @@ class SCIPTypeScriptGraphDecoder:
 
         # Handle index file exports
         is_index_file = file_path and "/index." in file_path
-        symbol_no_hash = self._remove_hash(unified_symbol)
-        is_simple_symbol = "#" not in symbol_no_hash
+        is_simple_symbol = "#" not in unified_symbol
 
         if is_index_file and is_simple_symbol:
             if not (symbol_roles & 1):
@@ -407,12 +409,11 @@ class SCIPTypeScriptGraphDecoder:
                 unified_symbol, line, scope_start_line, scope_end_line, symbol_type
             )
 
-            # Store display name as node attribute
+            # Store unified_name as node attribute
             if unified_symbol in self.code_graph.name_to_vertex:
                 vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-
-                self.code_graph.graph.vs[vertex_id]["display_name"] = (
-                    self._get_display_name(unified_symbol)
+                self.code_graph.graph.vs[vertex_id]["unified_name"] = (
+                    self._get_unified_name(unified_symbol, file_path, symbol_type)
                 )
 
             # Add containment edge
@@ -446,12 +447,11 @@ class SCIPTypeScriptGraphDecoder:
                 unified_symbol, line, symbol_type=symbol_type
             )
 
-            # Store display name
+            # Store unified_name
             if unified_symbol in self.code_graph.name_to_vertex:
                 vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-
-                self.code_graph.graph.vs[vertex_id]["display_name"] = (
-                    self._get_display_name(unified_symbol)
+                self.code_graph.graph.vs[vertex_id]["unified_name"] = (
+                    self._get_unified_name(unified_symbol, file_path, symbol_type)
                 )
 
             # Add 'contain' edge from current scope to symbol
@@ -463,12 +463,12 @@ class SCIPTypeScriptGraphDecoder:
         # Use bitwise check instead of exact match to handle all reference types
         else:
             self.code_graph.add_symbol_reference(unified_symbol, file_path, symbol_type)
-            # Set display_name for reference-only nodes (first occurrence wins)
+            # Set unified_name for reference-only nodes (first occurrence wins)
             if unified_symbol in self.code_graph.name_to_vertex:
                 vid = self.code_graph.name_to_vertex[unified_symbol]
-                if not self.code_graph.graph.vs[vid].attributes().get("display_name"):
-                    self.code_graph.graph.vs[vid]["display_name"] = (
-                        self._get_display_name(unified_symbol)
+                if not self.code_graph.graph.vs[vid].attributes().get("unified_name"):
+                    self.code_graph.graph.vs[vid]["unified_name"] = (
+                        self._get_unified_name(unified_symbol, file_path, symbol_type)
                     )
 
     def save_graph(self, output_path):
