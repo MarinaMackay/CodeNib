@@ -155,7 +155,7 @@ class Profiler:
             return []
 
         total_sections = len(items)
-        grand_total = sum(stats.total for _, stats in items)
+        grand_total = max((stats.total for _, stats in items), default=0.0)
 
         # Order by total duration (descending) to mirror flame graph style reports.
         items.sort(key=lambda item: item[1].total, reverse=True)

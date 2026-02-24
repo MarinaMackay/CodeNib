@@ -262,7 +262,7 @@ def parse_args():
         "--metrics-k",
         type=int,
         nargs="+",
-        default=[1, 3, 5, 10, 20, 30, 40],
+        default=[1, 3, 5, 10, 15, 20],
         help="Cutoffs for accuracy/precision/recall reporting",
     )
 
@@ -582,12 +582,18 @@ def run_pipeline(args):
                 logger.info("Runtime profiler summary for %s:", instance_id)
                 profile_summary = instance_profiler.report(reset=True)
                 sections_payload = _to_sections_payload(profile_summary)
+                total_duration = next(
+                    (
+                        s["total"]
+                        for s in sections_payload
+                        if s["label"] == "instance_total"
+                    ),
+                    0.0,
+                )
                 instance_profiles.append(
                     {
                         "instance_id": instance_id,
-                        "total_duration": sum(
-                            section["total"] for section in sections_payload
-                        ),
+                        "total_duration": total_duration,
                         "sections": sections_payload,
                     }
                 )
