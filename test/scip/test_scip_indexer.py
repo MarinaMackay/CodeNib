@@ -57,13 +57,16 @@ def samplemod_repo():
 
 def test_conda_environment(indexer):
     """Test the conda environment management functions"""
-    assert hasattr(indexer, "_ensure_conda_env")
-    assert hasattr(indexer, "_run_in_conda_env")
+    # After refactoring, SCIPIndexer delegates to SCIPPythonIndexer,
+    # so check the delegate for Python-specific attributes.
+    delegate = indexer._delegate
+    assert hasattr(delegate, "_ensure_conda_env")
+    assert hasattr(delegate, "_run_in_conda_env")
 
     # Check that the conda env file exists
     assert (
-        indexer.env_file.exists()
-    ), f"Conda environment file not found at {indexer.env_file}"
+        delegate.env_file.exists()
+    ), f"Conda environment file not found at {delegate.env_file}"
 
 
 def test_python_repo_indexing(httpie_cli_repo, test_output_dir, tmp_path_factory):

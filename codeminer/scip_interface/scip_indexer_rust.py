@@ -52,19 +52,28 @@ class SCIPRustIndexer(SCIPIndexerBase):
         Returns:
             bool: True if rust-analyzer is available, False otherwise
         """
+        import os
+
+        env = os.environ.copy()
+        env["RUSTUP_TOOLCHAIN"] = "nightly"
         try:
             result = subprocess.run(
                 ["rust-analyzer", "--version"],
                 check=True,
                 capture_output=True,
                 text=True,
+                env=env,
             )
-            logger.info(f"rust-analyzer version: {result.stdout.strip()}")
+            logger.info(
+                "rust-analyzer version: %s",
+                result.stdout.strip(),
+            )
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
             logger.error(
                 "rust-analyzer not found. Please install it with: "
-                "rustup component add rust-analyzer"
+                "rustup component add rust-analyzer "
+                "--toolchain nightly"
             )
             return False
 
