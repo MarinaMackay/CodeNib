@@ -11,10 +11,11 @@ PROFILE_DIR="${PROFILE_DIR:-${STORAGE_DIR}/profile_log}"
 LANGS=("python")
 
 MODELS=(
-  "Salesforce/SweRankEmbed-Small:768"
-  "jinaai/jina-code-embeddings-0.5b:896"
-  "jinaai/jina-code-embeddings-1.5b:1536"
-  "BAAI/bge-code-v1:1536"
+  # "Salesforce/SweRankEmbed-Small:768"
+  # "jinaai/jina-code-embeddings-0.5b:896"
+  # "jinaai/jina-code-embeddings-1.5b:1536"
+  # "BAAI/bge-code-v1:1536"
+  "fishmingyu/SweRankEmbed-Large:3584"
 )
 
 mkdir -p "${STORAGE_DIR}" "${PROFILE_DIR}"

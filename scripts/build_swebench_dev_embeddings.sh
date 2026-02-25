@@ -13,6 +13,7 @@ PRIMARY_DIM=768
 SECONDARY_MODEL="${SECONDARY_MODEL:-fishmingyu/SweRankEmbed-Large}"
 SECONDARY_PROVIDER="huggingface"
 SECONDARY_DIM=3584
+PROFILE_TAG="${PROFILE_TAG:-${SPLIT}_emb_build}"
 
 mkdir -p "${STORAGE_DIR}"
 
@@ -32,6 +33,7 @@ python scripts/build_embeddings.py \
   --dataset "${DATASET}" \
   --split "${SPLIT}" \
   --storage-dir "${STORAGE_DIR}" \
+  --profile-tag "${PROFILE_TAG}" \
   --languages "${LANGS[@]}" \
   --embedding-model "${SECONDARY_MODEL}" \
   --embedding-provider "${SECONDARY_PROVIDER}" \
