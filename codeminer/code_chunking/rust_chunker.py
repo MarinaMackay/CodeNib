@@ -93,7 +93,7 @@ class RustCodeChunker(BaseCodeChunker):
             if def_type == "method":
                 if not include_l2:
                     continue
-                parent = name.split("::", 1)[0] if "::" in name else None
+                parent = name.split(".", 1)[0] if "." in name else None
                 if parent and parent in container_names:
                     # Already represented inside the impl/trait skeleton.
                     continue
@@ -147,7 +147,7 @@ class RustCodeChunker(BaseCodeChunker):
                         method_name = self._extract_function_name(decl)
                         if method_name:
                             if target_name:
-                                full_name = f"{target_name}::{method_name}"
+                                full_name = f"{target_name}.{method_name}"
                             else:
                                 full_name = method_name
                             methods.append((decl, full_name, "method"))
