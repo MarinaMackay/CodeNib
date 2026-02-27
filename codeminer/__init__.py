@@ -3,11 +3,11 @@ from .code_chunker import CodeChunker, RepoChunkingConfig
 from .graph.code_graph import CodeGraph
 from .index import BM25CodeIndexer, RegexNodeIndex
 from .index.embedding import CodeVectorStore, create_code_vector_store
-from .scip_interface import SCIPIndexer
+from .ls_router import LSIndexer
 from .search import CodeSearchEngine
 
 __all__ = [
-    "SCIPIndexer",
+    "LSIndexer",
     "CodeGraph",
     "BM25CodeIndexer",
     "KeywordExtractor",

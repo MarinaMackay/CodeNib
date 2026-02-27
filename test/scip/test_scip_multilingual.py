@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 
 def _has_node(ig, expected_unified_name, node_type=None):
@@ -197,7 +197,7 @@ def test_run_pipeline_swebench_multilingual_instance(
         _ensure_cpp_compdb(repo_path)
 
     kwargs = {"infer_tsconfig": True} if language == "ts" else {}
-    indexer = SCIPIndexer(
+    indexer = LSIndexer(
         project_root=repo_path,
         output_dir=tmp_path / f"scip_multi_{language}",
         language=language,

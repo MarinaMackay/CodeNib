@@ -10,7 +10,7 @@ from ..graph.code_graph import CodeGraph
 from ..graph.transverse_graph import traverse_tree_structure
 from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
 from ..log_utils import get_logger
-from ..scip_interface import SCIPIndexer
+from ..ls_router import LSIndexer
 from ..types import NODE_TYPE_FILE, ROOT_NODE, QueriedNode, is_symbol_node
 from ..utils import wrap_code_snippet
 
@@ -148,7 +148,7 @@ class AgentlessPipeline:
 
         scip_output_dir.mkdir(parents=True, exist_ok=True)
 
-        scip_indexer = SCIPIndexer(self.repo_path, output_dir=str(scip_output_dir))
+        scip_indexer = LSIndexer(self.repo_path, output_dir=str(scip_output_dir))
         self.code_graph: CodeGraph = scip_indexer.run_pipeline(
             project_name=f"{repo_name}@{commit_identifier}",
             skip_level="graph",  # Enable cache: load from graph.pkl if exists

@@ -7,7 +7,7 @@ import pytest
 
 from codeminer.code_chunker import CodeChunker
 from codeminer.index import BM25CodeIndexer
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 
 def test_dense_compatibility(httpie_cli_repo, tmp_path_factory):
@@ -16,7 +16,7 @@ def test_dense_compatibility(httpie_cli_repo, tmp_path_factory):
     output_path = tmp_path_factory.mktemp("httpie_cli_nodes_test")
 
     try:
-        repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
+        repo_indexer = LSIndexer(repo_path, output_dir=output_path)
         graph = repo_indexer.run_pipeline(project_name="httpie_cli_compat")
     except Exception as exc:  # pragma: no cover - defensive
         pytest.fail(f"BM25 nodes creation failed: {exc}")
