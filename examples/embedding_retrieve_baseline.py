@@ -26,9 +26,8 @@ from codeminer.eval.retrieval_eval import (
     evaluate_predictions,
     extract_predictions,
 )
-from codeminer.index.embedding import build_hierarchical_vector_store
 from codeminer.log_utils import get_logger
-from codeminer.types import QueriedNode
+from codeminer.model import EmbeddingRetrievePipeline
 
 logger = get_logger(__name__)
 
@@ -126,58 +125,27 @@ def run_embedding_pipeline(args):
             logger.info("Skipping %s - no valid target symbols", instance_id)
             continue
 
-        vector_store = None
+        pipeline = None
         try:
             t0 = time.time()
 
-            # 1. Process instance (clone/checkout repo)
             dataset_obj.process_instance(instance)
             repo_path = dataset_obj.get_repo_path(instance)
+            index_path = str(
+                Path(args.index_cache_dir) / instance_id.replace("/", "__")
+            )
 
-            instance_dir_name = instance_id.replace("/", "__")
-            index_path = str(Path(args.index_cache_dir) / instance_dir_name)
-
-            # 2. Build or load vector store
-            vector_store = build_hierarchical_vector_store(
+            pipeline = EmbeddingRetrievePipeline(
                 repo_path=repo_path,
                 index_path=index_path,
-                plan_name=None,
-                languages=["python"],
-                max_lines_per_chunk=300,
-                build_levels=["l2"],
                 embedding_model=args.embedding_model,
                 embedding_provider=args.embedding_provider,
                 embedding_dimension=args.embedding_dimension,
-                embedding_kwargs={
-                    "model_kwargs": {"trust_remote_code": True},
-                },
-                index_metric="ip",
+                top_k=args.topk,
             )
-
-            # 3. Search
-            query = instance["problem_statement"]
-            search_results = vector_store.search_with_content(
-                query, top_k=args.topk
-            )
-
-            # Convert to QueriedNode
-            results = [
-                QueriedNode(
-                    node_name=n.node_name,
-                    type=n.type,
-                    file=n.file,
-                    node_id=n.node_id,
-                    start_line=n.start_line,
-                    end_line=n.end_line,
-                    score=n.score,
-                    content=n.content,
-                )
-                for n in search_results
-            ]
-
+            results = pipeline.query(instance["problem_statement"])
             elapsed = time.time() - t0
 
-            # 4. Evaluate
             metrics = evaluate_predictions(
                 nodes=results,
                 target_files=target_files,
@@ -216,8 +184,8 @@ def run_embedding_pipeline(args):
             logger.exception("Error processing %s", instance_id)
             continue
         finally:
-            if vector_store is not None:
-                vector_store.close()
+            if pipeline is not None:
+                pipeline.close()
 
     # ---- Aggregate ----
     if aggregate and eval_count:

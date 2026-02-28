@@ -9,7 +9,10 @@ Decodes SCIP index files into CodeGraph format, focusing on:
 - Traits (treated as classes)
 """
 import re
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 from pathlib import Path
 
 from ..graph.code_graph import CodeGraph
