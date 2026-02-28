@@ -24,7 +24,7 @@ from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.log_utils import get_logger
 from codeminer.profiler import Profiler
-from codeminer.scip_interface.scip_indexer import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 logger = get_logger(__name__)
 
@@ -507,7 +507,7 @@ def main() -> None:
                 emit_events=False,
                 summary_level=logging.INFO,
             )
-            indexer = SCIPIndexer(
+            indexer = LSIndexer(
                 project_root=repo_path,
                 output_dir=instance_output_dir,
                 exclude_patterns=args.exclude_patterns,

@@ -6,7 +6,7 @@ from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.graph.roi_subgraph import ROISubgraph
 from codeminer.index import BM25CodeIndexer
 from codeminer.llm.llm_config import LLMConfig, LLMProvider
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 # args_dict = {
 #     "model": "claude-sonnet-4-5-20250929",
@@ -43,7 +43,7 @@ if __name__ == "__main__":
         output_path = str(Path.home()) + "/.codeminer/" + instance["instance_id"]
 
         # setup codegraph
-        repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
+        repo_indexer = LSIndexer(repo_path, output_dir=output_path)
 
         # Run the indexing pipeline
         graph = repo_indexer.run_pipeline(

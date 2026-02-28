@@ -17,19 +17,23 @@ from typing import List, Optional, Union
 from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger
 from ..profiler import Profiler
-from .scip_indexer_base import SCIPIndexerBase
 
-logger = get_logger("scip_clang_indexer")
+logger = get_logger("clangd_indexer")
 
 
-class ClangdIndexer(SCIPIndexerBase):
+class ClangdIndexer:
     """
-    SCIP indexer for C/C++ projects using clangd.
+    Indexer for C/C++ projects using clangd.
 
     Pipeline:
       1. generate_index  — run clangd to produce .idx files
-      2. decode_index    — ClangdGraphDecoder reads .idx → CodeGraph
+      2. decode_index    — no-op (clangd .idx parsed directly)
+      3. process_index   — ClangdGraphDecoder reads .idx → CodeGraph
     """
+
+    # ==================================================================
+    # Init
+    # ==================================================================
 
     def __init__(
         self,
@@ -37,24 +41,32 @@ class ClangdIndexer(SCIPIndexerBase):
         output_dir: Optional[Union[str, Path]] = None,
         exclude_patterns: Optional[List] = None,
         profiler: Optional[Profiler] = None,
-        idx_directory: Optional[Union[str, Path]] = None,
     ):
-        super().__init__(
-            project_root=project_root,
-            output_dir=output_dir,
-            exclude_patterns=exclude_patterns,
-            profiler=profiler,
-            language="clang",
-        )
-        # Where clangd writes its .idx files
-        if idx_directory:
-            self.idx_directory = Path(idx_directory)
-        else:
-            self.idx_directory = self.project_root / ".cache" / "clangd" / "index"
+        self.project_root = Path(project_root).absolute()
+        self.language = "clang"
 
-    # ------------------------------------------------------------------
-    # Tool discovery
-    # ------------------------------------------------------------------
+        if output_dir:
+            self.output_dir = Path(output_dir).absolute()
+        else:
+            self.output_dir = Path("/tmp") / self.project_root.name
+
+        os.makedirs(self.output_dir, exist_ok=True)
+
+        self.index_file = None      # clangd generates .idx files in idx_directory
+        self.decoded_file = None    # no protoc decode step for clangd
+        self.graph_file = self.output_dir / "graph.pkl"
+        self.exclude_patterns = exclude_patterns if exclude_patterns else []
+        self.profiler = profiler or Profiler("clangd_indexer")
+
+        # clangd decides its own output location (project-local
+        # .cache/clangd/index/).  _run_clangd_indexer overwrites this
+        # after indexing to point at the directory that actually received
+        # new .idx files.
+        self.idx_directory = self.project_root / ".cache" / "clangd" / "index"
+
+    # ==================================================================
+    # Helpers for Setting up
+    # ==================================================================
 
     def _find_clangd(self) -> Optional[str]:
         """Find the clangd executable."""
@@ -62,7 +74,6 @@ class ClangdIndexer(SCIPIndexerBase):
         if clangd:
             return clangd
 
-        # Try project root  TODO TODO TODO TODO 
         local = self.project_root / "clangd"
         if local.exists() and local.is_file():
             return str(local.absolute())
@@ -94,44 +105,27 @@ class ClangdIndexer(SCIPIndexerBase):
             logger.error(f"Error running clangd at {clangd_path}: {e}")
             return False
 
-    # ------------------------------------------------------------------
-    # Abstract method implementations
-    # ------------------------------------------------------------------
-
-    def _build_index_command(self, **kwargs) -> List[str]:
-        """Build clangd command (used internally by generate_index)."""
+    def _build_index_command(self, comp_db: Path) -> List[str]:
+        """Build the full clangd background-index command."""
         clangd_cmd = getattr(self, "_clangd_path", "clangd")
-        cmd = [clangd_cmd, "--background-index"]
-
-        compdb_path = kwargs.get("compdb_path")
-        if compdb_path:
-            compile_commands_dir = str(Path(compdb_path).parent)
-            cmd.append(f"--compile-commands-dir={compile_commands_dir}")
-
-        return cmd
+        compile_commands_dir = str(comp_db.parent)
+        return [
+            clangd_cmd,
+            "--background-index",
+            f"--compile-commands-dir={compile_commands_dir}",
+            "--background-index-priority=normal",
+            "--log=error",
+        ]
 
     def _get_decoder_class(self):
-        """Return ClangdGraphDecoder (not used directly — process_index is overridden)."""
+        """Return ClangdGraphDecoder."""
         from .clangd_decode import ClangdGraphDecoder
 
         return ClangdGraphDecoder
 
-    # ------------------------------------------------------------------
-    # LSP helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _lsp_send(process, message: dict):
-        """Send an LSP JSON-RPC message to the process stdin."""
-        content = json.dumps(message)
-        content_bytes = content.encode("utf-8")
-        header = f"Content-Length: {len(content_bytes)}\r\n\r\n"
-        process.stdin.write(header.encode("utf-8") + content_bytes)
-        process.stdin.flush()
-
-    # ------------------------------------------------------------------
-    # generate_index — run clangd background indexer
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Pipeline methods
+    # ==================================================================
 
     def generate_index(
         self,
@@ -187,36 +181,219 @@ class ClangdIndexer(SCIPIndexerBase):
             logger.error(f"Index generation failed after {duration:.2f}s")
             return False
 
-    def _build_candidate_idx_dirs(self, comp_db: Path) -> List[Path]:
-        """Build a list of candidate directories where clangd may write .idx files,
-        since clangd doesn't provide a way to specify the .idx output directory.
-
-        Note: the global ~/.cache/clangd/index is intentionally excluded to
-        avoid picking up .idx files from unrelated projects.
+    def decode_index(self) -> bool:
         """
-        candidates = []
-        # 1. Project-local .cache/clangd/index
-        local_idx = self.project_root / ".cache" / "clangd" / "index"
-        candidates.append(local_idx)
-        # 2. Relative to compile_commands.json directory
-        compdb_idx = comp_db.parent / ".cache" / "clangd" / "index"
-        if compdb_idx.resolve() != local_idx.resolve():
-            candidates.append(compdb_idx)
-        return candidates
+        No-op: clangd .idx files are parsed directly by ClangdGraphDecoder.
+
+        There is no protoc decode step for the clangd binary format.
+        """
+        logger.info(
+            "Skipping protoc decode (clangd .idx files are parsed directly)"
+        )
+        return True
+
+    def process_index(
+        self, output_file: Optional[str] = None
+    ) -> Union[CodeGraph, None]:
+        """
+        Build a CodeGraph from clangd .idx files.
+
+        Args:
+            output_file: Path to save the serialised graph (.pkl)
+
+        Returns:
+            CodeGraph or None on failure
+        """
+        if not self.idx_directory.exists():
+            logger.error(f"Index directory not found: {self.idx_directory}")
+            return None
+
+        idx_files = list(self.idx_directory.glob("*.idx"))
+        if not idx_files:
+            logger.error(f"No .idx files found in {self.idx_directory}")
+            return None
+
+        logger.info(
+            f"Processing {len(idx_files)} .idx files from {self.idx_directory}"
+        )
+
+        try:
+            decoder_class = self._get_decoder_class()
+
+            with self.profiler.section("process_index.decode") as section:
+                decoder = decoder_class(
+                    idx_directory=str(self.idx_directory),
+                    project_root=str(self.project_root),
+                )
+                graph: CodeGraph = decoder.decode()
+            duration = section.duration
+
+            if output_file:
+                with self.profiler.section("process_index.save_graph") as save_section:
+                    graph.save_graph(output_file)
+                save_duration = save_section.duration
+                logger.info(f"Saved graph to {output_file}")
+                logger.info(f"Graph saving took: {save_duration:.2f}s")
+
+            logger.info(f"Index processing took: {duration:.2f}s")
+            return graph
+
+        except Exception as e:
+            logger.error(f"Error processing .idx files: {e}")
+            return None
+
+    def run_pipeline(
+        self,
+        output_file: Optional[str] = None,
+        skip_level: Optional[str] = None,
+        *,
+        reset_profiler: bool = True,
+        report_profile: bool = True,
+        **kwargs,
+    ):
+        """
+        Run clangd C/C++ pipeline: generate .idx → build CodeGraph.
+        Skip levels:
+          'graph'  — load cached graph.pkl if it exists
+          'decode' / 'raw' — skip generation if .idx files already exist
+          None     — full pipeline
+        """
+        # Drop Python-specific kwargs that may be forwarded by callers
+        kwargs.pop("project_name", None)
+        kwargs.pop("target_dir", None)
+        kwargs.pop("cwd", None)
+
+        if output_file is None:
+            output_file = str(self.graph_file)
+
+        # Check graph cache
+        if skip_level == "graph" and self.graph_file.exists():
+            logger.info(f"Loading cached graph from {self.graph_file}")
+            try:
+                graph = CodeGraph.load_graph(str(self.graph_file))
+                logger.info(
+                    f"Loaded cached graph "
+                    f"({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
+                )
+                return graph
+            except Exception as e:
+                logger.warning(f"Failed to load cached graph: {e}. Continuing ...")
+
+        # Determine whether we already have .idx files
+        has_idx_files = (
+            self.idx_directory.exists()
+            and any(self.idx_directory.glob("*.idx"))
+        )
+
+        if skip_level in ("graph", "decode", "raw") and has_idx_files:
+            logger.info(
+                f"Found existing .idx files in {self.idx_directory}, "
+                f"skipping index generation"
+            )
+            should_generate = False
+        else:
+            should_generate = True
+
+        # Auto-discover / generate compile_commands.json when needed
+        if should_generate and ("compdb_path" not in kwargs or not kwargs.get("compdb_path")):
+            for candidate in (
+                self.project_root / "compile_commands.json",
+                self.project_root / "build" / "compile_commands.json",
+            ):
+                if self._is_valid_compdb(candidate):
+                    kwargs["compdb_path"] = str(candidate)
+                    break
+                if candidate.exists():
+                    logger.warning("Ignoring invalid compilation database: %s", candidate)
+            else:
+                generated = self._auto_generate_compdb()
+                if generated is not None and self._is_valid_compdb(generated):
+                    kwargs["compdb_path"] = str(generated)
+                elif generated is not None:
+                    logger.warning("Auto-generated compilation database is invalid: %s", generated)
+
+        if reset_profiler:
+            self.profiler.reset()
+
+        try:
+            # Step 1: generate .idx files (if needed)
+            if should_generate:
+                logger.info("Generating clangd index (.idx files)")
+                if not self.generate_index(**kwargs):
+                    # Check if .idx files appeared despite the failure
+                    has_idx_files = (
+                        self.idx_directory.exists()
+                        and any(self.idx_directory.glob("*.idx"))
+                    )
+                    if not has_idx_files:
+                        return None
+                    logger.warning(
+                        "generate_index returned failure but .idx files exist; continuing."
+                    )
+
+            # Step 2: decode — no-op for clangd
+
+            # Step 3: build CodeGraph from .idx files
+            graph = self.process_index(output_file)
+
+            if graph:
+                logger.info(
+                    f"Graph created successfully "
+                    f"({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
+                )
+
+            return graph
+        finally:
+            if report_profile:
+                self.profiler.report(reset=reset_profiler)
+
+    def clear_cache(self, level: str = "all") -> bool:
+        """Clear cache files at different levels.
+
+        For clangd the "raw" index is the idx_directory (many .idx files),
+        and there is no separate "decoded" stage.
+
+        Args:
+            level: Preserve cache up to this pipeline stage, remove above.
+                Pipeline: raw (.idx files) → graph (graph.pkl)
+                - 'graph'  — keep everything (idx + graph)
+                - 'decode' — same as 'raw' (clangd has no separate decode step)
+                - 'raw'    — keep idx_directory, remove graph.pkl
+                - 'all'    — remove everything
+        """
+        if level not in ("graph", "decode", "raw", "all"):
+            logger.error(f"Invalid cache level: {level}")
+            return False
+
+        remove_idx = level in ("all",)
+        remove_graph = level in ("decode", "raw", "all")
+
+        if remove_idx and self.idx_directory.exists():
+            shutil.rmtree(self.idx_directory)
+            logger.info(f"Removed {self.idx_directory}")
+
+        if remove_graph and self.graph_file.exists():
+            self.graph_file.unlink()
+            logger.info(f"Removed {self.graph_file}")
+
+        return True
+
+    # ==================================================================
+    # Private helpers: LSP
+    # ==================================================================
 
     @staticmethod
-    def _get_max_mtime(directory: Path) -> float:
-        """Get the maximum mtime of .idx files in a directory (0 if none)."""
-        max_mtime = 0.0
-        if directory.exists():
-            for f in directory.glob("*.idx"):
-                try:
-                    mt = f.stat().st_mtime
-                    if mt > max_mtime:
-                        max_mtime = mt
-                except OSError:
-                    pass
-        return max_mtime
+    def _lsp_send(process, message: dict):
+        """Send an LSP JSON-RPC message to the process stdin."""
+        content = json.dumps(message)
+        content_bytes = content.encode("utf-8")
+        header = f"Content-Length: {len(content_bytes)}\r\n\r\n"
+        process.stdin.write(header.encode("utf-8") + content_bytes)
+        process.stdin.flush()
+
+    # ==================================================================
+    # Private helpers: index generation
+    # ==================================================================
 
     def _run_clangd_indexer(self, comp_db: Path) -> bool:
         """Start clangd, trigger background indexing, wait for completion.
@@ -224,15 +401,11 @@ class ClangdIndexer(SCIPIndexerBase):
         Uses fire-and-forget LSP messages (no response reading) — clangd
         stdout is left unread while we poll the .idx directory.
         """
-        compile_commands_dir = str(comp_db.parent)
-        cmd = [
-            self._clangd_path,
-            "--background-index",
-            f"--compile-commands-dir={compile_commands_dir}",
-            "--background-index-priority=normal",
-            "--log=error",
-        ]
+        cmd = self._build_index_command(comp_db)
         logger.info(f"Starting clangd: {' '.join(cmd)}")
+
+        # Clear stale .idx and graph files before re-indexing
+        self.clear_cache(level="all")
 
         # Build candidate .idx directories before indexing starts,
         # snapshot mtime so we can detect changes (not just new files).
@@ -325,6 +498,37 @@ class ClangdIndexer(SCIPIndexerBase):
                     return True
 
         return False
+
+    def _build_candidate_idx_dirs(self, comp_db: Path) -> List[Path]:
+        """Build a list of candidate directories where clangd may write .idx files,
+        since clangd doesn't provide a way to specify the .idx output directory.
+
+        Note: the global ~/.cache/clangd/index is intentionally excluded to
+        avoid picking up .idx files from unrelated projects.
+        """
+        candidates = []
+        # 1. Project-local .cache/clangd/index
+        local_idx = self.project_root / ".cache" / "clangd" / "index"
+        candidates.append(local_idx)
+        # 2. Relative to compile_commands.json directory
+        compdb_idx = comp_db.parent / ".cache" / "clangd" / "index"
+        if compdb_idx.resolve() != local_idx.resolve():
+            candidates.append(compdb_idx)
+        return candidates
+
+    @staticmethod
+    def _get_max_mtime(directory: Path) -> float:
+        """Get the maximum mtime of .idx files in a directory (0 if none)."""
+        max_mtime = 0.0
+        if directory.exists():
+            for f in directory.glob("*.idx"):
+                try:
+                    mt = f.stat().st_mtime
+                    if mt > max_mtime:
+                        max_mtime = mt
+                except OSError:
+                    pass
+        return max_mtime
 
     def _open_source_files(self, process, comp_db: Path):
         """Send textDocument/didOpen for every source file in compile_commands.json."""
@@ -435,78 +639,9 @@ class ClangdIndexer(SCIPIndexerBase):
             f"Indexing timed out after {timeout}s ({total_files} .idx files)"
         )
 
-    # ------------------------------------------------------------------
-    # decode_index — no-op for clangd
-    # ------------------------------------------------------------------
-
-    def decode_index(self) -> bool:
-        """
-        No-op: clangd .idx files are parsed directly by ClangdGraphDecoder.
-
-        There is no protoc decode step for the clangd binary format.
-        """
-        logger.info(
-            "Skipping protoc decode (clangd .idx files are parsed directly)"
-        )
-        return True
-
-    # ------------------------------------------------------------------
-    # process_index — ClangdGraphDecoder
-    # ------------------------------------------------------------------
-
-    def process_index(
-        self, output_file: Optional[str] = None
-    ) -> Union[CodeGraph, None]:
-        """
-        Build a CodeGraph from clangd .idx files.
-
-        Args:
-            output_file: Path to save the serialised graph (.pkl)
-
-        Returns:
-            CodeGraph or None on failure
-        """
-        if not self.idx_directory.exists():
-            logger.error(f"Index directory not found: {self.idx_directory}")
-            return None
-
-        idx_files = list(self.idx_directory.glob("*.idx"))
-        if not idx_files:
-            logger.error(f"No .idx files found in {self.idx_directory}")
-            return None
-
-        logger.info(
-            f"Processing {len(idx_files)} .idx files from {self.idx_directory}"
-        )
-
-        try:
-            from .clangd_decode import ClangdGraphDecoder
-
-            with self.profiler.section("process_index.decode") as section:
-                decoder = ClangdGraphDecoder(
-                    idx_directory=str(self.idx_directory),
-                    project_root=str(self.project_root),
-                )
-                graph: CodeGraph = decoder.decode()
-            duration = section.duration
-
-            if output_file:
-                with self.profiler.section("process_index.save_graph") as save_section:
-                    graph.save_graph(output_file)
-                save_duration = save_section.duration
-                logger.info(f"Saved graph to {output_file}")
-                logger.info(f"Graph saving took: {save_duration:.2f}s")
-
-            logger.info(f"Index processing took: {duration:.2f}s")
-            return graph
-
-        except Exception as e:
-            logger.error(f"Error processing .idx files: {e}")
-            return None
-
-    # ------------------------------------------------------------------
-    # compile_commands.json helpers
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Private helpers: compile_commands.json
+    # ==================================================================
 
     def _is_valid_compdb(self, compdb: Path) -> bool:
         """Check compile_commands.json is parseable and non-empty."""
@@ -520,7 +655,6 @@ class ClangdIndexer(SCIPIndexerBase):
             return isinstance(payload, list) and len(payload) > 0
         except Exception:
             return False
-
 
     def _auto_generate_compdb(self) -> Optional[Path]:
         """Try generating compile_commands.json with common build flows."""
@@ -559,21 +693,6 @@ class ClangdIndexer(SCIPIndexerBase):
 
         compdb = build_dir / "compile_commands.json"
         return compdb if compdb.exists() else None
-
-    def _has_root_makefile(self) -> bool:
-        """Check if the project root has a Makefile or GNUmakefile."""
-        return any(
-            (self.project_root / name).exists()
-            for name in ("Makefile", "GNUmakefile", "makefile")
-        )
-
-    def _is_autotools_project(self) -> bool:
-        """Check if the project uses autotools (configure.ac / autogen.sh)."""
-        return (
-            (self.project_root / "configure.ac").exists()
-            or (self.project_root / "configure.in").exists()
-            or (self.project_root / "autogen.sh").exists()
-        )
 
     def _auto_generate_compdb_bear(self) -> Optional[Path]:
         if not shutil.which("bear"):
@@ -619,6 +738,21 @@ class ClangdIndexer(SCIPIndexerBase):
         if compdb:
             return compdb
         return None
+
+    def _has_root_makefile(self) -> bool:
+        """Check if the project root has a Makefile or GNUmakefile."""
+        return any(
+            (self.project_root / name).exists()
+            for name in ("Makefile", "GNUmakefile", "makefile")
+        )
+
+    def _is_autotools_project(self) -> bool:
+        """Check if the project uses autotools (configure.ac / autogen.sh)."""
+        return (
+            (self.project_root / "configure.ac").exists()
+            or (self.project_root / "configure.in").exists()
+            or (self.project_root / "autogen.sh").exists()
+        )
 
     def _bear_make(self) -> Optional[Path]:
         """Run bear -- make and return compile_commands.json path if valid.
@@ -768,112 +902,3 @@ class ClangdIndexer(SCIPIndexerBase):
             if e.stderr:
                 logger.warning("stderr: %s", e.stderr[:600].strip())
             return False
-
-    # ------------------------------------------------------------------
-    # run_pipeline — adapted for clangd
-    # ------------------------------------------------------------------
-
-    def run_pipeline(
-        self,
-        output_file: Optional[str] = None,
-        skip_level: Optional[str] = None,
-        *,
-        reset_profiler: bool = True,
-        report_profile: bool = True,
-        **kwargs,
-    ):
-        """
-        Run clangd C/C++ pipeline: generate .idx → build CodeGraph.
-        Skip levels:
-          'graph'  — load cached graph.pkl if it exists
-          'decode' / 'raw' — skip generation if .idx files already exist
-          None     — full pipeline
-        """
-        # Drop Python-specific kwargs that may be forwarded by callers
-        kwargs.pop("project_name", None)
-        kwargs.pop("target_dir", None)
-        kwargs.pop("cwd", None)
-
-        if output_file is None:
-            output_file = str(self.graph_file)
-
-        # Check graph cache
-        if skip_level == "graph" and self.graph_file.exists():
-            logger.info(f"Loading cached graph from {self.graph_file}")
-            try:
-                graph = CodeGraph.load_graph(str(self.graph_file))
-                logger.info(
-                    f"Loaded cached graph "
-                    f"({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
-                )
-                return graph
-            except Exception as e:
-                logger.warning(f"Failed to load cached graph: {e}. Continuing ...")
-
-        # Determine whether we already have .idx files
-        has_idx_files = (
-            self.idx_directory.exists()
-            and any(self.idx_directory.glob("*.idx"))
-        )
-
-        if skip_level in ("graph", "decode", "raw") and has_idx_files:
-            logger.info(
-                f"Found existing .idx files in {self.idx_directory}, "
-                f"skipping index generation"
-            )
-            should_generate = False
-        else:
-            should_generate = True
-
-        # Auto-discover / generate compile_commands.json when needed
-        if should_generate and ("compdb_path" not in kwargs or not kwargs.get("compdb_path")):
-            for candidate in (
-                self.project_root / "compile_commands.json",
-                self.project_root / "build" / "compile_commands.json",
-            ):
-                if self._is_valid_compdb(candidate):
-                    kwargs["compdb_path"] = str(candidate)
-                    break
-                if candidate.exists():
-                    logger.warning("Ignoring invalid compilation database: %s", candidate)
-            else:
-                generated = self._auto_generate_compdb()
-                if generated is not None and self._is_valid_compdb(generated):
-                    kwargs["compdb_path"] = str(generated)
-                elif generated is not None:
-                    logger.warning("Auto-generated compilation database is invalid: %s", generated)
-
-        if reset_profiler:
-            self.profiler.reset()
-
-        try:
-            # Step 1: generate .idx files (if needed)
-            if should_generate:
-                logger.info("Generating clangd index (.idx files)")
-                if not self.generate_index(**kwargs):
-                    # Check if .idx files appeared despite the failure
-                    has_idx_files = (
-                        self.idx_directory.exists()
-                        and any(self.idx_directory.glob("*.idx"))
-                    )
-                    if not has_idx_files:
-                        return None
-                    logger.warning(
-                        "generate_index returned failure but .idx files exist; continuing."
-                    )
-
-            # Step 2: decode — no-op for clangd
-
-            # Step 3: build CodeGraph from .idx files
-            graph = self.process_index(output_file)
-
-            if graph:
-                logger.info(
-                    f"Graph created successfully "
-                    f"({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
-                )
-
-            return graph
-        finally:
-            if report_profile:
-                self.profiler.report(reset=reset_profiler)

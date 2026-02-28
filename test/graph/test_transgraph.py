@@ -8,7 +8,7 @@ from codeminer.graph.transverse_graph import (
     traverse_tree_structure,
 )
 from codeminer.log_utils import setup_detailed_logging
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 from codeminer.types import (
     EDGE_TYPE_CONTAIN,
     NODE_TYPE_CLASS,
@@ -52,7 +52,7 @@ def test_transgraph_simple(httpie_cli_repo=None, tmp_path_factory=None):
         return False
 
     # Setup codegraph
-    repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
+    repo_indexer = LSIndexer(repo_path, output_dir=output_path)
 
     print("\n" + "=" * 50)
     print("GENERATING SCIP INDEX")

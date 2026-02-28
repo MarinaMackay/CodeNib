@@ -36,7 +36,7 @@ from codeminer.dataset.utils import (
 )
 from codeminer.graph.roi_subgraph import ROISubgraph
 from codeminer.log_utils import get_logger
-from codeminer.scip_interface.scip_indexer import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 from codeminer.types import (
     NODE_TYPE_CLASS,
     NODE_TYPE_FUNCTION,
@@ -535,7 +535,7 @@ class ClaudeQuerySynthesizer:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            indexer = SCIPIndexer(
+            indexer = LSIndexer(
                 project_root=repo_path,
                 output_dir=output_dir,
                 language=language,
