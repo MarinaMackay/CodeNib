@@ -3,25 +3,9 @@
 Regression tests for the C++ code chunker using the fmt repository.
 """
 
-import subprocess
 from pathlib import Path
 
-import pytest
-
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
-
-FMT_URL = "https://github.com/fmtlib/fmt.git"
-FMT_PATH = Path("/tmp/fmt-cpp-chunker")
-
-
-@pytest.fixture(scope="module")
-def fmt_repo():
-    if not FMT_PATH.exists():
-        subprocess.run(
-            ["git", "clone", "--depth", "1", FMT_URL, str(FMT_PATH)],
-            check=True,
-        )
-    return FMT_PATH
 
 
 def _collect_chunks(repo_root: Path, chunk_depth: int):
