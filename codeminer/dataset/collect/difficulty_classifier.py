@@ -72,6 +72,8 @@ DIFFICULTY_OUTPUT_SCHEMA = {
 }
 MAX_PATCH_CHARS = 6000
 BATCH_SIZE = 10
+BATCH_RETRY_LIMIT = 2
+MAX_FALLBACK_SPLIT_DEPTH = 3
 
 
 class DifficultyResult(BaseModel):
@@ -115,13 +117,9 @@ class AgentDifficultyClassifier:
             logger.debug("Cache hit for %s", instance_id)
             return self._cache[instance_id]
 
-        prompt = self._build_batch_prompt(
-            [
-                (instance_id, problem_statement, patch),
-            ]
+        results = self._classify_items_with_fallback(
+            [(instance_id, problem_statement, patch)]
         )
-        raw = self._run_agent(prompt)
-        results = self._parse_batch_result(raw, [instance_id])
         result = results[instance_id]
         self._cache[instance_id] = result
         return result
@@ -162,10 +160,7 @@ class AgentDifficultyClassifier:
                 )
                 for inst in batch
             ]
-            ids = [iid for iid, _, _ in items]
-            prompt = self._build_batch_prompt(items)
-            raw = self._run_agent(prompt)
-            results = self._parse_batch_result(raw, ids)
+            results = self._classify_items_with_fallback(items)
 
             for inst in batch:
                 iid = inst["instance_id"]
@@ -182,6 +177,69 @@ class AgentDifficultyClassifier:
         self._save_cache()
         logger.info("Difficulty classification complete: %d instances", len(instances))
         return instances
+
+    def _classify_items_with_fallback(
+        self,
+        items: List[tuple[str, str, str]],
+        *,
+        depth: int = 0,
+    ) -> Dict[str, DifficultyResult]:
+        ids = [iid for iid, _, _ in items]
+        prompt = self._build_batch_prompt(items)
+
+        results: Dict[str, DifficultyResult] = {}
+        for attempt in range(BATCH_RETRY_LIMIT):
+            raw = self._run_agent(prompt)
+            results = self._parse_batch_result(raw, ids, fill_defaults=False)
+            missing_ids = [iid for iid in ids if iid not in results]
+            if not missing_ids:
+                return results
+            if attempt + 1 < BATCH_RETRY_LIMIT:
+                logger.warning(
+                    "Incomplete batch response (%d/%d parsed). Retrying batch (%d/%d).",
+                    len(results),
+                    len(ids),
+                    attempt + 2,
+                    BATCH_RETRY_LIMIT,
+                )
+
+        missing_ids = [iid for iid in ids if iid not in results]
+        if not missing_ids:
+            return results
+
+        if len(items) == 1 or depth >= MAX_FALLBACK_SPLIT_DEPTH:
+            for iid in missing_ids:
+                logger.warning(
+                    "Missing classification for %s after retries, defaulting to medium",
+                    iid,
+                )
+                results[iid] = DifficultyResult(difficulty_level="medium")
+            return results
+
+        logger.warning(
+            "Falling back to smaller sub-batches for %d missing IDs (depth=%d).",
+            len(missing_ids),
+            depth + 1,
+        )
+
+        item_map = {
+            iid: (iid, problem_statement, patch)
+            for iid, problem_statement, patch in items
+        }
+        missing_items = [item_map[iid] for iid in missing_ids if iid in item_map]
+        mid = max(1, len(missing_items) // 2)
+        left_items = missing_items[:mid]
+        right_items = missing_items[mid:]
+
+        if left_items:
+            results.update(
+                self._classify_items_with_fallback(left_items, depth=depth + 1)
+            )
+        if right_items:
+            results.update(
+                self._classify_items_with_fallback(right_items, depth=depth + 1)
+            )
+        return results
 
     # ------------------------------------------------------------------
     # Agent interaction
@@ -326,7 +384,11 @@ class AgentDifficultyClassifier:
         return cleaned
 
     def _parse_batch_result(
-        self, raw: str, expected_ids: List[str]
+        self,
+        raw: str,
+        expected_ids: List[str],
+        *,
+        fill_defaults: bool = True,
     ) -> Dict[str, DifficultyResult]:
         """Parse a JSON array of classification results."""
         logger.debug("Raw agent response (%d chars): %s", len(raw), raw[:500])
@@ -338,16 +400,16 @@ class AgentDifficultyClassifier:
                 if iid in heuristic:
                     results[iid] = heuristic[iid]
 
-        # Fill in any missing IDs with defaults.
-        default = DifficultyResult(
-            difficulty_level="medium",
-        )
-        for iid in expected_ids:
-            if iid not in results:
-                logger.warning(
-                    "Missing classification for %s, defaulting to medium", iid
-                )
-                results[iid] = default
+        if fill_defaults:
+            default = DifficultyResult(
+                difficulty_level="medium",
+            )
+            for iid in expected_ids:
+                if iid not in results:
+                    logger.warning(
+                        "Missing classification for %s, defaulting to medium", iid
+                    )
+                    results[iid] = default
 
         return results
 
@@ -376,7 +438,10 @@ class AgentDifficultyClassifier:
                     difficulty_level=level,
                 )
         except (json.JSONDecodeError, Exception) as exc:
-            logger.warning("Failed to parse batch difficulty result: %s", exc)
+            if cleaned:
+                logger.warning("Failed to parse batch difficulty result: %s", exc)
+            else:
+                logger.debug("Empty batch difficulty payload: %s", exc)
         return results
 
     def _parse_text_results(

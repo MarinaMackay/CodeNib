@@ -178,7 +178,7 @@ def calculate_instance_difficulties(
 
 
 def _build_selected_entry(
-    inst: Dict[str, Any], level: str, rank: int, total: int
+    inst: Dict[str, Any], level: str, total: int
 ) -> Dict[str, Any]:
     entry = {
         "repo": inst["repo"],
@@ -190,7 +190,6 @@ def _build_selected_entry(
         "patch": inst.get("patch"),
         "changed_loc": inst["changed_loc"],
         "difficulty_level": level,
-        "rank_in_repo": rank,
         "total_in_repo": total,
     }
     return entry
@@ -210,18 +209,14 @@ def _select_by_agent_difficulty(
     for level in ("low", "medium", "high"):
         if by_level[level] and len(selected) < target_count:
             inst = by_level[level].pop(0)
-            selected.append(_build_selected_entry(inst, level, rank=0, total=m))
+            selected.append(_build_selected_entry(inst, level, total=m))
     # Fill remaining slots from whatever is left.
     remaining = [inst for bucket in by_level.values() for inst in bucket]
     for inst in remaining:
         if len(selected) >= target_count:
             break
         level = inst.get("agent_difficulty", "medium")
-        selected.append(_build_selected_entry(inst, level, rank=0, total=m))
-
-    # Fix up rank_in_repo.
-    for i, entry in enumerate(selected):
-        entry["rank_in_repo"] = i + 1
+        selected.append(_build_selected_entry(inst, level, total=m))
     return selected
 
 
@@ -479,7 +474,6 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
                     "instance_id": row["instance_id"],
                     "changed_loc": row["changed_loc"],
                     "difficulty_level": row["difficulty_level"],
-                    "rank_in_repo": row["rank_in_repo"],
                     "total_in_repo": row["total_in_repo"],
                 }
                 for row in selected_instances
@@ -491,7 +485,6 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
                 "instance_id",
                 "changed_loc",
                 "difficulty_level",
-                "rank_in_repo",
                 "total_in_repo",
             ],
         )
