@@ -11,6 +11,7 @@ from .retrieve_rerank_pipeline import (
 
 __all__ = [
     "AgentlessPipeline",
+    "BM25RetrievePipeline",
     "EmbeddingRetrievePipeline",
     "GraphRetrievePipeline",
     "RetrieveRerankPipeline",
