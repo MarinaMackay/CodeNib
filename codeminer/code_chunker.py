@@ -26,6 +26,7 @@ class RepoChunkingConfig:
     python_extensions: Set[str] = None
     cpp_extensions: Set[str] = None
     rust_extensions: Set[str] = None
+    go_extensions: Set[str] = None
     javascript_extensions: Set[str] = None
     typescript_extensions: Set[str] = None
 
@@ -51,6 +52,9 @@ class RepoChunkingConfig:
 
         if self.rust_extensions is None:
             self.rust_extensions = {".rs"}
+
+        if self.go_extensions is None:
+            self.go_extensions = {".go"}
 
         if self.javascript_extensions is None:
             self.javascript_extensions = {".js", ".jsx", ".mjs"}
@@ -351,6 +355,9 @@ class CodeChunker:
             elif language.lower() == "rust":
                 for ext in self.repo_config.rust_extensions:
                     extension_to_language[ext] = "rust"
+            elif language.lower() in ("go", "golang"):
+                for ext in self.repo_config.go_extensions:
+                    extension_to_language[ext] = "go"
             elif language.lower() in ("javascript", "js"):
                 for ext in self.repo_config.javascript_extensions:
                     extension_to_language[ext] = "javascript"
@@ -542,6 +549,7 @@ class CodeChunker:
             "java": {".java"},
             "javascript": {".js", ".jsx", ".ts", ".tsx"},
             "rust": {".rs"},
+            "go": {".go"},
         }
 
         detected_languages = set()

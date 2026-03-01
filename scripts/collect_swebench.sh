@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CACHE_DIR="${CACHE_DIR:-$HOME/.codeminer}"
 OUTPUT_DIR="${OUTPUT_DIR:-$CACHE_DIR/swebench_sampling}"
-LANGS=("Python" "Rust" "JavaScript/TypeScript" "C++" "C")
+LANGS=("Python" "Rust" "TypeScript/JavaScript" "C++/C" "Go")
 
 cd "${ROOT_DIR}"
 PYTHONPATH=. python scripts/collect_swebench.py \

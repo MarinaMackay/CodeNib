@@ -3,25 +3,9 @@
 Regression tests for the JavaScript/TypeScript code chunker.
 """
 
-import subprocess
 from pathlib import Path
 
-import pytest
-
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
-
-EXPRESS_URL = "https://github.com/expressjs/express.git"
-EXPRESS_PATH = Path("/tmp/expressjs_express_test_repo")
-
-
-@pytest.fixture(scope="module")
-def express_repo():
-    if not EXPRESS_PATH.exists():
-        subprocess.run(
-            ["git", "clone", "--depth", "1", EXPRESS_URL, str(EXPRESS_PATH)],
-            check=True,
-        )
-    return EXPRESS_PATH
 
 
 def _collect_chunks(repo_root: Path, chunk_depth: int):

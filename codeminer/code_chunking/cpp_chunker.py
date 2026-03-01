@@ -101,7 +101,7 @@ class CppCodeChunker(BaseCodeChunker):
             if def_type == "method":
                 if not include_l2:
                     continue
-                parent = name.split("::", 1)[0] if "::" in name else None
+                parent = name.split(".", 1)[0] if "." in name else None
                 if parent and parent in container_names:
                     # Already represented inside the class skeleton.
                     continue
@@ -174,7 +174,7 @@ class CppCodeChunker(BaseCodeChunker):
                         method_name = self._extract_method_name(member)
                         if method_name:
                             full_name = (
-                                f"{class_name}::{method_name}"
+                                f"{class_name}.{method_name}"
                                 if class_name
                                 else method_name
                             )
@@ -189,7 +189,7 @@ class CppCodeChunker(BaseCodeChunker):
                                 )
                                 if method_name:
                                     full_name = (
-                                        f"{class_name}::{method_name}"
+                                        f"{class_name}.{method_name}"
                                         if class_name
                                         else method_name
                                     )

@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 
 PYTHON_LANGUAGE = "Python"
 
-DEFAULT_LANGUAGES = {"Rust", "C", "C++", "JavaScript/TypeScript", PYTHON_LANGUAGE}
+DEFAULT_LANGUAGES = {"C++/C", "Rust", "TypeScript/JavaScript", "Go", PYTHON_LANGUAGE}
 DEFAULT_MULTILINGUAL_DATASET = "SWE-bench/SWE-bench_Multilingual"
 DEFAULT_LITE_DATASET = "princeton-nlp/SWE-bench_Verified"
 
@@ -45,6 +45,7 @@ class SamplingConfig:
     repo_cache_dir: Optional[Path] = None
     output_dir: Optional[Path] = None
     write_outputs: bool = True
+    difficulty_model: str = "opus"
 
 
 @dataclass
@@ -176,12 +177,58 @@ def calculate_instance_difficulties(
     return difficulties
 
 
+def _build_selected_entry(
+    inst: Dict[str, Any], level: str, total: int
+) -> Dict[str, Any]:
+    entry = {
+        "repo": inst["repo"],
+        "language_group": inst["language_group"],
+        "instance_id": inst["instance_id"],
+        "base_commit": inst.get("base_commit"),
+        "problem_statement": inst.get("problem_statement"),
+        "hints_text": inst.get("hints_text"),
+        "patch": inst.get("patch"),
+        "changed_loc": inst["changed_loc"],
+        "difficulty_level": level,
+        "total_in_repo": total,
+    }
+    return entry
+
+
+def _select_by_agent_difficulty(
+    instances: List[Dict[str, Any]], target_count: int
+) -> List[Dict[str, Any]]:
+    """Pick diverse instances using agent-assigned difficulty levels."""
+    by_level: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for inst in instances:
+        by_level[inst.get("agent_difficulty", "medium")].append(inst)
+
+    m = len(instances)
+    selected: List[Dict[str, Any]] = []
+    # One from each level for diversity.
+    for level in ("low", "medium", "high"):
+        if by_level[level] and len(selected) < target_count:
+            inst = by_level[level].pop(0)
+            selected.append(_build_selected_entry(inst, level, total=m))
+    # Fill remaining slots from whatever is left.
+    remaining = [inst for bucket in by_level.values() for inst in bucket]
+    for inst in remaining:
+        if len(selected) >= target_count:
+            break
+        level = inst.get("agent_difficulty", "medium")
+        selected.append(_build_selected_entry(inst, level, total=m))
+    return selected
+
+
 def select_representative_instances(
     instance_difficulties: List[Dict[str, Any]],
     selected_repos: Dict[str, List[Dict[str, Any]]],
     target_count: int = 3,
 ) -> List[Dict[str, Any]]:
-    """Select representative instances by changed_loc within each selected repo."""
+    """Select representative instances within each selected repo.
+
+    Uses agent-classified difficulty levels to pick diverse instances.
+    """
     selected_repo_names = {
         repo_info["repo"] for repos in selected_repos.values() for repo_info in repos
     }
@@ -191,40 +238,10 @@ def select_representative_instances(
         if inst["repo"] in selected_repo_names:
             instances_by_repo[inst["repo"]].append(inst)
 
-    selected_instances = []
+    selected_instances: List[Dict[str, Any]] = []
 
     for _repo, instances in instances_by_repo.items():
-        instances_sorted = sorted(instances, key=lambda x: x["changed_loc"])
-        m = len(instances_sorted)
-
-        if m <= target_count:
-            indices = list(range(m))
-            levels = ["low", "medium", "high"][:m] if m <= 3 else ["medium"] * m
-        else:
-            indices = select_indices_by_percentile(
-                m, target_count, [0.25, 0.5, 0.75], include_ends=False
-            )
-            levels = ["low", "medium", "high"]
-
-        for i, idx in enumerate(indices):
-            inst = instances_sorted[idx]
-            level = levels[i] if i < len(levels) else "medium"
-
-            selected_instances.append(
-                {
-                    "repo": inst["repo"],
-                    "language_group": inst["language_group"],
-                    "instance_id": inst["instance_id"],
-                    "base_commit": inst.get("base_commit"),
-                    "problem_statement": inst.get("problem_statement"),
-                    "hints_text": inst.get("hints_text"),
-                    "patch": inst.get("patch"),
-                    "changed_loc": inst["changed_loc"],
-                    "difficulty_level": level,
-                    "rank_in_repo": idx + 1,
-                    "total_in_repo": m,
-                }
-            )
+        selected_instances.extend(_select_by_agent_difficulty(instances, target_count))
 
     return selected_instances
 
@@ -425,6 +442,19 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
     )
 
     instance_difficulties = calculate_instance_difficulties(repo_info)
+
+    from .difficulty_classifier import AgentDifficultyClassifier
+
+    _output_dir = config.output_dir or (cache_dir / "swebench_sampling")
+    classifier = AgentDifficultyClassifier(
+        model=config.difficulty_model,
+        cache_path=_output_dir / "difficulty_cache.json",
+    )
+    try:
+        instance_difficulties = classifier.classify_batch(instance_difficulties)
+    finally:
+        classifier.close()
+
     selected_instances = select_representative_instances(
         instance_difficulties, selected_repos, target_count=config.instances_per_repo
     )
@@ -444,7 +474,6 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
                     "instance_id": row["instance_id"],
                     "changed_loc": row["changed_loc"],
                     "difficulty_level": row["difficulty_level"],
-                    "rank_in_repo": row["rank_in_repo"],
                     "total_in_repo": row["total_in_repo"],
                 }
                 for row in selected_instances
@@ -456,7 +485,6 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
                 "instance_id",
                 "changed_loc",
                 "difficulty_level",
-                "rank_in_repo",
                 "total_in_repo",
             ],
         )
