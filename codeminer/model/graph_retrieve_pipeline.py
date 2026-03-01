@@ -122,9 +122,13 @@ class GraphRetrievePipeline:
                     mask_ids.add(node.node_name)
                 if node.node_id:
                     mask_ids.add(node.node_id)
+            # Search with a large k so FAISS retrieves enough candidates
+            # before mask filtering — expanded nodes may not be in global top-k.
+            search_k = max(self.stage2_topk * 10, len(mask_ids) * 3)
             reranked = self.vector_store.search(
-                query, top_k=self.stage2_topk, mask_node_ids=mask_ids
+                query, top_k=search_k, mask_node_ids=mask_ids
             )
+            reranked = reranked[: self.stage2_topk]
             results = [
                 QueriedNode(
                     node_name=n.node_name,
