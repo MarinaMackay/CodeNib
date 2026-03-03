@@ -71,7 +71,16 @@ def parse_args():
     )
     parser.add_argument(
         "--k-hop", type=int, default=2,
-        help="Number of hops for graph BFS expansion.",
+        help="Number of hops for graph BFS expansion (ignored with --ppr).",
+    )
+    # Stage 2 alternative: PPR expansion
+    parser.add_argument(
+        "--ppr", action="store_true",
+        help="Use Personalized PageRank instead of BFS for graph expansion.",
+    )
+    parser.add_argument(
+        "--ppr-damping", type=float, default=0.85,
+        help="PPR damping factor (0-1). Higher = more global spread.",
     )
     # Stage 3: Optional embedding rerank
     parser.add_argument(
@@ -173,6 +182,8 @@ def run_graph_pipeline(args):
                 stage1_topk=args.stage1_topk,
                 stage2_topk=args.stage2_topk,
                 k_hop=args.k_hop,
+                use_ppr=args.ppr,
+                ppr_damping=args.ppr_damping,
                 use_embedding_rerank=args.embedding,
                 embedding_model=args.embedding_model,
                 embedding_provider=args.embedding_provider,
@@ -207,10 +218,12 @@ def run_graph_pipeline(args):
                 unique_files, normalized_symbols = extract_predictions(results)
                 all_results.append({
                     "instance_id": instance_id,
-                    "method": "graph_baseline",
+                    "method": "graph_ppr_baseline" if args.ppr else "graph_baseline",
                     "stage1_topk": args.stage1_topk,
                     "stage2_topk": args.stage2_topk,
                     "k_hop": args.k_hop,
+                    "use_ppr": args.ppr,
+                    "ppr_damping": args.ppr_damping,
                     "embedding_rerank": args.embedding,
                     "num_results": len(results),
                     "elapsed_s": elapsed,
@@ -252,9 +265,14 @@ def run_graph_pipeline(args):
 def main():
     args = parse_args()
     logger.info("Dataset: %s", args.dataset)
+    stage2_desc = (
+        f"PPR(damping={args.ppr_damping}, max {args.stage2_topk})"
+        if args.ppr
+        else f"Graph({args.k_hop}-hop, max {args.stage2_topk})"
+    )
     logger.info(
-        "Pipeline: BM25(top%d) -> Graph(%d-hop, max %d) %s",
-        args.stage1_topk, args.k_hop, args.stage2_topk,
+        "Pipeline: BM25(top%d) -> %s %s",
+        args.stage1_topk, stage2_desc,
         "-> Embedding rerank" if args.embedding else "",
     )
     run_graph_pipeline(args)

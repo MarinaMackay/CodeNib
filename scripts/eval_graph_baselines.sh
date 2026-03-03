@@ -1,15 +1,8 @@
 #!/bin/bash
 set -e
 
-echo "=== Running Graph Baseline (BM25 + Graph + Embedding Rerank) ==="
-python examples/graph_retrieve_baseline.py \
-    --dataset swebench_lite \
-    --split dev \
-    --stage1-topk 5 \
-    --stage2-topk 100 \
-    --k-hop 2 \
-    --embedding \
-    --result-path results/graph_dev_improved.json
+echo "=== Graph Baseline ==="
+python examples/graph_retrieve_baseline.py     --dataset swebench_lite     --split dev     --stage1-topk 20     --stage2-topk 200     --k-hop 3 --ppr --ppr-damping 0.85   --embedding     --result-path results/graph_dev_improved.json
 
 echo "=== Running Embedding Baseline ==="
 python examples/embedding_retrieve_baseline.py \

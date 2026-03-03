@@ -17,7 +17,7 @@ class GraphRetrievePipeline:
     """Three-stage graph-based retrieval pipeline.
 
     Stage 1: BM25 sparse search selects a small set of seed nodes.
-    Stage 2: Graph expansion via k-hop BFS gathers related nodes.
+    Stage 2: Graph expansion via k-hop BFS or Personalized PageRank.
     Stage 3 (optional): Embedding rerank within the expanded set.
 
     Args:
@@ -25,7 +25,9 @@ class GraphRetrievePipeline:
         index_path: Directory used for graph and vector index caches.
         stage1_topk: Number of BM25 seed nodes (default: 5).
         stage2_topk: Max nodes after graph expansion (default: 50).
-        k_hop: BFS expansion depth (default: 2).
+        k_hop: BFS expansion depth (default: 2). Ignored when use_ppr=True.
+        use_ppr: Use Personalized PageRank instead of BFS for Stage 2.
+        ppr_damping: PPR damping factor (default: 0.85).
         use_embedding_rerank: Enable embedding rerank in Stage 3.
         embedding_model: Embedding model for Stage 3.
         embedding_provider: Embedding provider for Stage 3.
@@ -43,6 +45,8 @@ class GraphRetrievePipeline:
         stage1_topk: int = 5,
         stage2_topk: int = 50,
         k_hop: int = 2,
+        use_ppr: bool = False,
+        ppr_damping: float = 0.85,
         use_embedding_rerank: bool = False,
         embedding_model: str = "nomic-ai/CodeRankEmbed",
         embedding_provider: str = "huggingface",
@@ -54,6 +58,8 @@ class GraphRetrievePipeline:
         self.stage1_topk = stage1_topk
         self.stage2_topk = stage2_topk
         self.k_hop = k_hop
+        self.use_ppr = use_ppr
+        self.ppr_damping = ppr_damping
         self.use_embedding_rerank = use_embedding_rerank
 
         pname = project_name or Path(index_path).name
@@ -85,6 +91,7 @@ class GraphRetrievePipeline:
                 embedding_dimension=embedding_dimension,
                 embedding_kwargs={
                     "model_kwargs": {"trust_remote_code": True},
+                    "encode_kwargs": {"batch_size": 4},
                 },
                 index_metric="ip",
             )
@@ -103,16 +110,31 @@ class GraphRetrievePipeline:
         seed_names = [r.node_name for r in bm25_results]
         logger.info("Stage 1: %d seed nodes from BM25", len(seed_names))
 
-        # Stage 2: Graph expansion (k-hop BFS)
+        # Stage 2: Graph expansion
         roi = ROISubgraph(self.code_graph)
-        subgraph = roi.extract_subgraph(seed_names, k_hop=self.k_hop, direction="both")
-        expanded_nodes = roi.get_filtered_subgraph_nodes(
-            subgraph, exclude_nodes=None, filter_tests=True
-        )
-        expanded_nodes = expanded_nodes[: self.stage2_topk]
-        logger.info(
-            "Stage 2: %d nodes after %d-hop expansion", len(expanded_nodes), self.k_hop
-        )
+        if self.use_ppr:
+            expanded_nodes = roi.expand_ppr(
+                seed_names,
+                top_k=self.stage2_topk,
+                damping=self.ppr_damping,
+                filter_tests=True,
+            )
+            logger.info(
+                "Stage 2: %d nodes after PPR expansion (damping=%.2f)",
+                len(expanded_nodes), self.ppr_damping,
+            )
+        else:
+            subgraph = roi.extract_subgraph(
+                seed_names, k_hop=self.k_hop, direction="both"
+            )
+            expanded_nodes = roi.get_filtered_subgraph_nodes(
+                subgraph, exclude_nodes=None, filter_tests=True
+            )
+            expanded_nodes = expanded_nodes[: self.stage2_topk]
+            logger.info(
+                "Stage 2: %d nodes after %d-hop BFS expansion",
+                len(expanded_nodes), self.k_hop,
+            )
 
         # Stage 3 (optional): Embedding rerank
         if self.use_embedding_rerank and expanded_nodes and self.vector_store:
