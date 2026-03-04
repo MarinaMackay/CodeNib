@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from codeminer.dataset.swebench import SwebenchDataset
+from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.dataset.synthesize import ClaudeQuerySynthesizer
 from codeminer.dataset.utils import QueryType
 from codeminer.log_utils import get_logger
@@ -63,6 +64,7 @@ def _to_compact_record(item: Dict[str, Any]) -> Dict[str, Any]:
         "gt_symbols": item.get("target_symbols") or [],
         "gt_symbol_nodes": item.get("target_symbol_nodes") or [],
         "gt_files": item.get("target_files") or [],
+        "query_id": item.get("query_id"),
     }
 
 
@@ -80,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset",
         type=str,
         default="swebench_lite",
-        choices=["swebench_lite", "swebench_verified"],
+        choices=["swebench_lite", "swebench_verified", "swebench_multilingual"],
         help="Dataset to use when loading directly (default: swebench_lite)",
     )
     parser.add_argument(
@@ -169,6 +171,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Print the first N synthesized items to stdout.",
     )
+    parser.add_argument(
+        "--num-queries",
+        type=int,
+        default=1,
+        help="Number of queries to generate per instance.",
+    )
     return parser
 
 
@@ -203,11 +211,12 @@ def main() -> None:
                 )
     else:
         # Load directly from SWE-bench dataset
-        dataset_name = (
-            "princeton-nlp/SWE-bench_Lite"
-            if args.dataset == "swebench_lite"
-            else "princeton-nlp/SWE-bench_Verified"
-        )
+        dataset_name_map = {
+            "swebench_lite": "princeton-nlp/SWE-bench_Lite",
+            "swebench_verified": "princeton-nlp/SWE-bench_Verified",
+            "swebench_multilingual": "SWE-bench/SWE-bench_Multilingual",
+        }
+        dataset_name = dataset_name_map[args.dataset]
         filter_pattern = (
             f"^({args.instance_id})$" if args.instance_id else args.filter_instance
         )
@@ -219,7 +228,12 @@ def main() -> None:
             filter_pattern,
         )
 
-        dataset_obj = SwebenchDataset(
+        dataset_cls = (
+            SwebenchMultilingualDataset
+            if args.dataset == "swebench_multilingual"
+            else SwebenchDataset
+        )
+        dataset_obj = dataset_cls(
             dataset=dataset_name,
             split=args.split,
             filter_instance=filter_pattern,
@@ -275,6 +289,12 @@ def main() -> None:
         len(query_types),
         args.repeat_per_instance,
     )
+    if args.instance_id and args.output_file == "synthesized_queries.json":
+        output_file = f"synthesized_queries_{args.instance_id}.json"
+    else:
+        output_file = args.output_file
+    output_path = output_dir / output_file
+
     synthesized: List[Dict[str, Any]] = []
     for query_type in query_types:
         synthesizer = ClaudeQuerySynthesizer(
@@ -285,26 +305,44 @@ def main() -> None:
             query_type=query_type,
             sampling_seed=args.sampling_seed,
             behavioral_consensus_runs=args.behavioral_consensus_runs,
+            num_queries=args.num_queries,
         )
-        results = synthesizer.synthesize_queries(
-            expanded_inputs,
-            repo_root=args.repo_cache_dir,
-            cache_dir=str(cache_dir),
-        )
+        for inst_idx, instance in enumerate(expanded_inputs):
+            run_id = run_ids[inst_idx] if inst_idx < len(run_ids) else 1
+            for qi in range(args.num_queries):
+                try:
+                    result = synthesizer.synthesize_query(
+                        instance,
+                        repo_root=args.repo_cache_dir,
+                        cache_dir=str(cache_dir),
+                        query_index=qi,
+                    )
+                except Exception as exc:
+                    instance_id = instance.get("instance_id", "unknown")
+                    logger.error(
+                        "Failed to synthesize query for %s (q%d): %s",
+                        instance_id,
+                        qi + 1,
+                        exc,
+                        exc_info=True,
+                    )
+                    result = {
+                        "instance_id": instance_id,
+                        "repo": instance.get("repo"),
+                        "base_commit": instance.get("base_commit"),
+                        "error": str(exc),
+                    }
 
-        if args.repeat_per_instance > 1:
-            for result, run_id in zip(results, run_ids, strict=True):
-                result["run_id"] = run_id
-                if "query_id" in result:
-                    result["query_id"] = f"{result['query_id']}_run{run_id}"
+                if args.repeat_per_instance > 1:
+                    result["run_id"] = run_id
+                    if "query_id" in result:
+                        result["query_id"] = f"{result['query_id']}_run{run_id}"
 
-        synthesized.extend(results)
-
-    synthesized = [_to_compact_record(item) for item in synthesized]
-
-    output_path = output_dir / args.output_file
-    _dump_json(synthesized, output_path)
-    logger.info("Saved synthesized queries to %s", output_path)
+                synthesized.append(_to_compact_record(result))
+                _dump_json(synthesized, output_path)
+                logger.info(
+                    "Saved %d result(s) so far to %s", len(synthesized), output_path
+                )
 
     if args.print_sample:
         print(

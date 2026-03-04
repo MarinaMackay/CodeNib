@@ -28,6 +28,7 @@ from claude_agent_sdk import ClaudeAgentOptions, query
 from pydantic import BaseModel, Field, ValidationError
 
 from codeminer.dataset.swebench import SwebenchDataset
+from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.dataset.utils import (
     CodeLocation,
     GroundTruth,
@@ -174,6 +175,7 @@ class ClaudeQuerySynthesizer:
         max_block_chars_in_prompt: int = 1800,
         sampling_seed: Optional[int] = None,
         behavioral_consensus_runs: int = 3,
+        num_queries: int = 1,
     ) -> None:
         self.model = model
         self.max_turns = max_turns
@@ -190,6 +192,7 @@ class ClaudeQuerySynthesizer:
         self.max_block_chars_in_prompt = max_block_chars_in_prompt
         self.sampling_seed = sampling_seed
         self.behavioral_consensus_runs = max(1, behavioral_consensus_runs)
+        self.num_queries = max(1, num_queries)
 
         # Parse query type (difficulty_level is a deprecated alias).
         if difficulty_level is not None:
@@ -214,6 +217,7 @@ class ClaudeQuerySynthesizer:
         repo_root: Optional[str] = None,
         cache_dir: Optional[str] = None,
         ground_truth: Optional[Dict[str, Any]] = None,
+        query_index: int = 0,
     ) -> Dict[str, Any]:
         """
         Synthesize a query for a single instance.
@@ -232,7 +236,7 @@ class ClaudeQuerySynthesizer:
         )
         snapshot = self._snapshot_repo(repo_path)
         behavioral_context = self._prepare_behavioral_context(
-            instance, repo_path, cache_dir=cache_dir
+            instance, repo_path, cache_dir=cache_dir, query_index=query_index
         )
         if self.query_type == QueryType.BEHAVIORAL and behavioral_context is not None:
             result = self._generate_behavioral_question_with_consensus(
@@ -265,7 +269,7 @@ class ClaudeQuerySynthesizer:
             target_symbol_nodes = self._build_symbol_nodes_from_ground_truth(gt)
 
         instance_id = instance.get("instance_id", "unknown")
-        query_id = f"{instance_id}_{self.query_type.value}"
+        query_id = f"{instance_id}_{self.query_type.value}_q{query_index + 1}"
 
         return {
             "query_id": query_id,
@@ -301,6 +305,7 @@ class ClaudeQuerySynthesizer:
         repo_root: Optional[str] = None,
         cache_dir: Optional[str] = None,
         ground_truth: Optional[Dict[str, Any]] = None,
+        query_index: int = 0,
     ) -> Dict[str, Any]:
         """
         Synthesize a query for a single instance (async version).
@@ -319,7 +324,7 @@ class ClaudeQuerySynthesizer:
         )
         snapshot = self._snapshot_repo(repo_path)
         behavioral_context = self._prepare_behavioral_context(
-            instance, repo_path, cache_dir=cache_dir
+            instance, repo_path, cache_dir=cache_dir, query_index=query_index
         )
         if self.query_type == QueryType.BEHAVIORAL and behavioral_context is not None:
             result = await self._generate_behavioral_question_with_consensus_async(
@@ -352,7 +357,7 @@ class ClaudeQuerySynthesizer:
             target_symbol_nodes = self._build_symbol_nodes_from_ground_truth(gt)
 
         instance_id = instance.get("instance_id", "unknown")
-        query_id = f"{instance_id}_{self.query_type.value}"
+        query_id = f"{instance_id}_{self.query_type.value}_q{query_index + 1}"
 
         return {
             "query_id": query_id,
@@ -390,28 +395,33 @@ class ClaudeQuerySynthesizer:
     ) -> List[Dict[str, Any]]:
         results = []
         for instance in instances:
-            try:
-                results.append(
-                    self.synthesize_query(
-                        instance, repo_root=repo_root, cache_dir=cache_dir
+            for qi in range(self.num_queries):
+                try:
+                    results.append(
+                        self.synthesize_query(
+                            instance,
+                            repo_root=repo_root,
+                            cache_dir=cache_dir,
+                            query_index=qi,
+                        )
                     )
-                )
-            except Exception as exc:
-                instance_id = instance.get("instance_id", "unknown")
-                logger.error(
-                    "Failed to synthesize query for %s: %s",
-                    instance_id,
-                    exc,
-                    exc_info=True,
-                )
-                results.append(
-                    {
-                        "instance_id": instance_id,
-                        "repo": instance.get("repo"),
-                        "base_commit": instance.get("base_commit"),
-                        "error": str(exc),
-                    }
-                )
+                except Exception as exc:
+                    instance_id = instance.get("instance_id", "unknown")
+                    logger.error(
+                        "Failed to synthesize query for %s (q%d): %s",
+                        instance_id,
+                        qi + 1,
+                        exc,
+                        exc_info=True,
+                    )
+                    results.append(
+                        {
+                            "instance_id": instance_id,
+                            "repo": instance.get("repo"),
+                            "base_commit": instance.get("base_commit"),
+                            "error": str(exc),
+                        }
+                    )
         return results
 
     async def synthesize_queries_async(
@@ -423,28 +433,33 @@ class ClaudeQuerySynthesizer:
     ) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         for instance in instances:
-            try:
-                results.append(
-                    await self.synthesize_query_async(
-                        instance, repo_root=repo_root, cache_dir=cache_dir
+            for qi in range(self.num_queries):
+                try:
+                    results.append(
+                        await self.synthesize_query_async(
+                            instance,
+                            repo_root=repo_root,
+                            cache_dir=cache_dir,
+                            query_index=qi,
+                        )
                     )
-                )
-            except Exception as exc:
-                instance_id = instance.get("instance_id", "unknown")
-                logger.error(
-                    "Failed to synthesize query for %s: %s",
-                    instance_id,
-                    exc,
-                    exc_info=True,
-                )
-                results.append(
-                    {
-                        "instance_id": instance_id,
-                        "repo": instance.get("repo"),
-                        "base_commit": instance.get("base_commit"),
-                        "error": str(exc),
-                    }
-                )
+                except Exception as exc:
+                    instance_id = instance.get("instance_id", "unknown")
+                    logger.error(
+                        "Failed to synthesize query for %s (q%d): %s",
+                        instance_id,
+                        qi + 1,
+                        exc,
+                        exc_info=True,
+                    )
+                    results.append(
+                        {
+                            "instance_id": instance_id,
+                            "repo": instance.get("repo"),
+                            "base_commit": instance.get("base_commit"),
+                            "error": str(exc),
+                        }
+                    )
         return results
 
     def _checkout_instance(
@@ -454,7 +469,12 @@ class ClaudeQuerySynthesizer:
         repo_root: Optional[str] = None,
         cache_dir: Optional[str] = None,
     ) -> str:
-        dataset = SwebenchDataset(root=cache_dir, repo_root=repo_root, log=False)
+        dataset_cls = (
+            SwebenchMultilingualDataset
+            if instance.get("language_group")
+            else SwebenchDataset
+        )
+        dataset = dataset_cls(root=cache_dir, repo_root=repo_root, log=False)
         dataset.process_instance(instance, repo_root=repo_root)
         return dataset.get_repo_path(instance, repo_root=repo_root)
 
@@ -492,6 +512,7 @@ class ClaudeQuerySynthesizer:
         repo_path: str,
         *,
         cache_dir: Optional[str] = None,
+        query_index: int = 0,
     ) -> Optional[BehavioralContext]:
         graph = self._load_or_build_code_graph(
             instance=instance,
@@ -505,7 +526,7 @@ class ClaudeQuerySynthesizer:
         if not candidates:
             return None
 
-        core_block = self._pick_core_block(candidates, graph)
+        core_block = self._pick_core_block(candidates, graph, query_index=query_index)
         neighborhood = self._collect_neighborhood_blocks(
             graph=graph,
             core_block=core_block,
@@ -629,7 +650,7 @@ class ClaudeQuerySynthesizer:
         return sorted(blocks, key=lambda blk: blk.char_count, reverse=True)
 
     def _pick_core_block(
-        self, blocks: List[SampledCodeBlock], code_graph
+        self, blocks: List[SampledCodeBlock], code_graph, *, query_index: int = 0
     ) -> SampledCodeBlock:
         graph = code_graph.get_graph()
         scored = sorted(
@@ -637,7 +658,7 @@ class ClaudeQuerySynthesizer:
             key=lambda blk: blk.char_count + 20 * graph.degree(blk.node_id),
             reverse=True,
         )
-        return scored[0]
+        return scored[min(query_index, len(scored) - 1)]
 
     def _collect_neighborhood_blocks(
         self,
