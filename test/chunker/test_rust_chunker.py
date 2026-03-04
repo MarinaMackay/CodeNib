@@ -34,6 +34,13 @@ def test_rust_chunker_skips_methods_in_level_one(arrayvec_repo):
     chunk_types = {chunk.chunk_type for chunk in chunks}
     assert "method" not in chunk_types
     assert {"function", "struct", "impl"}.issubset(chunk_types)
+    # Top-level const/static/type declarations should be present when the
+    # repo uses them (arrayvec defines type aliases and constants).
+    assert chunk_types & {
+        "const",
+        "static",
+        "type",
+    }, f"Expected at least one of const/static/type in L1 chunk types, got {chunk_types}"
 
 
 def test_rust_chunker_includes_methods_in_level_two(arrayvec_repo):

@@ -73,6 +73,19 @@ class GoCodeChunker(BaseCodeChunker):
                     self._methods_by_type.setdefault(receiver_type, []).append(
                         (child, full_name, "method")
                     )
+                continue
+
+            if child.type == "var_declaration":
+                name = self._extract_var_const_name(child, "var_spec")
+                if name:
+                    definitions.append((child, name, "var"))
+                continue
+
+            if child.type == "const_declaration":
+                name = self._extract_var_const_name(child, "const_spec")
+                if name:
+                    definitions.append((child, name, "const"))
+                continue
 
         definitions.sort(key=lambda entry: entry[0].start_point[0])
         return definitions
@@ -84,6 +97,8 @@ class GoCodeChunker(BaseCodeChunker):
             "type": ("field_declaration_list", "method_spec_list"),
             "struct": ("field_declaration_list",),
             "interface": ("method_spec_list",),
+            "var": (),
+            "const": (),
         }.get(def_type, ("block",))
         return self._extract_signature_text_default(node, stop_types, code_content)
 
@@ -168,6 +183,21 @@ class GoCodeChunker(BaseCodeChunker):
             return None
         # Receiver list typically looks like "(r *Type)" -> use trailing type token.
         return candidates[-1]
+
+    def _extract_var_const_name(self, node, spec_type: str) -> Optional[str]:
+        """Extract name(s) from a var_declaration or const_declaration node."""
+        names = []
+        for child in node.children:
+            if child.type == spec_type:
+                for part in child.children:
+                    if part.type == "identifier":
+                        names.append(part.text.decode("utf-8"))
+                        break
+        if not names:
+            return None
+        if len(names) <= 3:
+            return ", ".join(names)
+        return ", ".join(names[:3]) + ", ..."
 
     def _get_child_definitions(self, node, def_type: str):
         if def_type not in ("type", "struct", "interface"):

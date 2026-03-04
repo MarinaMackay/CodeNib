@@ -57,6 +57,18 @@ class RustCodeChunker(BaseCodeChunker):
                     definitions.append((child, impl_label, "impl"))
                 if include_methods:
                     definitions.extend(self._find_impl_methods(child, target_name))
+            elif child.type == "const_item":
+                name = self._extract_const_static_name(child)
+                if name:
+                    definitions.append((child, name, "const"))
+            elif child.type == "static_item":
+                name = self._extract_const_static_name(child)
+                if name:
+                    definitions.append((child, name, "static"))
+            elif child.type == "type_item":
+                name = self._extract_type_name(child)
+                if name:
+                    definitions.append((child, name, "type"))
 
         definitions.sort(key=lambda entry: entry[0].start_point[0])
         return definitions
@@ -72,6 +84,9 @@ class RustCodeChunker(BaseCodeChunker):
             "enum": ("enum_variant_list", "field_declaration_list"),
             "trait": ("declaration_list",),
             "impl": ("declaration_list",),
+            "const": (),
+            "static": (),
+            "type": (),
         }.get(def_type, ("block",))
         return self._extract_signature_text_default(node, stop_types, code_content)
 
@@ -152,6 +167,13 @@ class RustCodeChunker(BaseCodeChunker):
                                 full_name = method_name
                             methods.append((decl, full_name, "method"))
         return methods
+
+    def _extract_const_static_name(self, node) -> Optional[str]:
+        """Extract identifier from const_item or static_item."""
+        for child in node.children:
+            if child.type == "identifier":
+                return child.text.decode("utf-8")
+        return None
 
     def _extract_class_name(self, node) -> Optional[str]:
         # Rust does not have traditional classes; reuse struct/enum name extraction.
