@@ -48,6 +48,7 @@ class SamplingConfig:
     difficulty_model: str = "opus"
     gt_locator_work_dir: Optional[Path] = None
     total_instances: Optional[int] = None
+    max_gt_code_blocks: int = 10
 
 
 @dataclass
@@ -396,6 +397,7 @@ def run_gt_locator_filter(
     *,
     work_dir: Path,
     cache_path: Path,
+    max_gt_code_blocks: int = 10,
 ) -> List[Dict[str, Any]]:
     """Run gt_locator on instances from selected repos; exclude those with added symbols.
 
@@ -404,10 +406,12 @@ def run_gt_locator_filter(
         selected_repos: Dict from select_representative_repos (language_group -> list).
         work_dir: Directory for GTLocator repo operations (clone, checkout).
         cache_path: Path to gt_locator_cache.json.
+        max_gt_code_blocks: Maximum number of GT code blocks allowed per instance.
+            Instances exceeding this limit are excluded. Default: 10.
 
     Returns:
         Filtered list with gt_locator fields added. Instances that have any
-        ``symbols_added`` or a gt_locator error are excluded.
+        ``symbols_added``, a gt_locator error, or too many code blocks are excluded.
     """
     from codeminer.dataset.gt_locate import GTLocator
 
@@ -477,6 +481,8 @@ def run_gt_locator_filter(
     filtered: List[Dict[str, Any]] = []
     excluded_added = 0
     excluded_error = 0
+    excluded_empty_blocks = 0
+    excluded_too_many_blocks = 0
     for inst in candidates:
         iid = inst["instance_id"]
         gt = cache.get(iid, {})
@@ -493,6 +499,22 @@ def run_gt_locator_filter(
             logger.debug("Excluding %s: gt_locator error: %s", iid, gt["error"])
             continue
 
+        n_blocks = len(gt.get("code_blocks", []))
+        if n_blocks == 0:
+            excluded_empty_blocks += 1
+            logger.debug("Excluding %s: empty gt_code_blocks", iid)
+            continue
+
+        if n_blocks > max_gt_code_blocks:
+            excluded_too_many_blocks += 1
+            logger.debug(
+                "Excluding %s: %d gt_code_blocks exceeds max %d",
+                iid,
+                n_blocks,
+                max_gt_code_blocks,
+            )
+            continue
+
         enriched = dict(inst)
         enriched["gt_symbols_modified"] = gt.get("symbols_modified", [])
         enriched["gt_symbols_deleted"] = gt.get("symbols_deleted", [])
@@ -502,10 +524,13 @@ def run_gt_locator_filter(
 
     logger.info(
         "gt_locator filter: %d passed, %d excluded (added), %d excluded (error), "
-        "from %d candidates",
+        "%d excluded (empty blocks), %d excluded (>%d code_blocks), from %d candidates",
         len(filtered),
         excluded_added,
         excluded_error,
+        excluded_empty_blocks,
+        excluded_too_many_blocks,
+        max_gt_code_blocks,
         len(candidates),
     )
     return filtered
@@ -681,6 +706,7 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
         selected_repos,
         work_dir=gt_work_dir,
         cache_path=_output_dir / "gt_locator_cache.json",
+        max_gt_code_blocks=config.max_gt_code_blocks,
     )
 
     selected_instances = select_representative_instances(
