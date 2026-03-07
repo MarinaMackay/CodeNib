@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set
 
 import faiss
+import numpy as np
 from langchain_community.docstore import InMemoryDocstore
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
@@ -427,6 +428,92 @@ class CodeVectorStore:
             f"(masked={bool(mask_node_ids)})"
         )
         return results
+
+    def search_within_ids(
+        self,
+        query: str,
+        mask_node_ids: Set[str],
+        top_k: int = 10,
+        level: Level = "l2",
+    ) -> List[NodeInfo]:
+        """Search only within a restricted set of node IDs.
+
+        Instead of searching the full FAISS index globally and filtering
+        afterwards, this method restricts the search space *before* computing
+        similarity.  It reconstructs stored vectors for matching documents
+        and computes similarity against the query embedding directly.
+
+        Args:
+            query: Search query text.
+            mask_node_ids: Set of node_id / node_name values to restrict
+                search to.
+            top_k: Number of top results to return.
+            level: Index level to search.
+
+        Returns:
+            List of NodeInfo objects sorted by similarity score.
+        """
+        vector_store, _ = self._get_store_and_docs(level)
+        if vector_store is None:
+            logger.warning(f"No {level} vector store available.")
+            return []
+
+        # Find FAISS internal indices whose node_id or name is in mask set
+        matched: list[tuple[int, Document]] = []
+        for faiss_idx, docstore_id in vector_store.index_to_docstore_id.items():
+            doc = vector_store.docstore.search(docstore_id)
+            if not doc or not hasattr(doc, "metadata"):
+                continue
+            meta = doc.metadata
+            if meta.get("node_id", "") in mask_node_ids or meta.get(
+                "name", ""
+            ) in mask_node_ids:
+                matched.append((faiss_idx, doc))
+
+        if not matched:
+            logger.debug("search_within_ids: no matching documents found")
+            return []
+
+        # Encode query
+        query_vec = np.array(
+            self.embedding.embed_query(query), dtype=np.float32
+        )
+
+        # Reconstruct stored vectors and compute similarity
+        results: list[NodeInfo] = []
+        for faiss_idx, doc in matched:
+            vec = vector_store.index.reconstruct(int(faiss_idx))
+            if self.index_metric == "ip":
+                score = float(np.dot(query_vec, vec))
+            else:  # l2 — lower is better
+                score = float(np.sum((query_vec - vec) ** 2))
+
+            metadata = doc.metadata
+            results.append(
+                NodeInfo(
+                    node_name=metadata.get("name", "unknown"),
+                    type=metadata.get("chunk_type", "unknown"),
+                    file=metadata.get("file", ""),
+                    node_id=metadata.get("node_id", ""),
+                    start_line=metadata.get("start_line", 0),
+                    end_line=metadata.get("end_line", 0),
+                    score=score,
+                    content=doc.page_content,
+                )
+            )
+
+        # Sort: ip → higher is better; l2 → lower is better
+        results.sort(
+            key=lambda r: r.score,
+            reverse=(self.index_metric == "ip"),
+        )
+
+        logger.debug(
+            "search_within_ids: %d matched, returning top %d",
+            len(results),
+            min(top_k, len(results)),
+        )
+        return results[:top_k]
 
     def hierarchical_search(
         self,
