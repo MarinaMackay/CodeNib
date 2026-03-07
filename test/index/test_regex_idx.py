@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from codeminer import RegexNodeIndex
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 HTTPIE_REPO_URL = "https://github.com/httpie/cli.git"
 HTTPIE_REPO_PATH = Path("/tmp/httpie-cli")
@@ -34,8 +34,8 @@ def test_regex_index_basic(httpie_cli_repo=None, tmp_path_factory=None):
     print(f"Testing with httpie repo at: {repo_path}")
     print(f"Output path: {output_path}")
 
-    # Build CodeGraph using SCIPIndexer
-    indexer = SCIPIndexer(str(repo_path), output_dir=str(output_path))
+    # Build CodeGraph using LSIndexer
+    indexer = LSIndexer(str(repo_path), output_dir=str(output_path))
     code_graph = indexer.run_pipeline(
         project_name="httpie_cli_regex_test",
         skip_level="graph",  # Use cached graph if available

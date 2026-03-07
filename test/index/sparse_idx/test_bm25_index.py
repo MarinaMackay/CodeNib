@@ -6,7 +6,7 @@ import pytest
 
 from codeminer.code_chunker import CodeChunker
 from codeminer.index import BM25CodeIndexer
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 
 @pytest.fixture(scope="module")
@@ -27,14 +27,14 @@ def samplemod_repo():
 
 @pytest.fixture(scope="module")
 def code_graph(samplemod_repo):
-    """Create a code graph from the samplemod repository using SCIPIndexer."""
+    """Create a code graph from the samplemod repository using LSIndexer."""
     current_dir = Path(os.path.dirname(os.path.abspath(__file__)))
     output_file = str(current_dir / "samplemod_index.json")
     # Use a directory under home to avoid permission issues
     output_dir = Path.home() / ".codeminer" / "repos" / "scip_output"
 
     # Create a new indexer for the samplemod repo
-    repo_indexer = SCIPIndexer(samplemod_repo, output_dir=output_dir)
+    repo_indexer = LSIndexer(samplemod_repo, output_dir=output_dir)
 
     # Run the indexing pipeline
     graph = repo_indexer.run_pipeline(

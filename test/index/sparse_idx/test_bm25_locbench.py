@@ -3,7 +3,7 @@ from pathlib import Path
 
 from codeminer.dataset.locbench import LocbenchDataset
 from codeminer.index import BM25CodeIndexer
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 args_dict = {
     "model": "gpt-4o",
@@ -31,7 +31,7 @@ def test_bm25_index():
         output_path = str(Path.home()) + "/.codeminer/" + instance["instance_id"]
 
         # setup codegraph
-        repo_indexer = SCIPIndexer(
+        repo_indexer = LSIndexer(
             repo_path, output_dir=output_path, exclude_patterns=[exclude_pattern]
         )
 

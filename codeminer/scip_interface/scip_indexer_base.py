@@ -45,11 +45,11 @@ class SCIPIndexerBase(ABC):
         self.project_root = Path(project_root).absolute()
         self.language = language
 
-        # Set output directory to ~/.codeminer/project_name by default
+        # Set output directory to /tmp/project_name by default
         if output_dir:
             self.output_dir = Path(output_dir).absolute()
         else:
-            self.output_dir = Path.home() / ".codeminer" / self.project_root.name
+            self.output_dir = Path("/tmp") / self.project_root.name
 
         # Create output directory if it doesn't exist
         os.makedirs(self.output_dir, exist_ok=True)
@@ -351,11 +351,12 @@ class SCIPIndexerBase(ABC):
         Clear cache files at different levels.
 
         Args:
-            level: Cache level to clear
-                - 'graph': Keep only graph.pkl, remove index.decoded and index.scip
-                - 'decode': Keep only index.decoded, remove graph.pkl and index.scip
-                - 'raw': Keep only index.scip, remove graph.pkl and index.decoded
-                - 'all': Remove all cache files (default)
+            level: Preserve cache up to this pipeline stage, remove above.
+                Pipeline: raw (index.scip) → decode (index.decoded) → graph (graph.pkl)
+                - 'graph': keep everything (raw + decoded + graph)
+                - 'decode': keep raw + decoded, remove graph
+                - 'raw': keep raw, remove decoded + graph
+                - 'all': remove all cache files (default)
 
         Returns:
             bool: True if cache clearing was successful, False otherwise
@@ -364,14 +365,14 @@ class SCIPIndexerBase(ABC):
             files_to_remove = []
 
             if level == "graph":
-                files_to_remove = [self.index_file, self.decoded_file]
-                logger.info("Clearing cache: keeping graph.pkl only")
+                files_to_remove = []
+                logger.info("Clearing cache: keeping up to graph (nothing to remove)")
             elif level == "decode":
-                files_to_remove = [self.index_file, self.graph_file]
-                logger.info("Clearing cache: keeping index.decoded only")
+                files_to_remove = [self.graph_file]
+                logger.info("Clearing cache: keeping up to decode, removing graph")
             elif level == "raw":
                 files_to_remove = [self.decoded_file, self.graph_file]
-                logger.info("Clearing cache: keeping index.scip only")
+                logger.info("Clearing cache: keeping raw, removing decoded + graph")
             elif level == "all":
                 files_to_remove = [self.index_file, self.decoded_file, self.graph_file]
                 logger.info("Clearing all cache files")

@@ -3,25 +3,9 @@
 Regression tests for the Rust code chunker.
 """
 
-import subprocess
 from pathlib import Path
 
-import pytest
-
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
-
-ARRAYVEC_URL = "https://github.com/bluss/arrayvec.git"
-ARRAYVEC_PATH = Path("/tmp/arrayvec-chunker")
-
-
-@pytest.fixture(scope="module")
-def arrayvec_repo():
-    if not ARRAYVEC_PATH.exists():
-        subprocess.run(
-            ["git", "clone", "--depth", "1", ARRAYVEC_URL, str(ARRAYVEC_PATH)],
-            check=True,
-        )
-    return ARRAYVEC_PATH
 
 
 def _collect_chunks(repo_root: Path, chunk_depth: int):

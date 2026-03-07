@@ -4,7 +4,7 @@ from pathlib import Path
 from codeminer.code_chunker import CodeChunker
 from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.index import BM25CodeIndexer
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 args_dict = {
     "model": "gpt-4o",
@@ -31,7 +31,7 @@ def test_bm25_transgraph_compatibility():
         output_path = str(Path.home()) + "/.codeminer/" + instance["instance_id"]
 
         # setup codegraph
-        repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
+        repo_indexer = LSIndexer(repo_path, output_dir=output_path)
 
         # Run the indexing pipeline
         graph = repo_indexer.run_pipeline(
