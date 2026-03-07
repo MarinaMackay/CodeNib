@@ -2,7 +2,7 @@ import argparse
 from pathlib import Path
 
 from codeminer.dataset.locbench import LocbenchDataset
-from codeminer.graph.transverse_graph import traverse_tree_structure
+from codeminer.graph.traverse_graph import traverse_tree_structure
 from codeminer.scip_interface import SCIPIndexer
 
 args_dict = {

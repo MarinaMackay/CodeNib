@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from codeminer.dataset.swebench import SwebenchDataset
-from codeminer.graph.transverse_graph import traverse_tree_structure
+from codeminer.graph.traverse_graph import traverse_tree_structure
 from codeminer.scip_interface import SCIPIndexer
 from codeminer.types import (
     NODE_TYPE_CLASS,

@@ -1,9 +1,9 @@
-"""Test script for transverse_graph functionality using the httpie CLI repository."""
+"""Test script for traverse_graph functionality using the httpie CLI repository."""
 
 import subprocess
 from pathlib import Path
 
-from codeminer.graph.transverse_graph import (
+from codeminer.graph.traverse_graph import (
     RepoDependencySearcher,
     traverse_tree_structure,
 )
@@ -211,7 +211,7 @@ def test_transgraph_simple(httpie_cli_repo=None, tmp_path_factory=None):
         forward_nodes, forward_edges = dependency_searcher.get_neighbors(
             test_file, direction="forward", ntype_filter=[NODE_TYPE_SYMBOL]
         )
-        print(f"Forward neighbors of '{test_file}': {len(forward_nodes)} nodes")
+        print(f"Forward neighbors of {test_file!r}: {len(forward_nodes)} nodes")
         if forward_nodes:
             print("Forward neighbors:")
             for node in forward_nodes[:5]:
@@ -231,7 +231,7 @@ def test_transgraph_simple(httpie_cli_repo=None, tmp_path_factory=None):
         backward_nodes, backward_edges = dependency_searcher.get_neighbors(
             test_symbol, direction="backward", ntype_filter=[NODE_TYPE_FILE]
         )
-        print(f"\nBackward neighbors of '{test_symbol}': {len(backward_nodes)} nodes")
+        print(f"\nBackward neighbors of {test_symbol!r}: {len(backward_nodes)} nodes")
         if backward_nodes:
             print("Backward neighbors:")
             for node in backward_nodes:
@@ -250,7 +250,7 @@ def test_transgraph_simple(httpie_cli_repo=None, tmp_path_factory=None):
         contain_nodes, contain_edges = dependency_searcher.get_neighbors(
             test_file, direction="forward", etype_filter=[EDGE_TYPE_CONTAIN]
         )
-        print(f"Nodes connected via '{EDGE_TYPE_CONTAIN}' edges: {len(contain_nodes)}")
+        print(f"Nodes connected via {EDGE_TYPE_CONTAIN!r} edges: {len(contain_nodes)}")
         if contain_nodes:
             for node in contain_nodes[:3]:
                 print(f"  - {node}")
