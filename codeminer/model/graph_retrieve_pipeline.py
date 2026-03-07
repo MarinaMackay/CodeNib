@@ -136,7 +136,7 @@ class GraphRetrievePipeline:
                 len(expanded_nodes), self.k_hop,
             )
 
-        # Stage 3 (optional): Embedding rerank
+        # Stage 3 (optional): Embedding rerank within expanded set only
         if self.use_embedding_rerank and expanded_nodes and self.vector_store:
             mask_ids: set = set()
             for node in expanded_nodes:
@@ -144,13 +144,12 @@ class GraphRetrievePipeline:
                     mask_ids.add(node.node_name)
                 if node.node_id:
                     mask_ids.add(node.node_id)
-            # Search with a large k so FAISS retrieves enough candidates
-            # before mask filtering — expanded nodes may not be in global top-k.
-            search_k = max(self.stage2_topk * 10, len(mask_ids) * 3)
-            reranked = self.vector_store.search(
-                query, top_k=search_k, mask_node_ids=mask_ids
+            # Search ONLY within the graph-expanded node set — do NOT search
+            # the full FAISS index globally.  This is the key design: graph
+            # expansion reduces the corpus, then embedding ranks within it.
+            reranked = self.vector_store.search_within_ids(
+                query, mask_node_ids=mask_ids, top_k=self.stage2_topk
             )
-            reranked = reranked[: self.stage2_topk]
             results = [
                 QueriedNode(
                     node_name=n.node_name,
