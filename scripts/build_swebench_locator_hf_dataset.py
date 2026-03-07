@@ -51,6 +51,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional path for parquet export.",
     )
+    parser.add_argument(
+        "--push-to-hub",
+        type=str,
+        default=None,
+        help="HuggingFace Hub repo ID to push to (e.g. 'org/dataset-name').",
+    )
+    parser.add_argument(
+        "--private",
+        action="store_true",
+        help="Make the Hub dataset private (only with --push-to-hub).",
+    )
     return parser
 
 
@@ -104,6 +115,13 @@ def main() -> None:
         parquet_path.parent.mkdir(parents=True, exist_ok=True)
         ds.to_parquet(str(parquet_path))
         logger.info("Saved parquet export to %s", parquet_path)
+
+    if args.push_to_hub:
+        ds_dict = datasets.DatasetDict({args.split: ds})
+        ds_dict.push_to_hub(args.push_to_hub, private=args.private)
+        logger.info(
+            "Pushed dataset to https://huggingface.co/datasets/%s", args.push_to_hub
+        )
 
     # Summary
     by_lang = {}
