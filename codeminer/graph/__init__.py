@@ -2,7 +2,7 @@
 
 from .code_graph import CodeGraph
 from .roi_subgraph import ROISubgraph
-from .transverse_graph import traverse_tree_structure
+from .traverse_graph import traverse_tree_structure
 
 __all__ = [
     "CodeGraph",

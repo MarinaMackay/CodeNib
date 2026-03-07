@@ -7,7 +7,7 @@ from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
 from ..graph.code_graph import CodeGraph
-from ..graph.transverse_graph import traverse_tree_structure
+from ..graph.traverse_graph import traverse_tree_structure
 from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
 from ..log_utils import get_logger
 from ..ls_router import LSIndexer
@@ -335,10 +335,9 @@ class AgentlessPipeline:
                 ) from exc
 
             if not node_data_list:
-                raise ValueError(
-                    f"Error getting code for {symbol_node_id}: {exc}"
-                ) from exc
+                raise ValueError(f"No code data returned for {symbol_node_id}")
 
+            code_content = node_data_list[0].get("code", "")
             code_segments.append(
                 f"### {symbol_node_id} ###\n```\n{code_content}\n```\n"
             )

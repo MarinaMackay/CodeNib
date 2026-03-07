@@ -29,6 +29,92 @@ class ROISubgraph:
         self.code_graph = code_graph
         self.full_graph = code_graph.get_graph()
 
+    def expand_ppr(
+        self,
+        node_names: List[str],
+        top_k: int = 50,
+        damping: float = 0.85,
+        filter_tests: bool = True,
+    ) -> List[NodeInfo]:
+        """Expand seed nodes using Personalized PageRank.
+
+        Runs PPR on the full graph with seed nodes as the personalization
+        vector, then returns the top-k nodes ranked by PPR score.
+
+        Args:
+            node_names: Seed node names (e.g. from BM25).
+            top_k: Maximum number of nodes to return.
+            damping: PPR damping factor (0–1). Higher = more global.
+            filter_tests: Whether to exclude test files.
+
+        Returns:
+            List of NodeInfo objects sorted by PPR score (descending).
+        """
+        n_vertices = self.full_graph.vcount()
+        if n_vertices == 0:
+            return []
+
+        # Build personalization vector: uniform weight on seeds, 0 elsewhere
+        reset = [0.0] * n_vertices
+        seed_count = 0
+        for name in node_names:
+            vid = self.code_graph.name_to_vertex.get(name)
+            if vid is not None:
+                reset[vid] = 1.0
+                seed_count += 1
+            else:
+                logger.warning("PPR seed '%s' not found in graph", name)
+
+        if seed_count == 0:
+            logger.warning("No valid PPR seeds — returning empty results")
+            return []
+
+        # Run Personalized PageRank
+        scores = self.full_graph.personalized_pagerank(
+            directed=True, damping=damping, reset=reset
+        )
+
+        # Pair each vertex with its PPR score and sort descending
+        scored = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+
+        results: List[NodeInfo] = []
+        for vid, ppr_score in scored:
+            if len(results) >= top_k:
+                break
+
+            node_attrs = self.get_node_info_by_id(vid)
+
+            # Filter test files
+            if filter_tests and node_attrs.file and is_test_file(node_attrs.file):
+                continue
+
+            # Skip zero-span or missing line info
+            if (
+                node_attrs.start_line is None
+                or node_attrs.end_line is None
+                or node_attrs.start_line == node_attrs.end_line
+            ):
+                continue
+
+            content = self.get_node_content(vid) or ""
+            results.append(
+                NodeInfo(
+                    node_name=node_attrs.node_name,
+                    type=node_attrs.type,
+                    file=node_attrs.file,
+                    start_line=node_attrs.start_line,
+                    end_line=node_attrs.end_line,
+                    score=ppr_score,
+                    content=content,
+                )
+            )
+
+        logger.info(
+            "PPR expansion: %d seeds -> %d nodes (damping=%.2f)",
+            seed_count, len(results), damping,
+        )
+        return results
+
     def extract_subgraph(
         self,
         node_names: List[str],

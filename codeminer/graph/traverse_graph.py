@@ -1,4 +1,5 @@
-# this file is revised from https://github.com/All-Hands-AI/openhands-aci/blob/main/openhands_aci/indexing/locagent/repo/dependency_graph/traverse_graph.py
+# Revised from:
+# https://github.com/All-Hands-AI/openhands-aci/blob/main/openhands_aci/indexing/locagent/repo/dependency_graph/traverse_graph.py
 
 from typing import List, Optional
 
@@ -107,7 +108,7 @@ def traverse_tree_structure(
         hops = 20
 
     if root not in code_graph.name_to_vertex:
-        return f"Node '{root}' not found in graph"
+        return f"Node {root!r} not found in graph"
 
     rtn_str = []
     traversed_nodes = set()
