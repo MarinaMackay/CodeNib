@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         type=str,
         required=True,
-        help="Output directory for HuggingFace DatasetDict.save_to_disk().",
+        help="Output directory for the dataset (Parquet format).",
     )
     parser.add_argument(
         "--output-jsonl",
@@ -98,12 +98,14 @@ def main() -> None:
     if not rows:
         raise ValueError("No instances found in input file.")
 
-    # Save HF DatasetDict
-    output_dir = Path(args.output_dir).expanduser()
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
     ds = datasets.Dataset.from_list(rows)
-    datasets.DatasetDict({args.split: ds}).save_to_disk(str(output_dir))
-    logger.info("Saved HF dataset (%d rows) to %s", len(ds), output_dir)
+
+    # Save Parquet (default) — HF Hub native format
+    output_dir = Path(args.output_dir).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = output_dir / f"{args.split}-00000-of-00001.parquet"
+    ds.to_parquet(str(parquet_path))
+    logger.info("Saved Parquet (%d rows) to %s", len(ds), parquet_path)
 
     if args.output_jsonl:
         jsonl_path = Path(args.output_jsonl).expanduser()
@@ -111,10 +113,10 @@ def main() -> None:
         logger.info("Saved JSONL export to %s", jsonl_path)
 
     if args.output_parquet:
-        parquet_path = Path(args.output_parquet).expanduser()
-        parquet_path.parent.mkdir(parents=True, exist_ok=True)
-        ds.to_parquet(str(parquet_path))
-        logger.info("Saved parquet export to %s", parquet_path)
+        extra_parquet = Path(args.output_parquet).expanduser()
+        extra_parquet.parent.mkdir(parents=True, exist_ok=True)
+        ds.to_parquet(str(extra_parquet))
+        logger.info("Saved extra Parquet export to %s", extra_parquet)
 
     if args.push_to_hub:
         ds_dict = datasets.DatasetDict({args.split: ds})
