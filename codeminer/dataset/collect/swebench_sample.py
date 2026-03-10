@@ -46,6 +46,9 @@ class SamplingConfig:
     output_dir: Optional[Path] = None
     write_outputs: bool = True
     difficulty_model: str = "opus"
+    gt_locator_work_dir: Optional[Path] = None
+    total_instances: Optional[int] = None
+    max_gt_code_blocks: int = 10
 
 
 @dataclass
@@ -54,6 +57,7 @@ class SamplingResults:
     selected_instances: List[Dict[str, Any]]
     repo_sizes: List[Dict[str, Any]]
     instance_difficulties: List[Dict[str, Any]]
+    gt_filtered_instances: List[Dict[str, Any]]
     output_dir: Optional[Path]
 
 
@@ -191,6 +195,10 @@ def _build_selected_entry(
         "changed_loc": inst["changed_loc"],
         "difficulty_level": level,
         "total_in_repo": total,
+        "gt_symbols_modified": inst.get("gt_symbols_modified", []),
+        "gt_symbols_deleted": inst.get("gt_symbols_deleted", []),
+        "gt_target_files": inst.get("gt_target_files", []),
+        "gt_code_blocks": inst.get("gt_code_blocks", []),
     }
     return entry
 
@@ -220,14 +228,77 @@ def _select_by_agent_difficulty(
     return selected
 
 
+def _compute_repo_quotas(
+    instances_by_repo: Dict[str, List[Dict[str, Any]]],
+    selected_repos: Dict[str, List[Dict[str, Any]]],
+    base_per_repo: int,
+    total_target: int,
+) -> Dict[str, int]:
+    """Compute per-repo instance quotas to hit a total target.
+
+    Starts with ``base_per_repo`` per repo, then distributes any deficit
+    round-robin across language groups from repos with surplus.
+    """
+    available = {repo: len(insts) for repo, insts in instances_by_repo.items()}
+    quotas = {repo: min(base_per_repo, avail) for repo, avail in available.items()}
+
+    total_base = sum(quotas.values())
+    total_available = sum(available.values())
+
+    if total_target > total_available:
+        logger.warning(
+            "total_instances=%d exceeds available instances (%d); "
+            "using all available",
+            total_target,
+            total_available,
+        )
+        return available
+
+    deficit = total_target - total_base
+    if deficit <= 0:
+        return quotas
+
+    # Build round-robin order: cycle through language groups for even spread.
+    repo_to_group: Dict[str, str] = {}
+    for group, repos in selected_repos.items():
+        for repo_info in repos:
+            repo_to_group[repo_info["repo"]] = group
+
+    groups = sorted(selected_repos.keys())
+    repos_by_group: Dict[str, List[str]] = defaultdict(list)
+    for repo, group in repo_to_group.items():
+        if available[repo] > quotas[repo]:
+            repos_by_group[group].append(repo)
+
+    while deficit > 0:
+        made_progress = False
+        for group in groups:
+            for repo in repos_by_group.get(group, []):
+                if deficit <= 0:
+                    break
+                if quotas[repo] < available[repo]:
+                    quotas[repo] += 1
+                    deficit -= 1
+                    made_progress = True
+            if deficit <= 0:
+                break
+        if not made_progress:
+            break
+
+    return quotas
+
+
 def select_representative_instances(
     instance_difficulties: List[Dict[str, Any]],
     selected_repos: Dict[str, List[Dict[str, Any]]],
     target_count: int = 3,
+    total_instances: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Select representative instances within each selected repo.
 
     Uses agent-classified difficulty levels to pick diverse instances.
+    When *total_instances* is set, adaptively allocates extra instances
+    from data-rich repos to hit the target total.
     """
     selected_repo_names = {
         repo_info["repo"] for repos in selected_repos.values() for repo_info in repos
@@ -238,10 +309,19 @@ def select_representative_instances(
         if inst["repo"] in selected_repo_names:
             instances_by_repo[inst["repo"]].append(inst)
 
+    if total_instances is not None:
+        quotas = _compute_repo_quotas(
+            instances_by_repo, selected_repos, target_count, total_instances
+        )
+    else:
+        quotas = {repo: target_count for repo in instances_by_repo}
+
     selected_instances: List[Dict[str, Any]] = []
 
-    for _repo, instances in instances_by_repo.items():
-        selected_instances.extend(_select_by_agent_difficulty(instances, target_count))
+    for repo, instances in instances_by_repo.items():
+        selected_instances.extend(
+            _select_by_agent_difficulty(instances, quotas.get(repo, target_count))
+        )
 
     return selected_instances
 
@@ -289,6 +369,171 @@ def filter_repos_by_instance_count(
         for repo, info in repo_info.items()
         if len(info["instances"]) >= min_instances
     }
+
+
+def _load_gt_cache(cache_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Load gt_locator cache from disk."""
+    if not cache_path.exists():
+        return {}
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Failed to load gt_locator cache: %s", exc)
+        return {}
+
+
+def _save_gt_cache(cache: Dict[str, Dict[str, Any]], cache_path: Path) -> None:
+    """Save gt_locator cache to disk."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2, ensure_ascii=False)
+    logger.info("Saved %d gt_locator results to cache", len(cache))
+
+
+def run_gt_locator_filter(
+    instance_difficulties: List[Dict[str, Any]],
+    selected_repos: Dict[str, List[Dict[str, Any]]],
+    *,
+    work_dir: Path,
+    cache_path: Path,
+    max_gt_code_blocks: int = 10,
+) -> List[Dict[str, Any]]:
+    """Run gt_locator on instances from selected repos; exclude those with added symbols.
+
+    Args:
+        instance_difficulties: Full list of instance dicts (with agent_difficulty).
+        selected_repos: Dict from select_representative_repos (language_group -> list).
+        work_dir: Directory for GTLocator repo operations (clone, checkout).
+        cache_path: Path to gt_locator_cache.json.
+        max_gt_code_blocks: Maximum number of GT code blocks allowed per instance.
+            Instances exceeding this limit are excluded. Default: 10.
+
+    Returns:
+        Filtered list with gt_locator fields added. Instances that have any
+        ``symbols_added``, a gt_locator error, or too many code blocks are excluded.
+    """
+    from codeminer.dataset.gt_locate import GTLocator
+
+    selected_repo_names = {
+        repo_info["repo"] for repos in selected_repos.values() for repo_info in repos
+    }
+
+    candidates = [
+        inst for inst in instance_difficulties if inst["repo"] in selected_repo_names
+    ]
+    logger.info(
+        "gt_locator: %d instances from %d selected repos",
+        len(candidates),
+        len(selected_repo_names),
+    )
+
+    cache = _load_gt_cache(cache_path)
+    logger.info("gt_locator cache: %d entries loaded", len(cache))
+
+    uncached = [inst for inst in candidates if inst["instance_id"] not in cache]
+    logger.info(
+        "gt_locator: %d cached, %d to analyze",
+        len(candidates) - len(uncached),
+        len(uncached),
+    )
+
+    if uncached:
+        locator = GTLocator(work_dir=str(work_dir))
+
+        # Group by repo to minimise checkout thrashing.
+        by_repo: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for inst in uncached:
+            by_repo[inst["repo"]].append(inst)
+
+        for repo, repo_instances in by_repo.items():
+            logger.info(
+                "gt_locator: analyzing %d instances for %s",
+                len(repo_instances),
+                repo,
+            )
+            for inst in repo_instances:
+                iid = inst["instance_id"]
+                try:
+                    result = locator.analyze_instance(inst)
+                    cache[iid] = {
+                        "symbols_modified": result["symbols_modified"],
+                        "symbols_added": result["symbols_added"],
+                        "symbols_deleted": result["symbols_deleted"],
+                        "target_files": result["target_files"],
+                        "code_blocks": result["code_blocks"],
+                        "error": result["error"],
+                    }
+                except Exception as e:
+                    logger.error("gt_locator error for %s: %s", iid, e, exc_info=True)
+                    cache[iid] = {
+                        "symbols_modified": [],
+                        "symbols_added": [],
+                        "symbols_deleted": [],
+                        "target_files": [],
+                        "code_blocks": [],
+                        "error": str(e),
+                    }
+
+        _save_gt_cache(cache, cache_path)
+
+    # Enrich instances and filter.
+    filtered: List[Dict[str, Any]] = []
+    excluded_added = 0
+    excluded_error = 0
+    excluded_empty_blocks = 0
+    excluded_too_many_blocks = 0
+    for inst in candidates:
+        iid = inst["instance_id"]
+        gt = cache.get(iid, {})
+
+        if gt.get("symbols_added"):
+            excluded_added += 1
+            logger.debug(
+                "Excluding %s: has %d added symbols", iid, len(gt["symbols_added"])
+            )
+            continue
+
+        if gt.get("error"):
+            excluded_error += 1
+            logger.debug("Excluding %s: gt_locator error: %s", iid, gt["error"])
+            continue
+
+        n_blocks = len(gt.get("code_blocks", []))
+        if n_blocks == 0:
+            excluded_empty_blocks += 1
+            logger.debug("Excluding %s: empty gt_code_blocks", iid)
+            continue
+
+        if n_blocks > max_gt_code_blocks:
+            excluded_too_many_blocks += 1
+            logger.debug(
+                "Excluding %s: %d gt_code_blocks exceeds max %d",
+                iid,
+                n_blocks,
+                max_gt_code_blocks,
+            )
+            continue
+
+        enriched = dict(inst)
+        enriched["gt_symbols_modified"] = gt.get("symbols_modified", [])
+        enriched["gt_symbols_deleted"] = gt.get("symbols_deleted", [])
+        enriched["gt_target_files"] = gt.get("target_files", [])
+        enriched["gt_code_blocks"] = gt.get("code_blocks", [])
+        filtered.append(enriched)
+
+    logger.info(
+        "gt_locator filter: %d passed, %d excluded (added), %d excluded (error), "
+        "%d excluded (empty blocks), %d excluded (>%d code_blocks), from %d candidates",
+        len(filtered),
+        excluded_added,
+        excluded_error,
+        excluded_empty_blocks,
+        excluded_too_many_blocks,
+        max_gt_code_blocks,
+        len(candidates),
+    )
+    return filtered
 
 
 def _is_hidden_path(path: Path) -> bool:
@@ -455,8 +700,20 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
     finally:
         classifier.close()
 
+    gt_work_dir = config.gt_locator_work_dir or repo_cache_dir
+    gt_filtered = run_gt_locator_filter(
+        instance_difficulties,
+        selected_repos,
+        work_dir=gt_work_dir,
+        cache_path=_output_dir / "gt_locator_cache.json",
+        max_gt_code_blocks=config.max_gt_code_blocks,
+    )
+
     selected_instances = select_representative_instances(
-        instance_difficulties, selected_repos, target_count=config.instances_per_repo
+        gt_filtered,
+        selected_repos,
+        target_count=config.instances_per_repo,
+        total_instances=config.total_instances,
     )
 
     output_dir = None
@@ -475,6 +732,9 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
                     "changed_loc": row["changed_loc"],
                     "difficulty_level": row["difficulty_level"],
                     "total_in_repo": row["total_in_repo"],
+                    "gt_symbols_count": len(row.get("gt_symbols_modified", []))
+                    + len(row.get("gt_symbols_deleted", [])),
+                    "gt_has_ground_truth": bool(row.get("gt_code_blocks")),
                 }
                 for row in selected_instances
             ],
@@ -486,6 +746,8 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
                 "changed_loc",
                 "difficulty_level",
                 "total_in_repo",
+                "gt_symbols_count",
+                "gt_has_ground_truth",
             ],
         )
 
@@ -494,5 +756,6 @@ def run_sampling(config: SamplingConfig) -> SamplingResults:
         selected_instances=selected_instances,
         repo_sizes=repo_sizes,
         instance_difficulties=instance_difficulties,
+        gt_filtered_instances=gt_filtered,
         output_dir=output_dir,
     )

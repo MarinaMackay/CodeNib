@@ -35,6 +35,8 @@ def test_go_chunker_level_one(gjson_repo):
     assert "method" not in chunk_types
     assert "function" in chunk_types
     assert "struct" in chunk_types or "type" in chunk_types
+    # Top-level var/const declarations should be emitted at L1.
+    assert "var" in chunk_types or "const" in chunk_types
 
 
 def test_go_chunker_gjson_symbols(gjson_repo):
