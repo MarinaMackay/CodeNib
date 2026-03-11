@@ -2,8 +2,6 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from langchain_core.messages import HumanMessage
-from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
 from ..graph.code_graph import CodeGraph
@@ -166,17 +164,11 @@ class AgentlessPipeline:
         )
         self.llm = create_llm(config=llm_config)
 
-        # Load prompt templates from files using LangChain
+        # Load prompt templates from files
         prompt_dir = Path(__file__).parent / "prompts"
-        self.stage1_prompt = PromptTemplate.from_file(
-            str(prompt_dir / "agentless_stage1.txt")
-        ).template
-        self.stage2_prompt = PromptTemplate.from_file(
-            str(prompt_dir / "agentless_stage2.txt")
-        ).template
-        self.stage3_prompt = PromptTemplate.from_file(
-            str(prompt_dir / "agentless_stage3.txt")
-        ).template
+        self.stage1_prompt = (prompt_dir / "agentless_stage1.txt").read_text()
+        self.stage2_prompt = (prompt_dir / "agentless_stage2.txt").read_text()
+        self.stage3_prompt = (prompt_dir / "agentless_stage3.txt").read_text()
 
         # Create structured LLMs for each stage
         self.structured_llm_stage1 = self.llm.with_structured_output(Stage1Result)
@@ -235,7 +227,7 @@ class AgentlessPipeline:
 
         # Query LLM with structured output
         try:
-            input_msg = HumanMessage(content=prompt)
+            input_msg = human_message(prompt)
             result = self.structured_llm_stage1.invoke([input_msg])
             candidate_files = result.files
             logger.debug(f"[Stage 1] EXTRACTED CANDIDATE FILES: {candidate_files}")
@@ -292,7 +284,7 @@ class AgentlessPipeline:
 
         # Query LLM with structured output
         try:
-            input_msg = HumanMessage(content=prompt)
+            input_msg = human_message(prompt)
             result = self.structured_llm_stage2.invoke([input_msg])
             candidate_nodes = result.nodes
             logger.debug(f"[Stage 2] EXTRACTED CANDIDATE NODES: {candidate_nodes}")
@@ -352,7 +344,7 @@ class AgentlessPipeline:
 
         # Query LLM with structured output
         try:
-            input_msg = HumanMessage(content=prompt)
+            input_msg = human_message(prompt)
             result = self.structured_llm_stage3.invoke([input_msg])
             shortlisted_node_ids = result.refined_nodes
             logger.debug(f"[Stage 3] EXTRACTED NODES: {shortlisted_node_ids}")

@@ -3,13 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+from ..compiler.execution import ExecutionEngine
+from ..compiler.ir_exec import ExecutionNode
+from ..compiler.ir_physical import PhysicalOperator
 from ..index.embedding.vector_store import CodeVectorStore
 from ..index.regex_idx.regex_idx import RegexNodeIndex
 from ..index.sparse_idx.bm25_index import BM25CodeIndexer
 from ..log_utils import get_logger
-from ..plans.execution import ExecutionEngine
-from ..plans.ir_exec import ExecutionNode
-from ..plans.ir_physical import PhysicalOperator
 from ..types import NodeInfo, QueriedNode
 
 logger = get_logger(__name__)
