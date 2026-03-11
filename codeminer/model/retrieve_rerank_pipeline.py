@@ -6,15 +6,15 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from ..code_chunker import CodeChunker, RepoChunkingConfig
+from ..compiler.execution import ExecutionEngine
+from ..compiler.ir_exec import ExecutionGraph, ExecutionNode
+from ..compiler.ir_physical import PhysicalOperator
 from ..index.embedding import CodeVectorStore, build_hierarchical_vector_store
 from ..index.sparse_idx.bm25_index import BM25CodeIndexer
 from ..llm.llm_config import LLMConfig, LLMProvider
 from ..log_utils import get_logger
 from ..ops.rerank import RerankContext, register_rerank_ops
 from ..ops.retrieve import RetrieveContext, register_retrieve_ops
-from ..plans.execution import ExecutionEngine
-from ..plans.ir_exec import ExecutionGraph, ExecutionNode
-from ..plans.ir_physical import PhysicalOperator
 from ..types import QueriedNode
 
 logger = get_logger(__name__)

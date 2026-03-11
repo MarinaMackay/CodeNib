@@ -26,7 +26,7 @@ class ExecutionEngine:
         for node in graph.iter_topo():
             kernel = self._kernels.get(node.operator)
             if kernel is None:
-                raise KeyError(f"No kernel registered for operator '{node.operator}'")
+                raise KeyError(f"No kernel registered for operator {node.operator!r}")
             inputs = [state[dep] for dep in node.deps]
             state[node.node_id] = kernel(node, inputs)
         return state

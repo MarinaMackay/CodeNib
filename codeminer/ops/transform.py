@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
 from ..agent.extract_agent import KeywordExtractor
+from ..compiler.execution import ExecutionEngine
+from ..compiler.ir_exec import ExecutionNode
+from ..compiler.ir_physical import PhysicalOperator
 from ..llm.llm_config import LLMConfig
 from ..log_utils import get_logger
-from ..plans.execution import ExecutionEngine
-from ..plans.ir_exec import ExecutionNode
-from ..plans.ir_physical import PhysicalOperator
 from ..types import QueriedNode
 
 logger = get_logger(__name__)

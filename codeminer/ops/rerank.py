@@ -6,12 +6,12 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from ..agent.rerank_agent import RerankAgent
+from ..compiler.execution import ExecutionEngine
+from ..compiler.ir_exec import ExecutionNode
+from ..compiler.ir_physical import PhysicalOperator
 from ..index.embedding.vector_store import CodeVectorStore
 from ..llm.llm_config import LLMConfig
 from ..log_utils import get_logger
-from ..plans.execution import ExecutionEngine
-from ..plans.ir_exec import ExecutionNode
-from ..plans.ir_physical import PhysicalOperator
 from ..types import NodeInfo, QueriedNode
 
 logger = get_logger(__name__)
