@@ -1,5 +1,6 @@
 """LLM module for CodeMiner."""
 
+from .litellm_chat import ChatMessage, LiteLLMChat, human_message, system_message
 from .llm_config import (
     Config,
     LLMConfig,
@@ -9,10 +10,13 @@ from .llm_config import (
 )
 
 __all__ = [
+    "ChatMessage",
     "Config",
     "LLMConfig",
     "LLMConfigurationError",
     "LLMProvider",
+    "LiteLLMChat",
     "create_llm",
-    "get_llm",
+    "human_message",
+    "system_message",
 ]
