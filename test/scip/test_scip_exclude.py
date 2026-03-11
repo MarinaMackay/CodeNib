@@ -2,8 +2,8 @@ import argparse
 from pathlib import Path
 
 from codeminer.dataset.locbench import LocbenchDataset
-from codeminer.graph.transverse_graph import traverse_tree_structure
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.graph.traverse_graph import traverse_tree_structure
+from codeminer.ls_router import LSIndexer
 
 args_dict = {
     "model": "gpt-4o",
@@ -26,7 +26,7 @@ def test_scip_exclude():
     # set output path with ~/.codeminer/instance_id
     output_path = str(Path.home()) + "/.codeminer/" + instance["instance_id"]
     # setup codegraph with exclude patterns
-    repo_indexer = SCIPIndexer(
+    repo_indexer = LSIndexer(
         repo_path,
         output_dir=output_path,
         exclude_patterns=[exclude_pattern],

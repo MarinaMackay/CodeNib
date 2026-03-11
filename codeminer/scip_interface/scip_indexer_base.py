@@ -119,13 +119,15 @@ class SCIPIndexerBase(ABC):
         # Run the command
         with self.profiler.section("generate_index") as section:
             try:
-                # For Rust projects, override toolchain to use stable rust-analyzer
-                # This prevents issues with old toolchains that don't include rust-analyzer
+                # For Rust projects, override toolchain to use nightly rust-analyzer.
+                # Nightly includes the fix for the "file emitted multiple times"
+                # panic in SCIP generation (rust-analyzer#21269).
                 env = None
                 if self.language == "rust":
                     import os
+
                     env = os.environ.copy()
-                    env["RUSTUP_TOOLCHAIN"] = "stable"
+                    env["RUSTUP_TOOLCHAIN"] = "nightly"
 
                 subprocess.run(
                     cmd,
@@ -271,7 +273,9 @@ class SCIPIndexerBase(ABC):
             try:
                 graph = CodeGraph.load_graph(str(self.graph_file))
                 logger.info(
-                    f"✅ Successfully loaded cached graph ({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
+                    "✅ Successfully loaded cached graph "
+                    f"({len(graph.graph.vs)} nodes, "
+                    f"{len(graph.graph.es)} edges)"
                 )
                 return graph
             except Exception as e:
@@ -282,7 +286,8 @@ class SCIPIndexerBase(ABC):
         # Determine what needs to be generated based on what exists
         if skip_level in ("graph", "decode") and self.decoded_file.exists():
             logger.info(
-                f"Found existing decoded file at {self.decoded_file}, skipping index generation and decode"
+                f"Found existing decoded file at "
+                f"{self.decoded_file}, skipping generation and decode"
             )
             should_generate_index = False
             should_decode_index = False
@@ -304,7 +309,16 @@ class SCIPIndexerBase(ABC):
             if should_generate_index:
                 logger.info("Generating SCIP index")
                 if not self.generate_index(**kwargs):
-                    return None
+                    # The indexer reported failure but the index
+                    # file may still have been written
+                    # (e.g. scip-typescript crashes during cleanup after emitting index.scip).
+                    # Continue if the file exists.
+                    if not self.index_file.exists():
+                        return None
+                    logger.warning(
+                        "Index generation returned failure but %s exists; continuing.",
+                        self.index_file,
+                    )
 
             # Decode the index if needed
             if should_decode_index:
@@ -322,7 +336,9 @@ class SCIPIndexerBase(ABC):
 
             if graph:
                 logger.info(
-                    f"✅ Graph created successfully ({len(graph.graph.vs)} nodes, {len(graph.graph.es)} edges)"
+                    "✅ Graph created successfully "
+                    f"({len(graph.graph.vs)} nodes, "
+                    f"{len(graph.graph.es)} edges)"
                 )
 
             return graph
@@ -335,11 +351,12 @@ class SCIPIndexerBase(ABC):
         Clear cache files at different levels.
 
         Args:
-            level: Cache level to clear
-                - 'graph': Keep only graph.pkl, remove index.decoded and index.scip
-                - 'decode': Keep only index.decoded, remove graph.pkl and index.scip
-                - 'raw': Keep only index.scip, remove graph.pkl and index.decoded
-                - 'all': Remove all cache files (default)
+            level: Preserve cache up to this pipeline stage, remove above.
+                Pipeline: raw (index.scip) → decode (index.decoded) → graph (graph.pkl)
+                - 'graph': keep everything (raw + decoded + graph)
+                - 'decode': keep raw + decoded, remove graph
+                - 'raw': keep raw, remove decoded + graph
+                - 'all': remove all cache files (default)
 
         Returns:
             bool: True if cache clearing was successful, False otherwise
@@ -348,14 +365,14 @@ class SCIPIndexerBase(ABC):
             files_to_remove = []
 
             if level == "graph":
-                files_to_remove = [self.index_file, self.decoded_file]
-                logger.info("Clearing cache: keeping graph.pkl only")
+                files_to_remove = []
+                logger.info("Clearing cache: keeping up to graph (nothing to remove)")
             elif level == "decode":
-                files_to_remove = [self.index_file, self.graph_file]
-                logger.info("Clearing cache: keeping index.decoded only")
+                files_to_remove = [self.graph_file]
+                logger.info("Clearing cache: keeping up to decode, removing graph")
             elif level == "raw":
                 files_to_remove = [self.decoded_file, self.graph_file]
-                logger.info("Clearing cache: keeping index.scip only")
+                logger.info("Clearing cache: keeping raw, removing decoded + graph")
             elif level == "all":
                 files_to_remove = [self.index_file, self.decoded_file, self.graph_file]
                 logger.info("Clearing all cache files")

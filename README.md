@@ -9,10 +9,11 @@ conda activate codeminer
 pip install -e .
 ```
 
-Install scip for code indexing:
+Optional: enable SCIP-based code indexing:
 ```bash
-npm install -g @sourcegraph/scip-python
+make scip
 ```
+The setup script installs `rust-analyzer`, `scip-clang`, `@sourcegraph/scip-typescript`, and `@sourcegraph/scip-python`.
 
 ## Contribute
 

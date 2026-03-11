@@ -27,8 +27,12 @@ class SCIPTypeScriptGraphDecoder:
         # Track actual file paths from documents to fix index file handling
         self.document_file_paths = set()
 
+        # Track project's own SCIP package names to filter external refs
+        self._project_packages = set()
+
     def decode(self):
         self.logger.info(f"Starting SCIP TypeScript decode from {self.index_file_path}")
+
         try:
             with open(self.index_file_path, "r") as f:
                 content = f.read()
@@ -47,6 +51,12 @@ class SCIPTypeScriptGraphDecoder:
         # Process all documents
         for document in document_blocks:
             self._process_document(document)
+
+        self.logger.info(
+            f"Decoded {len(document_blocks)} documents, "
+            f"nodes={self.code_graph.graph.vcount()}, "
+            f"edges={self.code_graph.graph.ecount()}"
+        )
 
         return self.code_graph
 
@@ -114,15 +124,31 @@ class SCIPTypeScriptGraphDecoder:
         if symbol.startswith("local "):
             return
 
-        # Extract symbol_roles
-        # IMPORTANT: scip-typescript (v0.4.0) only sets symbol_roles: 1 for definitions
-        # References are represented as occurrences WITHOUT the symbol_roles field (value = 0)
+        # Extract symbol_roles early (needed for external-package filtering)
         symbol_roles_match = re.search(r"symbol_roles:\s*(\d+)", occurrence_text)
-        if symbol_roles_match:
-            symbol_roles = int(symbol_roles_match.group(1))
-        else:
-            # No symbol_roles field means it's a reference (not a definition)
-            symbol_roles = 0  # Treat as reference
+        symbol_roles = int(symbol_roles_match.group(1)) if symbol_roles_match else 0
+
+        # Filter external / third-party package references.
+        # SCIP symbol: "scip-typescript npm <pkg> <ver> <descriptor>"
+        scip_parts = symbol.split(" ")
+        if len(scip_parts) >= 5 and scip_parts[0] == "scip-typescript":
+            pkg_name = scip_parts[2]
+            pkg_version = scip_parts[3]
+            if symbol_roles & 1:
+                # Record project packages from definitions
+                if pkg_name != "." and pkg_version != ".":
+                    self._project_packages.add(pkg_name)
+            else:
+                # Always filter @types/* references
+                if pkg_name.startswith("@types/"):
+                    return
+                # Filter non-project packages once we know our own
+                if (
+                    self._project_packages
+                    and pkg_name != "."
+                    and pkg_name not in self._project_packages
+                ):
+                    return
 
         # Extract enclosing range if available
         enclosing_ranges = re.findall(r"enclosing_range:\s*(\d+)", occurrence_text)
@@ -130,196 +156,189 @@ class SCIPTypeScriptGraphDecoder:
         # Process the symbol (pass file_path for index handling)
         self._process_symbol(symbol, line, symbol_roles, enclosing_ranges, file_path)
 
-    def _extract_hash(self, symbol_part):
+    def _extract_symbol_display(self, unified_symbol):
+        """Extract human-readable symbol display from the unified_symbol key.
+
+        The unified_symbol key format: [pkg@ver:]file.ts:Symbol[.member]
+
+        Examples:
+            axios@0.27.2:index.d.ts:AxiosError         → AxiosError
+            src/utils.ts:Class.method                   → Class.method
+            index.d.ts:Axios.request                    → Axios.request
+            index.d.ts:Axios.<constructor>              → Axios.constructor
+            index.d.ts:Class.<get>location              → Class.location
+            index.d.ts:Class.typeLiteral14:username     → Class.username
+            index.d.ts:__BROWSER__0                     → __BROWSER__
         """
-        Extract hash from TypeScript SCIP symbol part.
+        sym = unified_symbol
 
-        Args:
-            symbol_part: Symbol part like "add(9b79fb6aee4c0440)" or "Class#method(hash)"
+        # Strip package prefix (pkg@ver:...)
+        if re.match(r"^[^:]+@[^:]+:", sym):
+            sym = sym.split(":", 1)[1]
 
-        Returns:
-            Full hash string (16 chars) or None if no hash found
-        """
-        hash_match = re.search(r"\(([0-9a-f]{8,16})\)", symbol_part)
-        if hash_match:
-            full_hash = hash_match.group(1)
-            return full_hash  # Return full hash to avoid collisions
-        return None
-
-    def _remove_hash(self, symbol_part):
-        """
-        Remove hash from symbol part for display/matching purposes.
-
-        Args:
-            symbol_part: Symbol with hash like "add(hash)" or "Class#method(hash)"
-
-        Returns:
-            Symbol without hash: "add" or "Class#method"
-        """
-        return re.sub(r"\([0-9a-f]+\)", "", symbol_part)
-
-    def _get_display_name(self, unified_symbol):
-        """
-        Generate human-readable display name from unified symbol.
-
-        Args:
-            unified_symbol: Unified symbol like "src/calculator.ts:Calculator.add(hash)"
-
-        Returns:
-            Display name like "calculator::Calculator.add"
-        """
-        # Remove hash for display
-        symbol_no_hash = self._remove_hash(unified_symbol)
-
-        # Remove file extension and convert path to module style
-        if ":" in symbol_no_hash:
-            file_part, symbol_part = symbol_no_hash.split(":", 1)
-            # Remove extension
-            file_no_ext = re.sub(r"\.(ts|tsx|js|jsx)$", "", file_part)
-            # Convert slashes to ::
-            module_path = file_no_ext.replace("/", "::")
-            return f"{module_path}.{symbol_part}" if symbol_part else module_path
+        # Now sym = file.ts:Symbol.member or file.ts:Symbol
+        if ":" in sym:
+            symbol_part = sym.split(":", 1)[1]
         else:
-            return symbol_no_hash
+            symbol_part = sym
+
+        # Clean numeric index suffix: name0 → name, __BROWSER__0 → __BROWSER__
+        symbol_part = re.sub(r"(\D)\d+$", r"\1", symbol_part)
+        symbol_part = symbol_part.rstrip(":")
+
+        # Handle <constructor>, <get>, <set>
+        symbol_part = re.sub(r"<constructor>", "constructor", symbol_part)
+        symbol_part = re.sub(r"<get>(\w+)", r"\1", symbol_part)
+        symbol_part = re.sub(r"<set>(\w+)", r"\1", symbol_part)
+
+        # Skip typeLiteral intermediate layers: Type.typeLiteral14:field → Type.field
+        symbol_part = re.sub(r"\.?typeLiteral\d*:", ".", symbol_part)
+        symbol_part = symbol_part.strip(".")
+
+        return symbol_part
+
+    def _get_unified_name(self, unified_symbol, file_path, symbol_type=None):
+        """Generate unified_name in format file_path:SymbolDisplay.
+
+        Args:
+            unified_symbol: The name key (e.g. 'index.d.ts:Axios.request')
+            file_path: File path of the symbol (e.g. 'index.d.ts')
+            symbol_type: NODE_TYPE_* constant
+
+        Returns:
+            Unified name like 'index.d.ts:Axios.request()'
+        """
+        symbol_display = self._extract_symbol_display(unified_symbol)
+
+        # Add () suffix for methods/functions
+        if symbol_type in (NODE_TYPE_METHOD, NODE_TYPE_FUNCTION) and not symbol_display.endswith("()"):
+            symbol_display = f"{symbol_display}()"
+
+        if file_path and symbol_display:
+            return f"{file_path}:{symbol_display}"
+        return file_path or symbol_display or unified_symbol
 
     def _unify_symbol_name(self, symbol, original_symbol, file_path):
         """
         Unify symbol names to a consistent format for TypeScript/JavaScript,
-        preserving hash AND package/workspace context for uniqueness.
+        preserving package/workspace context for uniqueness.
 
-        Examples:
-        - scip-typescript npm @myorg/pkg-a 1.0.0 src/utils/index`/helper().
-          -> @myorg/pkg-a@1.0.0:src/utils/index.ts:helper
-        - scip-typescript npm pkg-b 1.0.0 src/utils/index`/helper().
-          -> pkg-b@1.0.0:src/utils/index.ts:helper
-        (Note: Different packages, same path, won't collide)
+        Uses backtick boundaries in the SCIP symbol to extract the correct
+        file path (e.g. ``lib/utils.js`` from ```lib/utils.js```).
 
         Args:
             symbol: Cleaned symbol name (after removing prefix)
-            original_symbol: Original full SCIP symbol (for hash and package extraction)
+            original_symbol: Original full SCIP symbol (for package extraction)
             file_path: Current file path from document (for extension inference)
 
         Returns:
-            Unified symbol name WITH package scope and hash for uniqueness
+            Unified symbol name WITH package scope for uniqueness
         """
-        # Extract hash from original symbol before any processing
-        hash_part = self._extract_hash(original_symbol)
-
-        # Extract package/workspace identifier from original SCIP symbol
-        # Format: "scip-typescript <manager> <package> <version> <symbol>"
-        # Examples:
-        #   "scip-typescript npm @myorg/pkg-a 1.0.0 src/..."
-        #   "scip-typescript npm my-package 1.0.0 src/..."
-        #   "scip-typescript npm . . src/..." (workspace root)
+        # --- Package prefix ---
         package_prefix = None
-        parts = original_symbol.split(" ")
-        if len(parts) >= 5 and parts[0] == "scip-typescript":
-            manager = parts[1]  # npm, yarn, pnpm
-            package_name = parts[2]
-            version = parts[3]
-
-            # Skip workspace root (. .)
+        scip_parts = original_symbol.split(" ")
+        if len(scip_parts) >= 5 and scip_parts[0] == "scip-typescript":
+            package_name = scip_parts[2]
+            version = scip_parts[3]
             if package_name != "." and version != ".":
-                # Create unique package prefix
                 package_prefix = f"{package_name}@{version}"
+            # Symbol descriptor with backticks intact
+            sym_with_bt = " ".join(scip_parts[4:])
+        else:
+            sym_with_bt = original_symbol.split(" ")[-1]
 
-        # Remove backticks
-        clean_symbol = symbol.replace("`", "")
+        # --- Extract file path from backtick boundaries ---
+        # SCIP format: `file/path.js`/SymbolDescriptor
+        all_bt_segments = re.findall(r"`([^`]+)`", sym_with_bt)
 
-        # Remove hash temporarily for path/name processing
-        clean_symbol = self._remove_hash(clean_symbol)
-
-        # Infer file extension from actual file_path instead of guessing
-        file_ext = Path(file_path).suffix if file_path else ".ts"
-        if not file_ext or file_ext not in [".ts", ".tsx", ".js", ".jsx"]:
-            file_ext = ".ts"  # Fallback
-
-        # Parse the symbol path
-        # Format: "src/calculator/index`/Calculator#add()."
-        if "/" in clean_symbol:
-            parts = clean_symbol.split("/", 1)
-            module_path = parts[0].replace(".", "/")
-            module_path += file_ext
-
-            if len(parts) > 1:
-                symbol_part = parts[1]
-
-                # Handle class and method patterns
-                if "#" in symbol_part:
-                    # Split on # to separate class from method
-                    class_method_parts = symbol_part.split("#", 1)
-                    class_name = class_method_parts[0]
-
-                    if len(class_method_parts) > 1 and class_method_parts[1]:
-                        # Has method after #
-                        method_part = class_method_parts[1].rstrip(".")
-                        symbol_id = f"{module_path}:{class_name}.{method_part}"
-                    else:
-                        # Just class (ends with #)
-                        symbol_id = f"{module_path}:{class_name}"
-                else:
-                    # Function (no # symbol)
-                    func_name = symbol_part.rstrip(".")
-                    symbol_id = f"{module_path}:{func_name}"
+        if all_bt_segments:
+            if len(all_bt_segments) == 1:
+                module_path = all_bt_segments[0]
             else:
-                symbol_id = module_path
-        else:
-            # No module path separator, use as-is but clean
-            symbol_id = clean_symbol.rstrip(".")
+                # Multi-segment: first segment may use dots for slashes
+                first = re.sub(r"\.(ts|tsx|js|jsx)$", "", all_bt_segments[0])
+                first = first.replace(".", "/")
+                module_path = first + "/" + "/".join(all_bt_segments[1:])
 
-        # Build unified symbol with package prefix for cross-package uniqueness
+            # Everything after the last closing backtick is the descriptor
+            last_bt_end = sym_with_bt.rfind("`") + 1
+            symbol_descriptor = sym_with_bt[last_bt_end:].lstrip("/")
+        else:
+            # Fallback: no backticks — use the document file path
+            module_path = file_path or "unknown"
+            symbol_descriptor = symbol.replace("`", "")
+
+        # Clean descriptor
+        symbol_descriptor = symbol_descriptor.rstrip()
+
+        # --- Build symbol_id ---
+        if symbol_descriptor:
+            if "#" in symbol_descriptor:
+                class_method = symbol_descriptor.split("#", 1)
+                class_name = class_method[0]
+                if class_method[1]:
+                    method_part = class_method[1].rstrip(".")
+                    symbol_id = f"{module_path}:{class_name}.{method_part}"
+                else:
+                    symbol_id = f"{module_path}:{class_name}"
+            else:
+                name = symbol_descriptor.rstrip(".")
+                symbol_id = f"{module_path}:{name}"
+        else:
+            # Module-level export (empty descriptor, just `file`/)
+            symbol_id = module_path
+
+        # --- Assemble unified name ---
         if package_prefix:
-            unified_no_hash = f"{package_prefix}:{symbol_id}"
-        else:
-            unified_no_hash = symbol_id
-
-        # Add hash back for uniqueness (if present)
-        if hash_part:
-            unified = f"{unified_no_hash}({hash_part})"
-        else:
-            unified = unified_no_hash
-
-        return unified
+            return f"{package_prefix}:{symbol_id}"
+        return symbol_id
 
     def _classify_symbol_type(self, unified_symbol, original_symbol=None):
         """
-        Classify symbol type based on unified symbol format.
+        Classify symbol type based on the SCIP symbol descriptor suffix.
+
+        SCIP encodes the symbol kind in the trailing descriptor characters:
+          - ``().``  → method (if after ``#``) or function
+          - ``#``    → type definition (class / interface / enum / type alias)
+          - ``.``    → field / property / variable
 
         Args:
             unified_symbol: Unified symbol name
-            original_symbol: Original symbol name (for additional context)
+            original_symbol: Original cleaned SCIP symbol (with descriptor suffixes)
 
         Returns:
-            Symbol type: NODE_TYPE_CLASS, NODE_TYPE_METHOD, NODE_TYPE_FIELD, or NODE_TYPE_FUNCTION
+            Symbol type constant
         """
+        if not original_symbol:
+            return NODE_TYPE_FIELD
 
-        if ":" in unified_symbol:
-            symbol_part = unified_symbol.split(":", 1)[1]
-            if "." in symbol_part:
-                # Has a dot - could be method or field
-                # Check if the original symbol had parentheses (indicating method)
-                has_parentheses = False
-                if original_symbol:
-                    has_parentheses = "()" in original_symbol or "(" in original_symbol
+        sym = original_symbol.rstrip()
 
-                # If original had parentheses, it's a method; otherwise it's a field
-                if has_parentheses:
-                    return NODE_TYPE_METHOD
-                else:
-                    return NODE_TYPE_FIELD
-            else:
-                # Could be class or function - check if it looks like a class
-                # In TypeScript, classes typically start with capital letter
-                if symbol_part and symbol_part[0].isupper():
-                    return NODE_TYPE_CLASS
-                else:
-                    return NODE_TYPE_FUNCTION
-        else:
+        # "Foo#bar()." or "bar()." → method / function
+        if sym.endswith("()."):
+            # If there's a '#' before the method name it's a class method
+            # Strip the trailing method part and check
+            base = sym[:-3]  # remove "()."
+            # Find the last path separator
+            last_sep = max(base.rfind("/"), base.rfind("#"))
+            if last_sep != -1 and base[last_sep] == "#":
+                return NODE_TYPE_METHOD
             return NODE_TYPE_FUNCTION
+
+        # "Foo#" → class / interface / type
+        if sym.endswith("#"):
+            return NODE_TYPE_CLASS
+
+        # "Foo#bar." → field / property
+        if sym.endswith("."):
+            return NODE_TYPE_FIELD
+
+        return NODE_TYPE_FIELD
 
     def _process_symbol(self, symbol, line, symbol_roles, enclosing_ranges, file_path):
         self.logger.scip_debug(
-            f"Processing TS symbol: {symbol} at line {line}, roles: {symbol_roles}, file: {file_path}"
+            f"Processing TS symbol: {symbol} at line {line}, "
+            f"roles: {symbol_roles}, file: {file_path}"
         )
 
         # Skip function arguments (symbols ending with .(xxx))
@@ -328,21 +347,16 @@ class SCIPTypeScriptGraphDecoder:
 
         # Exit scopes that have ended based on current line
         try:
-            self.logger.scip_debug(
-                f"Scope stack before exit: {[list(s.keys())[0] for s in self.code_graph.scope_stack]}"
-            )
+            scope_stack_names = [list(s.keys())[0] for s in self.code_graph.scope_stack]
+            self.logger.scip_debug(f"Scope stack before exit: {scope_stack_names}")
             self.code_graph.exit_scopes_by_line(line)
-            self.logger.scip_debug(
-                f"Scope stack after exit: {[list(s.keys())[0] for s in self.code_graph.scope_stack]}"
-            )
+            scope_stack_names = [list(s.keys())[0] for s in self.code_graph.scope_stack]
+            self.logger.scip_debug(f"Scope stack after exit: {scope_stack_names}")
         except Exception as e:
             self.logger.error(f"Error exiting scopes at line {line}: {e}")
             raise
 
         # Clean up the symbol by simply splitting on spaces and taking the last part
-        # For example: "scip-typescript npm test-project 1.0.0 src/`calculator.ts`/Calculator#add()."
-        # Will become: "src/`calculator.ts`/Calculator#add()."
-        # IMPORTANT: Keep original symbol for hash and package extraction
         cleaned_symbol = symbol.split(" ")[-1]
         cleaned_symbol = re.sub(r"`", "", cleaned_symbol)
 
@@ -351,35 +365,39 @@ class SCIPTypeScriptGraphDecoder:
         if not match:
             return
 
-        module_path = match.group(1)
-
-        # Unify symbol name format (pass original symbol for hash/package extraction, file_path for extension)
+        # Unify symbol name format
         unified_symbol = self._unify_symbol_name(cleaned_symbol, symbol, file_path)
 
-        # Classify symbol type (pass both original and unified for context)
+        # Filter generic type parameters like .[T], .[D]
+        if re.search(r"\.\[[A-Z]\w*\]", unified_symbol):
+            return
+
+        # Filter module-level export objects (bare file path, no symbol descriptor)
+        sym_after_pkg = (
+            unified_symbol.split(":", 1)[-1]
+            if ":" in unified_symbol
+            else unified_symbol
+        )
+        if re.match(r"^[^:]+\.(js|ts|jsx|tsx)$", sym_after_pkg):
+            return
+
+        # Classify symbol type
         symbol_type = self._classify_symbol_type(unified_symbol, cleaned_symbol)
 
-        # Handle index file exports - use actual file_path instead of constructed path
-        # If current file is an index file and symbol has no class/method (#),
-        # it's likely a re-export, point reference to this file
+        # Handle index file exports
         is_index_file = file_path and "/index." in file_path
-        symbol_no_hash = self._remove_hash(unified_symbol)
-
-        # Check if symbol is a simple export (no class/method marker)
-        is_simple_symbol = "#" not in symbol_no_hash
+        is_simple_symbol = "#" not in unified_symbol
 
         if is_index_file and is_simple_symbol:
-            # Use bitwise check for reference (not a definition)
             if not (symbol_roles & 1):
-                # This is a reference in an index file, likely a re-export
-                # Point to the index file itself
-                self.code_graph._add_edge(
-                    self.code_graph.current_scope, file_path, EDGE_TYPE_REFERENCE
-                )
+                if self.code_graph.current_scope != file_path:
+                    self.code_graph._add_edge(
+                        self.code_graph.current_scope, file_path, EDGE_TYPE_REFERENCE
+                    )
                 return
 
-        # Check if this is a definition using bitwise AND (not exact match)
-        is_definition = symbol_roles & 1  # Check if definition bit is set
+        # Check if this is a definition using bitwise AND
+        is_definition = symbol_roles & 1
 
         # Update current scope if this is a definition with enclosing range
         if is_definition and enclosing_ranges and len(enclosing_ranges) >= 4:
@@ -391,24 +409,26 @@ class SCIPTypeScriptGraphDecoder:
                 unified_symbol, line, scope_start_line, scope_end_line, symbol_type
             )
 
-            # Store original SCIP symbol and display name as node attributes
+            # Store unified_name as node attribute
             if unified_symbol in self.code_graph.name_to_vertex:
                 vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-                self.code_graph.graph.vs[vertex_id]["scip_symbol"] = symbol
-                self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol)
+                self.code_graph.graph.vs[vertex_id]["unified_name"] = (
+                    self._get_unified_name(unified_symbol, file_path, symbol_type)
+                )
 
             # Add containment edge
             self.logger.scip_debug(
-                f"Adding containment edge for {unified_symbol}, current scope: {self.code_graph.current_scope}"
+                f"Adding containment edge for {unified_symbol}, "
+                f"current scope: {self.code_graph.current_scope}"
             )
             self.code_graph.add_containment_edge(unified_symbol)
 
             # Update current scope for classes and functions with enclosing ranges
-            # Now with proper scope exit handling, functions can safely become scopes
             if symbol_type in [NODE_TYPE_CLASS, NODE_TYPE_FUNCTION, NODE_TYPE_METHOD]:
                 try:
                     self.logger.scip_debug(
-                        f"Updating scope to {unified_symbol} [{scope_start_line}-{scope_end_line}]"
+                        f"Updating scope to {unified_symbol} "
+                        f"[{scope_start_line}-{scope_end_line}]"
                     )
                     self.code_graph.update_current_scope(
                         unified_symbol, scope_start_line, scope_end_line
@@ -420,17 +440,19 @@ class SCIPTypeScriptGraphDecoder:
         # Handle definition with no enclosing range
         elif is_definition:
             self.logger.scip_debug(
-                f"Adding symbol without enclosing range: {unified_symbol}, current scope: {self.code_graph.current_scope}"
+                f"Adding symbol without enclosing range: {unified_symbol}, "
+                f"current scope: {self.code_graph.current_scope}"
             )
             self.code_graph.add_symbol_node(
                 unified_symbol, line, symbol_type=symbol_type
             )
 
-            # Store original SCIP symbol and display name
+            # Store unified_name
             if unified_symbol in self.code_graph.name_to_vertex:
                 vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-                self.code_graph.graph.vs[vertex_id]["scip_symbol"] = symbol
-                self.code_graph.graph.vs[vertex_id]["display_name"] = self._get_display_name(unified_symbol)
+                self.code_graph.graph.vs[vertex_id]["unified_name"] = (
+                    self._get_unified_name(unified_symbol, file_path, symbol_type)
+                )
 
             # Add 'contain' edge from current scope to symbol
             self.code_graph._add_edge(
@@ -440,9 +462,14 @@ class SCIPTypeScriptGraphDecoder:
         # Handle reference (not a definition)
         # Use bitwise check instead of exact match to handle all reference types
         else:
-            self.code_graph.add_symbol_reference(
-                unified_symbol, module_path, symbol_type
-            )
+            self.code_graph.add_symbol_reference(unified_symbol, file_path, symbol_type)
+            # Set unified_name for reference-only nodes (first occurrence wins)
+            if unified_symbol in self.code_graph.name_to_vertex:
+                vid = self.code_graph.name_to_vertex[unified_symbol]
+                if not self.code_graph.graph.vs[vid].attributes().get("unified_name"):
+                    self.code_graph.graph.vs[vid]["unified_name"] = (
+                        self._get_unified_name(unified_symbol, file_path, symbol_type)
+                    )
 
     def save_graph(self, output_path):
         self.code_graph.save_graph(output_path)

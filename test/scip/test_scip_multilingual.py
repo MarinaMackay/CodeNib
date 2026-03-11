@@ -1,902 +1,221 @@
 #!/usr/bin/env python3
 """
-Unified SCIP indexer test for C++, Rust, and TypeScript.
-
-This test supports indexing and decoding SCIP indexes for all three languages.
-It supports two modes:
-1. Simple mode: Test with a local repository
-2. Multi-SWE-bench mode: Test with SWE-bench Multilingual dataset
-
-Usage:
-    # Simple mode - C++
-    python test/scip/test_scip_multilingual.py --lang cpp --repo test/scip/simple_repos/cpp_simple
-    python test/scip/test_scip_multilingual.py --lang cpp --repo test/scip/simple_repos/cpp_simple --clean
-
-    # Simple mode - Rust
-    python test/scip/test_scip_multilingual.py --lang rust --repo test/scip/simple_repos/rust_simple
-    python test/scip/test_scip_multilingual.py --lang rust --repo test/scip/simple_repos/rust_simple --clean
-
-    # Simple mode - TypeScript
-    python test/scip/test_scip_multilingual.py --lang ts --repo test/scip/simple_repos/typescript_simple
-
-    # Multi-SWE-bench mode
-    python test/scip/test_scip_multilingual.py --lang cpp --multisweb --num-instances 10
-    python test/scip/test_scip_multilingual.py --lang rust --multisweb --num-instances 5
-    python test/scip/test_scip_multilingual.py --lang ts --multisweb --num-instances 3
+Integration tests for multilingual SCIP indexing via unified run_pipeline().
 """
 
-import argparse
-import json
+import shutil
 import subprocess
 from pathlib import Path
 
-from codeminer.scip_interface import SCIPIndexer
+import pytest
+
+from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
+from codeminer.ls_router import LSIndexer
 
 
-# ==============================================================================
-# Common Utilities
-# ==============================================================================
+def _has_node(ig, expected_unified_name, node_type=None):
+    """Check if any node has exactly this unified_name (strict match).
 
-
-def verify_scip_output(decoded_file: Path, language: str, expected_symbols=None) -> bool:
+    File/directory nodes are matched by ``name`` since they don't carry
+    ``unified_name``.  All other nodes are matched by ``unified_name``.
     """
-    Verify the SCIP output contains expected symbols.
-
-    Args:
-        decoded_file: Path to the decoded SCIP file
-        language: Language (C++, Rust, TypeScript)
-        expected_symbols: List of symbols to check for (optional)
-
-    Returns:
-        bool: True if verification passed
-    """
-    print("\n" + "=" * 80)
-    print("Verifying SCIP output...")
-    print("=" * 80)
-
-    if not decoded_file.exists():
-        print(f"❌ Decoded file not found: {decoded_file}")
-        return False
-
-    content = decoded_file.read_text()
-
-    # Default expected symbols per language
-    if expected_symbols is None:
-        if language == "C++":
-            expected_symbols = [
-                "MathUtils",  # Namespace
-                "add",  # Function
-                "Shape",  # Base class
-                "Rectangle",  # Derived class
-                "Circle",  # Derived class
-            ]
-        elif language == "Rust":
-            expected_symbols = [
-                "math_utils",  # Module
-                "add",  # Function
-                "multiply",  # Function
-                "Shape",  # Trait
-                "Rectangle",  # Struct
-                "Circle",  # Struct
-            ]
-        elif language == "TypeScript":
-            expected_symbols = [
-                "add",  # Function
-                "multiply",  # Function
-                "Calculator",  # Class
-            ]
-
-    if not expected_symbols:
-        print("No symbols specified for verification, skipping...")
-        return True
-
-    print("\nChecking for expected symbols:")
-    found_symbols = []
-    missing_symbols = []
-
-    for symbol in expected_symbols:
-        if symbol in content:
-            found_symbols.append(symbol)
-            print(f"  ✅ Found: {symbol}")
+    for v in ig.vs:
+        if node_type in ("file", "directory"):
+            matched = v["name"] == expected_unified_name
         else:
-            missing_symbols.append(symbol)
-            print(f"  ⚠️  Missing: {symbol}")
-
-    print(f"\nSummary: {len(found_symbols)}/{len(expected_symbols)} symbols found")
-
-    return len(found_symbols) > 0
-
-
-# ==============================================================================
-# C++ Build and Indexing
-# ==============================================================================
-
-
-def build_cpp_project(repo_path: Path, clean: bool = False) -> bool:
-    """
-    Build the C++ project and generate compile_commands.json using CMake.
-
-    Args:
-        repo_path: Path to the repository
-        clean: Whether to clean before building
-
-    Returns:
-        bool: True if build was successful
-    """
-    build_dir = repo_path / "build"
-
-    if clean and build_dir.exists():
-        print(f"Cleaning build directory: {build_dir}")
-        import shutil
-
-        shutil.rmtree(build_dir)
-
-    # Create build directory
-    build_dir.mkdir(exist_ok=True)
-
-    print("\n" + "=" * 80)
-    print("Building C++ project with CMake...")
-    print("=" * 80)
-
-    # Run cmake to generate build files
-    print("\nRunning CMake...")
-    result = subprocess.run(
-        [
-            "cmake",
-            "-B",
-            str(build_dir),
-            "-S",
-            str(repo_path),
-            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-        ],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        print(f"❌ CMake failed:")
-        print(result.stderr)
-        return False
-
-    print("✅ CMake configuration successful")
-
-    # Build the project
-    print("\nBuilding project...")
-    result = subprocess.run(
-        ["cmake", "--build", str(build_dir)],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        print(f"❌ Build failed:")
-        print(result.stderr)
-        return False
-
-    print("✅ Build successful")
-
-    # Check if compile_commands.json was generated
-    compdb = build_dir / "compile_commands.json"
-    if not compdb.exists():
-        print(f"❌ compile_commands.json not found at {compdb}")
-        return False
-
-    print(f"✅ Generated compilation database at: {compdb}")
-    return True
-
-
-def generate_cpp_compilation_database(repo_path: Path) -> bool:
-    """
-    Try to generate a compilation database for C++ repository.
-
-    Args:
-        repo_path: Path to the repository root
-
-    Returns:
-        bool: True if compilation database was generated or already exists
-    """
-    # Check if compilation database already exists
-    compdb_locations = [
-        repo_path / "compile_commands.json",
-        repo_path / "build" / "compile_commands.json",
-    ]
-
-    for compdb in compdb_locations:
-        if compdb.exists():
-            print(f"✅ Found existing compilation database: {compdb}")
-            return True
-
-    print("\n🔧 Attempting to generate compilation database...")
-
-    # Try CMake if CMakeLists.txt exists
-    if (repo_path / "CMakeLists.txt").exists():
-        print("  Found CMakeLists.txt, trying CMake...")
-        try:
-            build_dir = repo_path / "build"
-            build_dir.mkdir(exist_ok=True)
-
-            result = subprocess.run(
-                [
-                    "cmake",
-                    "-B",
-                    str(build_dir),
-                    "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-                ],
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-
-            if result.returncode == 0:
-                compdb = build_dir / "compile_commands.json"
-                if compdb.exists():
-                    print(f"  ✅ Generated compilation database with CMake: {compdb}")
-                    return True
-
-        except Exception as e:
-            print(f"  ⚠️  CMake error: {str(e)[:200]}")
-
-    print("  ❌ Could not generate compilation database")
+            matched = (v.attributes().get("unified_name") or "") == expected_unified_name
+        if matched:
+            if node_type is None or v["type"] == node_type:
+                return True
     return False
 
 
-def test_cpp_simple(args):
-    """Test C++ SCIP indexer with a local repository."""
-    repo_path = Path(args.repo).absolute()
-
-    if not repo_path.exists():
-        print(f"Error: Repository path does not exist: {repo_path}")
-        return False
-
-    print("=" * 80)
-    print("SCIP C++ Indexer Test - Simple Mode")
-    print("=" * 80)
-    print(f"Repository path: {repo_path}")
-    print("=" * 80)
-
-    # Build the project if CMakeLists.txt exists
-    if (repo_path / "CMakeLists.txt").exists():
-        print("\n📦 Found CMakeLists.txt, building project...")
-        if not build_cpp_project(repo_path, clean=args.clean):
-            print("\n❌ Build failed")
-            return False
-    else:
-        print("\n⚠️  No CMakeLists.txt found, skipping build")
-
-    # Check for compilation database
-    compdb = repo_path / "compile_commands.json"
-    if not compdb.exists():
-        compdb = repo_path / "build" / "compile_commands.json"
-
-    if not compdb.exists():
-        print(f"\n❌ Error: Compilation database not found!")
-        return False
-
-    print(f"\n✅ Found compilation database: {compdb}")
-
-    # Set output directory
-    output_dir = Path(args.output_dir).absolute() if args.output_dir else repo_path / "scip_output"
-    print(f"Output directory: {output_dir}")
-
-    # Create the indexer
-    indexer = SCIPIndexer(project_root=repo_path, output_dir=output_dir, language="cpp")
-
-    # Generate SCIP index
-    print("\n" + "=" * 80)
-    print("Step 1: Generating SCIP index...")
-    print("=" * 80)
-
-    success = indexer.generate_index(
-        compdb_path=str(compdb),
-        show_compiler_diagnostics=getattr(args, "show_compiler_diagnostics", False),
-    )
-
-    if not success:
-        print("\n❌ Failed to generate SCIP index")
-        return False
-
-    print(f"\n✅ SCIP index generated at: {indexer.index_file}")
-
-    # Decode SCIP index
-    print("\n" + "=" * 80)
-    print("Step 2: Decoding SCIP index...")
-    print("=" * 80)
-
-    success = indexer.decode_index()
-
-    if not success:
-        print("\n❌ Failed to decode SCIP index")
-        return False
-
-    print(f"\n✅ SCIP index decoded at: {indexer.decoded_file}")
-
-    # Show file sizes
-    index_size = indexer.index_file.stat().st_size / (1024 * 1024)
-    decoded_size = indexer.decoded_file.stat().st_size / (1024 * 1024)
-
-    print("\n" + "=" * 80)
-    print("Output Files:")
-    print("=" * 80)
-    print(f"Binary SCIP index: {indexer.index_file} ({index_size:.2f} MB)")
-    print(f"Decoded SCIP index: {indexer.decoded_file} ({decoded_size:.2f} MB)")
-    print("=" * 80)
-
-    # Verify output if it's test_cpp_simple
-    if "test_cpp_simple" in str(repo_path):
-        verify_scip_output(indexer.decoded_file, "C++")
-
-    print("\n✅ Test completed successfully!")
-    return True
+def _vertex_matches(v, expected):
+    """Match a vertex by unified_name, falling back to name for file/dir nodes."""
+    un = v.attributes().get("unified_name") or ""
+    return un == expected or v["name"] == expected
 
 
-def test_cpp_multisweb(args):
-    """Test C++ SCIP indexer with Multi-SWE-bench dataset."""
-    from codeminer.dataset.swebench import SwebenchDataset
-
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
-
-    all_dataset = dataset_obj.load()
-
-    # Filter for C/C++ projects
-    cpp_instances = []
-    cpp_repo_keywords = ["fmtlib/", "nlohmann/", "jqlang/", "redis/", "valkey-io/", "micropython/"]
-
-    for inst in all_dataset:
-        repo = inst["repo"]
-        if any(keyword in repo for keyword in cpp_repo_keywords):
-            cpp_instances.append(inst)
-
-    if len(cpp_instances) == 0:
-        print(f"❌ No C/C++ instances found in dataset")
-        return False
-
-    # Limit dataset
-    if args.num_instances is not None:
-        dataset = cpp_instances[: min(args.num_instances, len(cpp_instances))]
-    else:
-        dataset = cpp_instances
-
-    print(f"\n✓ Found {len(cpp_instances)} total C/C++ instances, testing {len(dataset)}")
-
-    success_count = 0
-    failed_instances = []
-
-    for idx, instance in enumerate(dataset):
-        instance_id = instance["instance_id"]
-        print(f"\n{'=' * 80}")
-        print(f"Processing C++ instance [{idx + 1}/{len(dataset)}]: {instance_id}")
-        print(f"{'=' * 80}")
-
-        try:
-            dataset_obj.process_instance(instance)
-            repo_path = dataset_obj.get_repo_path(instance)
-            output_path = f"./scip_output/cpp/{instance_id}"
-
-            if not generate_cpp_compilation_database(Path(repo_path)):
-                failed_instances.append((instance_id, "Could not generate compilation database"))
-                continue
-
-            indexer = SCIPIndexer(repo_path, output_dir=output_path, language="cpp")
-
-            if not indexer.generate_index(show_compiler_diagnostics=False):
-                failed_instances.append((instance_id, "Failed to generate index"))
-                continue
-
-            if not indexer.decode_index():
-                failed_instances.append((instance_id, "Failed to decode index"))
-                continue
-
-            print(f"\n✅ Successfully processed {instance_id}")
-            success_count += 1
-
-        except Exception as e:
-            print(f"\n❌ Error processing {instance_id}: {str(e)}")
-            failed_instances.append((instance_id, str(e)))
-
-    print(f"\n{'=' * 80}")
-    print(f"Total: {len(dataset)} | Success: {success_count} | Failed: {len(failed_instances)}")
-    print(f"{'=' * 80}")
-
-    return success_count == len(dataset)
+def _has_edge(ig, src_expected, tgt_expected, edge_type=None):
+    """Check if an edge exists between nodes matching by unified_name or name."""
+    for e in ig.es:
+        if _vertex_matches(ig.vs[e.source], src_expected) and _vertex_matches(ig.vs[e.target], tgt_expected):
+            if edge_type is None or e["type"] == edge_type:
+                return True
+    return False
 
 
-# ==============================================================================
-# Rust Build and Indexing
-# ==============================================================================
+# Expected nodes / edges for the first SWE-bench instance of each language.
+# All symbol nodes use unified_name format: file_path:SymbolDisplay
+# File nodes match by name (the file path itself).
+_EXPECTED = {
+    # fmtlib/fmt (fmtlib__fmt-1683) — clangd indexer
+    "cpp": {
+        "nodes": [
+            ("include/fmt/core.h", "file"),
+            ("include/fmt/core.h:fmt.print()", "function"),
+            ("include/fmt/format.h:fmt.to_string()", "function"),
+            ("include/fmt/core.h:fmt.basic_string_view", "class"),
+            ("include/fmt/os.h:fmt.buffered_file", "class"),
+            ("include/fmt/os.h:fmt.file", "class"),
+            ("include/fmt/os.h:fmt.buffered_file.get()", "method"),
+            ("src/os.cc:fmt.file.write()", "method"),
+        ],
+        "edges": [
+            ("include/fmt/core.h", "include/fmt/core.h:fmt.to_string_view()", "contain"),
+            ("include/fmt/core.h:fmt.detail.make_arg()", "include/fmt/core.h:fmt.basic_format_arg", "reference"),
+        ],
+    },
+    # astral-sh/ruff (astral-sh__ruff-15309)
+    "rust": {
+        "nodes": [
+            ("crates/ruff_linter/src/linter.rs", "file"),
+            ("crates/ruff_linter/src/linter.rs:check_path()", "function"),
+            ("crates/ruff_linter/src/directives.rs:extract_directives()", "function"),
+            ("crates/ruff_python_resolver/src/resolver.rs:resolve_import()", "function"),
+            ("crates/ruff_linter/src/settings/types.rs:PythonVersion", "class"),
+            ("crates/ruff_linter/src/line_width.rs:IndentWidth", "class"),
+            ("crates/ruff_linter/src/source_kind.rs:SourceKind", "class"),
+            ("crates/ruff_linter/src/source_kind.rs:SourceKind.source_code()", "method"),
+        ],
+        "edges": [
+            ("crates/ruff_linter/src/linter.rs", "crates/ruff_linter/src/linter.rs:check_path()", "contain"),
+            ("crates/ruff_linter/src/linter.rs:check_path()", "crates/ruff_linter/src/settings/mod.rs:LinterSettings", "reference"),
+        ],
+    },
+    # axios/axios (axios__axios-4731)
+    "ts": {
+        "nodes": [
+            ("index.d.ts", "file"),
+            ("index.d.ts:Axios.request()", "method"),
+            ("index.d.ts:Axios.get()", "method"),
+            ("index.d.ts:Axios.post()", "method"),
+            ("index.d.ts:AxiosError", "class"),
+            ("index.d.ts:AxiosHeaders", "class"),
+            ("index.d.ts:AxiosRequestConfig", "class"),
+            ("index.d.ts:AxiosResponse", "class"),
+            ("index.d.ts:CancelToken", "class"),
+        ],
+        "edges": [
+            ("index.d.ts:Axios", "index.d.ts:Axios.request()", "contain"),
+            ("test/typescript/axios.ts", "index.d.ts:Axios.get()", "reference"),
+        ],
+    },
+}
 
 
-def build_rust_project(repo_path: Path, clean: bool = False) -> bool:
-    """
-    Build the Rust project using Cargo.
+def _tools_ready(language: str) -> bool:
+    if language == "cpp":
+        return bool(shutil.which("clangd")) and bool(shutil.which("cmake"))
+    if language == "rust":
+        return bool(shutil.which("rust-analyzer"))
+    if language == "ts":
+        return bool(shutil.which("scip-typescript"))
+    return False
 
-    Args:
-        repo_path: Path to the repository
-        clean: Whether to clean before building
 
-    Returns:
-        bool: True if build was successful
-    """
-    if clean:
-        print(f"Cleaning build artifacts...")
-        result = subprocess.run(
-            ["cargo", "clean"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print("✅ Clean successful")
-
-    print("\n" + "=" * 80)
-    print("Building Rust project with Cargo...")
-    print("=" * 80)
-
-    result = subprocess.run(
-        ["cargo", "build"],
-        cwd=repo_path,
+def _ensure_cpp_compdb(repo: Path) -> None:
+    compdb = repo / "build" / "compile_commands.json"
+    if compdb.exists():
+        return
+    subprocess.run(
+        [
+            "cmake",
+            "-S",
+            str(repo),
+            "-B",
+            str(repo / "build"),
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        ],
+        check=True,
         capture_output=True,
         text=True,
     )
 
-    if result.returncode != 0:
-        print(f"❌ Cargo build failed:")
-        print(result.stderr)
-        return False
 
-    print("✅ Build successful")
-    return True
-
-
-def test_rust_simple(args):
-    """Test Rust SCIP indexer with a local repository."""
-    repo_path = Path(args.repo).absolute()
-
-    if not repo_path.exists():
-        print(f"Error: Repository path does not exist: {repo_path}")
-        return False
-
-    print("=" * 80)
-    print("SCIP Rust Indexer Test - Simple Mode")
-    print("=" * 80)
-    print(f"Repository path: {repo_path}")
-    print("=" * 80)
-
-    # Check for Cargo.toml
-    if not (repo_path / "Cargo.toml").exists():
-        print("\n❌ Error: No Cargo.toml found!")
-        return False
-
-    # Build the project
-    print("\n📦 Building Rust project...")
-    if not build_rust_project(repo_path, clean=args.clean):
-        print("\n❌ Build failed")
-        return False
-
-    # Set output directory
-    output_dir = Path(args.output_dir).absolute() if args.output_dir else repo_path / "scip_output"
-    print(f"\nOutput directory: {output_dir}")
-
-    # Create the indexer
-    indexer = SCIPIndexer(project_root=repo_path, output_dir=output_dir, language="rust")
-
-    # Generate SCIP index
-    print("\n" + "=" * 80)
-    print("Step 1: Generating SCIP index...")
-    print("=" * 80)
-
-    success = indexer.generate_index(
-        exclude_vendored_libraries=getattr(args, "exclude_vendored", True),
-    )
-
-    if not success:
-        print("\n❌ Failed to generate SCIP index")
-        return False
-
-    print(f"\n✅ SCIP index generated at: {indexer.index_file}")
-
-    # Decode SCIP index
-    print("\n" + "=" * 80)
-    print("Step 2: Decoding SCIP index...")
-    print("=" * 80)
-
-    success = indexer.decode_index()
-
-    if not success:
-        print("\n❌ Failed to decode SCIP index")
-        return False
-
-    print(f"\n✅ SCIP index decoded at: {indexer.decoded_file}")
-
-    # Show file sizes
-    index_size = indexer.index_file.stat().st_size / (1024 * 1024)
-    decoded_size = indexer.decoded_file.stat().st_size / (1024 * 1024)
-
-    print("\n" + "=" * 80)
-    print("Output Files:")
-    print("=" * 80)
-    print(f"Binary SCIP index: {indexer.index_file} ({index_size:.2f} MB)")
-    print(f"Decoded SCIP index: {indexer.decoded_file} ({decoded_size:.2f} MB)")
-    print("=" * 80)
-
-    # Verify output if it's test_rust_simple
-    if "test_rust_simple" in str(repo_path):
-        verify_scip_output(indexer.decoded_file, "Rust")
-
-    print("\n✅ Test completed successfully!")
-    return True
+def _repo_keywords(language: str) -> list[str]:
+    if language == "cpp":
+        return [
+            "fmtlib/",
+            "nlohmann/",
+            "jqlang/",
+            "redis/",
+            "valkey-io/",
+            "micropython/",
+        ]
+    if language == "rust":
+        return [
+            "astral-sh/ruff",
+            "pola-rs/polars",
+            "tokio-rs/",
+            "rust-lang/",
+        ]
+    if language == "ts":
+        return [
+            "vuejs/",
+            "mui/",
+            "darkreader/",
+            "sveltejs/",
+            "axios/",
+            "expressjs/",
+            "insomnia/",
+            "dayjs/",
+        ]
+    return []
 
 
-def test_rust_multisweb(args):
-    """Test Rust SCIP indexer with Multi-SWE-bench dataset."""
-    from codeminer.dataset.swebench import SwebenchDataset
-
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
-
-    all_dataset = dataset_obj.load()
-
-    # Filter for Rust projects
-    rust_instances = []
-    rust_repo_keywords = ["tokio-rs/", "serde-rs/", "clap-rs/", "rayon-rs/", "sharkdp/", "nushell/"]
-
-    for inst in all_dataset:
-        repo = inst["repo"]
-        if any(keyword in repo for keyword in rust_repo_keywords):
-            rust_instances.append(inst)
-
-    if len(rust_instances) == 0:
-        print(f"❌ No Rust instances found in dataset")
-        return False
-
-    # Limit dataset
-    if args.num_instances is not None:
-        dataset = rust_instances[: min(args.num_instances, len(rust_instances))]
-    else:
-        dataset = rust_instances
-
-    print(f"\n✓ Found {len(rust_instances)} total Rust instances, testing {len(dataset)}")
-
-    success_count = 0
-    failed_instances = []
-
-    for idx, instance in enumerate(dataset):
-        instance_id = instance["instance_id"]
-        print(f"\n{'=' * 80}")
-        print(f"Processing Rust instance [{idx + 1}/{len(dataset)}]: {instance_id}")
-        print(f"{'=' * 80}")
-
-        try:
-            dataset_obj.process_instance(instance)
-            repo_path = dataset_obj.get_repo_path(instance)
-            output_path = f"./scip_output/rust/{instance_id}"
-
-            if not (Path(repo_path) / "Cargo.toml").exists():
-                failed_instances.append((instance_id, "No Cargo.toml found"))
-                continue
-
-            indexer = SCIPIndexer(repo_path, output_dir=output_path, language="rust")
-
-            if not indexer.generate_index(exclude_vendored_libraries=True):
-                failed_instances.append((instance_id, "Failed to generate index"))
-                continue
-
-            if not indexer.decode_index():
-                failed_instances.append((instance_id, "Failed to decode index"))
-                continue
-
-            print(f"\n✅ Successfully processed {instance_id}")
-            success_count += 1
-
-        except Exception as e:
-            print(f"\n❌ Error processing {instance_id}: {str(e)}")
-            failed_instances.append((instance_id, str(e)))
-
-    print(f"\n{'=' * 80}")
-    print(f"Total: {len(dataset)} | Success: {success_count} | Failed: {len(failed_instances)}")
-    print(f"{'=' * 80}")
-
-    return success_count == len(dataset)
+def _pick_swebench_multilingual_instance(language: str) -> dict:
+    dataset_obj = SwebenchMultilingualDataset(split="test", filter_instance=".*")
+    rows = dataset_obj.load()
+    keywords = _repo_keywords(language)
+    matches = [row for row in rows if any(k in row["repo"] for k in keywords)]
+    if not matches:
+        raise RuntimeError(f"No SWE-bench_Multilingual instances for {language}")
+    return dict(matches[0])
 
 
-# ==============================================================================
-# TypeScript Indexing
-# ==============================================================================
+@pytest.mark.parametrize("language", ["cpp", "rust", "ts"])
+def test_run_pipeline_swebench_multilingual_instance(
+    tmp_path: Path,
+    language: str,
+) -> None:
+    if not _tools_ready(language):
+        pytest.skip(f"Required tooling for {language} is not available in PATH")
 
-
-def test_ts_simple(args):
-    """Test TypeScript SCIP indexer with a local repository."""
-    repo_path = Path(args.repo).absolute()
-
-    if not repo_path.exists():
-        print(f"Error: Repository path does not exist: {repo_path}")
-        return False
-
-    print("=" * 80)
-    print("SCIP TypeScript Indexer Test - Simple Mode")
-    print("=" * 80)
-    print(f"Repository path: {repo_path}")
-    print("=" * 80)
-
-    # Install dependencies if package.json exists
-    package_json = repo_path / "package.json"
-    if package_json.exists():
-        print("\n📦 Installing npm dependencies...")
-        result = subprocess.run(
-            ["npm", "install"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=300,
+    try:
+        instance = _pick_swebench_multilingual_instance(language)
+    except Exception as exc:
+        pytest.skip(
+            f"SWE-bench_Multilingual unavailable or no matching instance: {exc}"
         )
-        if result.returncode == 0:
-            print("✅ npm install successful")
-        else:
-            print(f"⚠️  npm install failed: {result.stderr[:200]}")
 
-    # Set output directory
-    output_dir = Path(args.output_dir).absolute() if args.output_dir else repo_path / "scip_output"
-    print(f"\nOutput directory: {output_dir}")
+    dataset_obj = SwebenchMultilingualDataset(split="test", filter_instance=".*")
+    dataset_obj.process_instance(instance)
+    repo_path = Path(dataset_obj.get_repo_path(instance))
 
-    # Create the indexer
-    indexer = SCIPIndexer(project_root=repo_path, output_dir=output_dir, language="ts")
+    if language == "cpp":
+        _ensure_cpp_compdb(repo_path)
 
-    # Generate SCIP index
-    print("\n" + "=" * 80)
-    print("Step 1: Generating SCIP index...")
-    print("=" * 80)
-
-    # Check if tsconfig.json exists
-    tsconfig = repo_path / "tsconfig.json"
-    infer_tsconfig = not tsconfig.exists()
-
-    if infer_tsconfig:
-        print("⚠️  No tsconfig.json found, will infer TypeScript configuration")
-
-    success = indexer.generate_index(infer_tsconfig=infer_tsconfig)
-
-    if not success:
-        print("\n❌ Failed to generate SCIP index")
-        return False
-
-    print(f"\n✅ SCIP index generated at: {indexer.index_file}")
-
-    # Decode SCIP index
-    print("\n" + "=" * 80)
-    print("Step 2: Decoding SCIP index...")
-    print("=" * 80)
-
-    success = indexer.decode_index()
-
-    if not success:
-        print("\n❌ Failed to decode SCIP index")
-        return False
-
-    print(f"\n✅ SCIP index decoded at: {indexer.decoded_file}")
-
-    # Show file sizes
-    index_size = indexer.index_file.stat().st_size / (1024 * 1024)
-    decoded_size = indexer.decoded_file.stat().st_size / (1024 * 1024)
-
-    print("\n" + "=" * 80)
-    print("Output Files:")
-    print("=" * 80)
-    print(f"Binary SCIP index: {indexer.index_file} ({index_size:.2f} MB)")
-    print(f"Decoded SCIP index: {indexer.decoded_file} ({decoded_size:.2f} MB)")
-    print("=" * 80)
-
-    # Verify output if it's test_typescript_simple
-    if "test_typescript_simple" in str(repo_path):
-        verify_scip_output(indexer.decoded_file, "TypeScript")
-
-    print("\n✅ Test completed successfully!")
-    return True
-
-
-def test_ts_multisweb(args):
-    """Test TypeScript SCIP indexer with Multi-SWE-bench dataset."""
-    from codeminer.dataset.swebench import SwebenchDataset
-
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
+    kwargs = {"infer_tsconfig": True} if language == "ts" else {}
+    indexer = LSIndexer(
+        project_root=repo_path,
+        output_dir=tmp_path / f"scip_multi_{language}",
+        language=language,
     )
+    graph = indexer.run_pipeline(skip_level="graph", report_profile=False, **kwargs)
 
-    all_dataset = dataset_obj.load()
+    assert graph is not None, f"run_pipeline returned None for {language} (dataset)"
+    ig = graph.graph
+    assert len(ig.vs) > 0, f"no graph nodes for {language} (dataset)"
 
-    # Filter for TypeScript/JavaScript projects
-    ts_instances = []
-    ts_repo_keywords = [
-        "vuejs/",
-        "mui/",
-        "darkreader/",
-        "sveltejs/",
-        "axios/",
-        "expressjs/",
-        "insomnia/",
-        "dayjs/",
-    ]
-
-    for inst in all_dataset:
-        repo = inst["repo"]
-        if any(keyword in repo for keyword in ts_repo_keywords):
-            ts_instances.append(inst)
-
-    if len(ts_instances) == 0:
-        print(f"❌ No TypeScript instances found in dataset")
-        return False
-
-    # Limit dataset
-    if args.num_instances is not None:
-        dataset = ts_instances[: min(args.num_instances, len(ts_instances))]
-    else:
-        dataset = ts_instances
-
-    print(f"\n✓ Found {len(ts_instances)} total TypeScript instances, testing {len(dataset)}")
-
-    success_count = 0
-    failed_instances = []
-
-    for idx, instance in enumerate(dataset):
-        instance_id = instance["instance_id"]
-        print(f"\n{'=' * 80}")
-        print(f"Processing TypeScript instance [{idx + 1}/{len(dataset)}]: {instance_id}")
-        print(f"{'=' * 80}")
-
-        try:
-            dataset_obj.process_instance(instance)
-            repo_path = dataset_obj.get_repo_path(instance)
-            output_path = f"./scip_output/ts/{instance_id}"
-
-            # Install dependencies if package.json exists
-            package_json = Path(repo_path) / "package.json"
-            if package_json.exists():
-                print("  Installing dependencies...")
-                subprocess.run(
-                    ["npm", "install"],
-                    cwd=repo_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                )
-
-            indexer = SCIPIndexer(repo_path, output_dir=output_path, language="ts")
-
-            # Check if tsconfig.json exists
-            tsconfig = Path(repo_path) / "tsconfig.json"
-            infer_tsconfig = not tsconfig.exists()
-
-            if not indexer.generate_index(infer_tsconfig=infer_tsconfig):
-                failed_instances.append((instance_id, "Failed to generate index"))
-                continue
-
-            if not indexer.decode_index():
-                failed_instances.append((instance_id, "Failed to decode index"))
-                continue
-
-            print(f"\n✅ Successfully processed {instance_id}")
-            success_count += 1
-
-        except Exception as e:
-            print(f"\n❌ Error processing {instance_id}: {str(e)}")
-            failed_instances.append((instance_id, str(e)))
-
-    print(f"\n{'=' * 80}")
-    print(f"Total: {len(dataset)} | Success: {success_count} | Failed: {len(failed_instances)}")
-    print(f"{'=' * 80}")
-
-    return success_count == len(dataset)
-
-
-# ==============================================================================
-# Main
-# ==============================================================================
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Unified SCIP indexer test for C++, Rust, and TypeScript"
-    )
-
-    # Language selection
-    parser.add_argument(
-        "--lang",
-        choices=["cpp", "rust", "ts"],
-        required=True,
-        help="Language to test (cpp, rust, ts)",
-    )
-
-    # Mode selection
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--repo",
-        type=str,
-        help="Path to local repository (simple mode)",
-    )
-    mode_group.add_argument(
-        "--multisweb",
-        action="store_true",
-        help="Test with Multi-SWE-bench dataset",
-    )
-
-    # Common arguments
-    parser.add_argument(
-        "--clean",
-        action="store_true",
-        help="[Simple mode] Clean build artifacts before building",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        help="[Simple mode] Output directory for SCIP files",
-    )
-
-    # C++ specific arguments
-    parser.add_argument(
-        "--show-compiler-diagnostics",
-        action="store_true",
-        help="[C++ only] Show compiler diagnostics during indexing",
-    )
-
-    # Rust specific arguments
-    parser.add_argument(
-        "--exclude-vendored",
-        action="store_true",
-        default=True,
-        help="[Rust only] Exclude vendored libraries from indexing (default: True)",
-    )
-
-    # Multi-SWE-bench mode arguments
-    parser.add_argument(
-        "--num-instances",
-        type=int,
-        default=None,
-        help="[Multi-SWE-bench mode] Number of instances to test",
-    )
-
-    args = parser.parse_args()
-
-    # Run test based on language and mode
-    if args.lang == "cpp":
-        if args.multisweb:
-            print("\n=== Running C++ Multi-SWE-bench mode ===\n")
-            success = test_cpp_multisweb(args)
-        elif args.repo:
-            print("\n=== Running C++ Simple mode ===\n")
-            success = test_cpp_simple(args)
-        else:
-            parser.error("Please specify either --repo or --multisweb")
-
-    elif args.lang == "rust":
-        if args.multisweb:
-            print("\n=== Running Rust Multi-SWE-bench mode ===\n")
-            success = test_rust_multisweb(args)
-        elif args.repo:
-            print("\n=== Running Rust Simple mode ===\n")
-            success = test_rust_simple(args)
-        else:
-            parser.error("Please specify either --repo or --multisweb")
-
-    elif args.lang == "ts":
-        if args.multisweb:
-            print("\n=== Running TypeScript Multi-SWE-bench mode ===\n")
-            success = test_ts_multisweb(args)
-        elif args.repo:
-            print("\n=== Running TypeScript Simple mode ===\n")
-            success = test_ts_simple(args)
-        else:
-            parser.error("Please specify either --repo or --multisweb")
-
-    exit(0 if success else 1)
-
-
-if __name__ == "__main__":
-    main()
+    # Validate expected nodes and edges
+    expected = _EXPECTED.get(language)
+    if expected:
+        for name, node_type in expected["nodes"]:
+            assert _has_node(ig, name, node_type), (
+                f"[{language}] missing node: '{name}' (type={node_type})"
+            )
+        for src, tgt, edge_type in expected["edges"]:
+            assert _has_edge(ig, src, tgt, edge_type), (
+                f"[{language}] missing edge: '{src}' -> '{tgt}' ({edge_type})"
+            )

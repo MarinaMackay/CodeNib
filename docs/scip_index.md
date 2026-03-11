@@ -3,6 +3,32 @@
 [SCIP](https://github.com/sourcegraph/scip/tree/main) is a code intelligence protocol for index, which has powerful support for multiple languages, e.g. python, C++, etc.
 We copy the scip.proto to the local directory for convenience.
 
+### Multilingual Prerequisites
+
+Besides `scip-python`, multilingual indexing requires extra tooling:
+
+- TypeScript/JavaScript (`scip-typescript`):
+  - Node.js 18 or 20
+  - `npm`
+  - `yarn` for repos using Yarn workspaces (optional but commonly needed)
+  - `pnpm` for pnpm workspaces (optional)
+- C/C++ (`scip-clang`):
+  - `scip-clang`
+  - `cmake` for CMake-based projects
+  - `bear` for Make/Autotools projects (e.g., repositories without CMake compile DB)
+- Rust (`rust-analyzer`):
+  - stable toolchain with `rust-analyzer` component
+
+Example installs:
+```bash
+# TypeScript workspace tooling
+npm install -g @sourcegraph/scip-typescript yarn
+
+# C/C++ Make-based compilation database helper
+# Ubuntu/Debian:
+sudo apt-get update && sudo apt-get install -y bear
+```
+
 ### Setup scip-python (Custom Fork)
 
 We use a custom fork of scip-python with exclude-config support, located in `third_party/scip-python`.
@@ -44,13 +70,13 @@ Related links:
 First install the [protobuf](https://protobuf.dev/installation/).
 Get the scip.proto from [SCIP](https://github.com/sourcegraph/scip/tree/main).
 
-### Using the SCIPIndexer
+### Using the LSIndexer
 
-The `SCIPIndexer` class provides a Python interface for working with SCIP indices. **It automatically handles conda environment isolation** to prevent conflicts with system Python packages.
+The `LSIndexer` class provides a Python interface for working with SCIP indices. **It automatically handles conda environment isolation** to prevent conflicts with system Python packages.
 
 #### Conda Environment Isolation
 
-**Important:** The SCIPIndexer uses conda for environment isolation when running `scip-python`. This prevents issues with:
+**Important:** The LSIndexer uses conda for environment isolation when running `scip-python`. This prevents issues with:
 - Package version conflicts
 - System Python package interference
 - Inconsistent dependency resolution
@@ -68,14 +94,14 @@ conda env create -f codeminer/scip_interface/scip-environment.yml
 #### Basic Usage
 
 ```python
-from codeminer.scip_interface.scip_indexer import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 # Create an indexer for a project
 # By default, output goes to /tmp/<project_name>/
-indexer = SCIPIndexer("/path/to/project")
+indexer = LSIndexer("/path/to/project")
 
 # Or specify a custom output directory
-indexer = SCIPIndexer("/path/to/project", output_dir="/custom/output/path")
+indexer = LSIndexer("/path/to/project", output_dir="/custom/output/path")
 
 # Generate an index (runs in isolated conda environment automatically)
 indexer.generate_index(project_name="MyProject", target_dir="src")
@@ -115,7 +141,7 @@ indexer.clear_cache(level="raw")     # Keep only index.scip
 **Exclude Patterns:**
 ```python
 # Exclude specific directories or files from indexing
-indexer = SCIPIndexer(
+indexer = LSIndexer(
     "/path/to/project",
     exclude_patterns=["tests/*", "*.test.py", "build/*"]
 )

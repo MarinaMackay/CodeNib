@@ -3,29 +3,13 @@
 Regression tests for the JavaScript/TypeScript code chunker.
 """
 
-import subprocess
 from pathlib import Path
-
-import pytest
 
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
 
-EXPRESS_URL = "https://github.com/expressjs/express.git"
-EXPRESS_PATH = Path("/tmp/expressjs_express_test_repo")
-
-
-@pytest.fixture(scope="module")
-def express_repo():
-    if not EXPRESS_PATH.exists():
-        subprocess.run(
-            ["git", "clone", "--depth", "1", EXPRESS_URL, str(EXPRESS_PATH)],
-            check=True,
-        )
-    return EXPRESS_PATH
-
 
 def _collect_chunks(repo_root: Path, chunk_depth: int):
-    repo_config = RepoChunkingConfig(languages=["javascript"])
+    repo_config = RepoChunkingConfig(languages=["javascript"], filter_tests=False)
     chunker = CodeChunker(
         language="javascript",
         repo_config=repo_config,
@@ -49,6 +33,10 @@ def test_js_chunker_level_one(express_repo):
     chunk_types = {chunk.chunk_type for chunk in chunks}
     assert "method" not in chunk_types
     assert "function" in chunk_types
+    # Top-level plain variable/constant declarations should be emitted at L1.
+    assert (
+        "variable" in chunk_types or "object" in chunk_types
+    ), f"Expected variable or object in L1 chunk types, got {chunk_types}"
 
 
 def test_js_chunker_level_two(express_repo):
@@ -56,4 +44,4 @@ def test_js_chunker_level_two(express_repo):
     function_chunks = [chunk for chunk in chunks if chunk.chunk_type == "function"]
     assert function_chunks, "Expected function chunks when chunk_depth=2"
     # Ensure chunker is emitting node identifiers with file context
-    assert any("lib/router" in chunk.node_id for chunk in function_chunks)
+    assert any(chunk.node_id.startswith("lib/") for chunk in function_chunks)

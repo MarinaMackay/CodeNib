@@ -7,7 +7,7 @@ from .graph.code_graph import CodeGraph
 from .index.sparse_idx.bm25_index import BM25CodeIndexer
 from .llm.llm_config import LLMConfig, LLMProvider
 from .log_utils import get_logger
-from .scip_interface import SCIPIndexer
+from .ls_router import LSIndexer
 
 logger = get_logger(__name__)
 
@@ -86,7 +86,7 @@ class CodeSearchEngine:
         output_path = str(Path.home()) + "/.codeminer/" + instance_id
         if not os.path.exists(output_path):
             os.makedirs(output_path)
-        scip_indexer = SCIPIndexer(self.repo_path, output_dir=output_path)
+        scip_indexer = LSIndexer(self.repo_path, output_dir=output_path)
 
         logger.info(f"Saved decoded scip index to {output_path}")
 

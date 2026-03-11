@@ -10,6 +10,7 @@ Test Usage:
 """
 
 import argparse
+import gc
 import json
 import logging
 import sys
@@ -150,6 +151,15 @@ def parse_args():
         action="store_true",
         help="Enable profiler summaries even if --profile-dir is not provided.",
     )
+    parser.add_argument(
+        "--profile-tag",
+        type=str,
+        default=None,
+        help=(
+            "Optional tag appended to profiler output filename to avoid "
+            "overwriting runs (e.g., dev_run1, rerank_expA)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -189,6 +199,7 @@ def build_embeddings(args):
         logger.info(f"Processing [{idx+1}/{len(dataset_instances)}]: {instance_id}")
         logger.info(f"{'='*80}")
 
+        vector_store = None
         try:
             # Create profiler for this instance
             instance_profiler = Profiler(
@@ -237,7 +248,7 @@ def build_embeddings(args):
             logger.info("Building hierarchical vector store...")
             plan_name = args.plan_name
             with instance_profiler.section("build_vector_store"):
-                build_hierarchical_vector_store(
+                vector_store = build_hierarchical_vector_store(
                     repo_path=repo_path,
                     index_path=str(instance_final_dir),
                     plan_name=plan_name,
@@ -275,7 +286,9 @@ def build_embeddings(args):
                     "repo": instance.get("repo", "unknown"),
                     "base_commit": instance.get("base_commit", "unknown"),
                     "embedding_model": args.embedding_model,
+                    "embedding_provider": args.embedding_provider,
                     "embedding_dimension": args.embedding_dimension,
+                    "profile_tag": args.profile_tag,
                     "total_duration": sum(
                         section["total"] for section in sections_payload
                     ),
@@ -283,10 +296,17 @@ def build_embeddings(args):
                 }
 
                 model_suffix = args.embedding_model.replace("/", "__")
-                profile_file = (
-                    profile_output_dir
-                    / f"{instance_id.replace('/', '__')}__{model_suffix}.json"
-                )
+                provider_suffix = args.embedding_provider.replace("/", "__")
+                dim_suffix = f"dim{args.embedding_dimension}"
+                profile_parts = [
+                    instance_id.replace("/", "__"),
+                    model_suffix,
+                    provider_suffix,
+                    dim_suffix,
+                ]
+                if args.profile_tag:
+                    profile_parts.append(args.profile_tag.replace("/", "__"))
+                profile_file = profile_output_dir / f"{'__'.join(profile_parts)}.json"
                 profile_file.write_text(json.dumps(profile_payload, indent=2))
                 logger.info(f"Saved profiler results to {profile_file}")
 
@@ -300,8 +320,18 @@ def build_embeddings(args):
             import traceback
 
             logger.error(traceback.format_exc())
-            continue
+        finally:
+            if vector_store is not None:
+                vector_store.close()
+                vector_store = None
+            gc.collect()
+            try:
+                import torch
 
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
     logger.info(f"\n{'='*80}")
     logger.info("Hierarchical embedding build complete!")
     logger.info(f"Processed {len(dataset_instances)} instance(s)")

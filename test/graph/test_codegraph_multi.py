@@ -10,32 +10,108 @@ This script tests the complete pipeline for all three languages:
 5. Export to JSON for manual verification
 
 Usage:
-    # Simple mode - test with local repository
-    python test/graph/test_codegraph_multi.py --lang cpp --repo test/scip/simple_repos/cpp_simple
-    python test/graph/test_codegraph_multi.py --lang rust --repo test/scip/simple_repos/rust_simple
-    python test/graph/test_codegraph_multi.py --lang ts --repo test/scip/simple_repos/typescript_simple
+    # Local mode - test with local repository
+    python test/graph/test_codegraph_multi.py --lang cpp --repo \
+        test/scip/simple_repos/cpp_simple
+    python test/graph/test_codegraph_multi.py --lang rust --repo \
+        test/scip/simple_repos/rust_simple
+    python test/graph/test_codegraph_multi.py --lang ts --repo \
+        test/scip/simple_repos/typescript_simple
 
-    # Multi-SWE-bench mode - test with dataset
-    python test/graph/test_codegraph_multi.py --lang cpp --multisweb --num-instances 5
-    python test/graph/test_codegraph_multi.py --lang rust --multisweb --num-instances 3
-    python test/graph/test_codegraph_multi.py --lang ts --multisweb --num-instances 2
+    # SWE-bench_Multilingual mode - test with dataset
+    python test/graph/test_codegraph_multi.py --lang cpp --swebench-multilingual \
+        --num-instances 5
+    python test/graph/test_codegraph_multi.py --lang rust --swebench-multilingual \
+        --num-instances 3
+    python test/graph/test_codegraph_multi.py --lang ts --swebench-multilingual \
+        --num-instances 2
 
     # Sample mode - test 5 instances from each language
     python test/graph/test_codegraph_multi.py --sample
-    python test/graph/test_codegraph_multi.py --sample --num-instances 3  # Test 3 from each language
+    python test/graph/test_codegraph_multi.py --sample --num-instances 3 \
+        # Test 3 from each language
+
+    # Pytest mode
+    pytest test/graph/test_codegraph_multi.py -k test_cpp_multi -q
 """
 
 import argparse
 import json
-import subprocess
+import shutil
 import sys
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+import pytest
 
-from codeminer.dataset.swebench import SwebenchDataset
-from codeminer.scip_interface import SCIPClangIndexer, SCIPRustIndexer, SCIPTypeScriptIndexer
+from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
+from codeminer.ls_router import LSIndexer
+
+# ==============================================================================
+# Language configuration
+# ==============================================================================
+
+LANG_CONFIG = {
+    "cpp": {
+        "display_name": "C++",
+        "indexer_name": "clangd",
+        "default_repo": "cpp_simple",
+        "repo_keywords": [
+            "fmtlib/",
+            "nlohmann/",
+            "jqlang/",
+            "redis/",
+            "valkey-io/",
+            "micropython/",
+        ],
+        "pipeline_kwargs": {},
+    },
+    "rust": {
+        "display_name": "Rust",
+        "indexer_name": "rust-analyzer",
+        "default_repo": "rust_simple",
+        "repo_keywords": [
+            "tokio-rs/",
+            "serde-rs/",
+            "clap-rs/",
+            "rayon-rs/",
+            "sharkdp/",
+            "nushell/",
+        ],
+        "pipeline_kwargs": {"exclude_vendored_libraries": True},
+    },
+    "ts": {
+        "display_name": "TypeScript",
+        "indexer_name": "scip-typescript",
+        "default_repo": "typescript_simple",
+        "repo_keywords": [
+            "vuejs/",
+            "mui/",
+            "darkreader/",
+            "sveltejs/",
+            "axios/",
+            "expressjs/",
+            "insomnia/",
+            "dayjs/",
+        ],
+        "pipeline_kwargs": {},
+    },
+}
+
+
+def _tools_ready(language: str) -> bool:
+    """Check if required external tooling is available."""
+    if language == "cpp":
+        return bool(shutil.which("clangd")) and bool(shutil.which("cmake"))
+    if language == "rust":
+        return bool(shutil.which("rust-analyzer"))
+    if language == "ts":
+        return bool(shutil.which("scip-typescript")) or bool(shutil.which("npx"))
+    return False
+
+
+# ==============================================================================
+# Shared helpers
+# ==============================================================================
 
 
 def analyze_graph(graph):
@@ -81,7 +157,9 @@ def analyze_graph(graph):
         if "file" in node.attributes():
             file_path = node["file"]
             if file_path and file_path != node_name:
-                print(f"  [{i:2d}] {node_type:15s} | {node_name[:50]:50s} @ {file_path}")
+                print(
+                    f"  [{i:2d}] {node_type:15s} | {node_name[:50]:50s} @ {file_path}"
+                )
             else:
                 print(f"  [{i:2d}] {node_type:15s} | {node_name[:50]}")
         else:
@@ -235,60 +313,65 @@ def export_graph_to_json(graph, output_file, language, indexer):
 
 
 # ==============================================================================
-# C++ Tests
+# Unified test runners
 # ==============================================================================
 
-def test_cpp_simple(repo_path=None):
-    """Test C++ CodeGraph generation with simple project."""
+
+def run_local(lang, repo_path=None):
+    """Test CodeGraph generation with a local project.
+
+    Args:
+        lang: Language key ("cpp", "rust", "ts")
+        repo_path: Path to repo, or None to use default simple_repos
+    """
+    cfg = LANG_CONFIG[lang]
+    display = cfg["display_name"]
+
     print("=" * 80)
-    print("C++ SCIP CodeGraph Test")
+    print(f"{display} SCIP CodeGraph Test")
     print("=" * 80)
 
-    # Use provided path or default to cpp_simple
     if repo_path:
         project_path = Path(repo_path).absolute()
     else:
         project_path = (
-            Path(__file__).parent.parent / "scip" / "simple_repos" / "cpp_simple"
+            Path(__file__).parent.parent
+            / "scip"
+            / "simple_repos"
+            / cfg["default_repo"]
         )
 
     if not project_path.exists():
         print(f"\n❌ Test project not found at {project_path}")
         return False
 
-    # Check for CMakeLists.txt
-    if not (project_path / "CMakeLists.txt").exists():
-        print(f"\n❌ No CMakeLists.txt found at {project_path}")
-        return False
-
     print(f"\nProject path: {project_path}")
-    output_path = "./scip_output/cpp"
+    output_path = f"./scip_output/{lang}"
     print(f"Output path: {output_path}")
 
-    # Create C++ indexer
-    indexer = SCIPClangIndexer(
+    indexer = LSIndexer(
         str(project_path),
         output_dir=output_path,
+        language=lang,
     )
 
     print("\n" + "=" * 80)
-    print("Running SCIP C++ Pipeline")
+    print(f"Running {display} Pipeline")
     print("=" * 80)
 
-    # Run the complete pipeline
     print("\nRunning pipeline...")
-    graph = indexer.run_pipeline(skip_level="graph")
+    graph = indexer.run_pipeline(skip_level="graph", **cfg["pipeline_kwargs"])
 
     if not graph:
         print("\n❌ Failed to generate CodeGraph")
         return False
 
-    # Analyze the graph
     stats = analyze_graph(graph)
 
-    # Export to JSON
     json_file = Path(output_path) / "codegraph.json"
-    export_graph_to_json(graph, json_file, language="C++", indexer="scip-clang")
+    export_graph_to_json(
+        graph, json_file, language=display, indexer=cfg["indexer_name"]
+    )
 
     print("\n" + "=" * 80)
     print("Test Summary")
@@ -297,458 +380,85 @@ def test_cpp_simple(repo_path=None):
     print(f"Edges: {stats['total_edges']}")
     print(f"References: {stats['reference_edges']}")
     print(f"Containments: {stats['containment_edges']}")
-    print(f"\n✅ C++ CodeGraph test completed!")
+    print(f"\n✅ {display} CodeGraph test completed!")
     print(f"\nGraph saved to: {indexer.graph_file}")
     print("=" * 80 + "\n")
 
     return True
 
 
-def test_cpp_multisweb(args):
-    """Test C++ SCIP CodeGraph with Multi-SWE-bench dataset."""
-    # SWE-bench Multilingual dataset configuration
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
+def run_multi(lang, args):
+    """Test CodeGraph with SWE-bench_Multilingual dataset.
 
+    Args:
+        lang: Language key ("cpp", "rust", "ts")
+        args: Namespace with num_instances
+
+    Returns:
+        Tuple of (success_count, total_count, failed_instances)
+    """
+    cfg = LANG_CONFIG[lang]
+    display = cfg["display_name"]
+
+    dataset_obj = SwebenchMultilingualDataset(split="test", filter_instance=".*")
     all_dataset = dataset_obj.load()
 
-    # Filter for C/C++ projects
-    cpp_instances = []
-    cpp_repo_keywords = ['fmtlib/', 'nlohmann/', 'jqlang/', 'redis/', 'valkey-io/', 'micropython/']
-
-    for inst in all_dataset:
-        repo = inst['repo']
-        if any(keyword in repo for keyword in cpp_repo_keywords):
-            cpp_instances.append(inst)
-
-    if len(cpp_instances) == 0:
-        print(f"❌ No C/C++ instances found in dataset")
-        return False, []
-
-    # Limit dataset to specified number of instances
-    if args.num_instances is not None:
-        dataset = cpp_instances[: min(args.num_instances, len(cpp_instances))]
-    else:
-        dataset = cpp_instances
-
-    print(f"\n✓ Found {len(cpp_instances)} total C/C++ instances, testing {len(dataset)}")
-
-    # Statistics tracking
-    success_count = 0
-    failed_instances = []
-
-    # Process each instance
-    for idx, instance in enumerate(dataset):
-        instance_id = instance["instance_id"]
-
-        print(f"\n{'=' * 80}")
-        print(f"Processing C++ instance [{idx + 1}/{len(dataset)}]: {instance_id}")
-        print(f"{'=' * 80}")
-
-        try:
-            # Download and checkout repository
-            dataset_obj.process_instance(instance)
-            repo_path = dataset_obj.get_repo_path(instance)
-
-            # Set output path
-            output_path = f"./scip_output/cpp/{instance_id}"
-
-            # Check for CMakeLists.txt or Makefile
-            cmake_file = Path(repo_path) / "CMakeLists.txt"
-            makefile = Path(repo_path) / "Makefile"
-
-            if cmake_file.exists():
-                # Try to generate compilation database
-                build_dir = Path(repo_path) / "build"
-                build_dir.mkdir(exist_ok=True)
-
-                result = subprocess.run(
-                    ["cmake", "-B", "build", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
-                    cwd=repo_path,
-                    capture_output=True,
-                    text=True,
-                )
-
-                if result.returncode != 0:
-                    print(f"\n❌ CMake configuration failed")
-                    failed_instances.append((instance_id, "CMake configuration failed"))
-                    continue
-
-            # Create C++ indexer
-            indexer = SCIPClangIndexer(repo_path, output_dir=output_path)
-
-            # Run complete pipeline
-            print("\n[Running CodeGraph pipeline...]")
-            graph = indexer.run_pipeline(skip_level="graph")
-
-            if not graph:
-                print(f"\n❌ Failed to generate CodeGraph for {instance_id}")
-                failed_instances.append((instance_id, "CodeGraph generation failed"))
-                continue
-
-            # Analyze the graph
-            stats = analyze_graph(graph)
-
-            # Export to JSON
-            json_file = Path(output_path) / "codegraph.json"
-            export_graph_to_json(graph, json_file, language="C++", indexer="scip-clang")
-
-            print(f"\n✅ Successfully processed {instance_id}")
-            print(f"   Nodes: {stats['total_nodes']}, Edges: {stats['total_edges']}")
-
-            success_count += 1
-
-        except Exception as e:
-            print(f"\n❌ Error processing {instance_id}: {str(e)}")
-            failed_instances.append((instance_id, str(e)))
-            continue
-
-    return success_count == len(dataset), failed_instances
-
-
-# ==============================================================================
-# Rust Tests
-# ==============================================================================
-
-def test_rust_simple(repo_path=None):
-    """Test Rust CodeGraph generation with simple project."""
-    print("=" * 80)
-    print("Rust SCIP CodeGraph Test")
-    print("=" * 80)
-
-    # Use provided path or default to rust_simple
-    if repo_path:
-        project_path = Path(repo_path).absolute()
-    else:
-        project_path = (
-            Path(__file__).parent.parent / "scip" / "simple_repos" / "rust_simple"
-        )
-
-    if not project_path.exists():
-        print(f"\n❌ Test project not found at {project_path}")
-        return False
-
-    # Check for Cargo.toml
-    if not (project_path / "Cargo.toml").exists():
-        print(f"\n❌ No Cargo.toml found at {project_path}")
-        return False
-
-    print(f"\nProject path: {project_path}")
-    output_path = "./scip_output/rust"
-    print(f"Output path: {output_path}")
-
-    # Create Rust indexer
-    indexer = SCIPRustIndexer(
-        str(project_path),
-        output_dir=output_path,
-    )
-
-    print("\n" + "=" * 80)
-    print("Running SCIP Rust Pipeline")
-    print("=" * 80)
-
-    # Run the complete pipeline
-    print("\nRunning pipeline...")
-    graph = indexer.run_pipeline(
-        exclude_vendored_libraries=True,
-        skip_level="graph",
-    )
-
-    if not graph:
-        print("\n❌ Failed to generate CodeGraph")
-        return False
-
-    # Analyze the graph
-    stats = analyze_graph(graph)
-
-    # Export to JSON
-    json_file = Path(output_path) / "codegraph.json"
-    export_graph_to_json(graph, json_file, language="Rust", indexer="rust-analyzer")
-
-    print("\n" + "=" * 80)
-    print("Test Summary")
-    print("=" * 80)
-    print(f"\nNodes: {stats['total_nodes']}")
-    print(f"Edges: {stats['total_edges']}")
-    print(f"References: {stats['reference_edges']}")
-    print(f"Containments: {stats['containment_edges']}")
-    print(f"\n✅ Rust CodeGraph test completed!")
-    print(f"\nGraph saved to: {indexer.graph_file}")
-    print("=" * 80 + "\n")
-
-    return True
-
-
-def test_rust_multisweb(args):
-    """Test Rust SCIP CodeGraph with Multi-SWE-bench dataset."""
-    # SWE-bench Multilingual dataset configuration
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
-
-    all_dataset = dataset_obj.load()
-
-    # Filter for Rust projects only
-    rust_instances = []
-    rust_repo_keywords = ['tokio-rs/', 'serde-rs/', 'clap-rs/', 'rayon-rs/',
-                          'sharkdp/', 'nushell/']
-
-    for inst in all_dataset:
-        repo = inst['repo']
-        if any(keyword in repo for keyword in rust_repo_keywords):
-            rust_instances.append(inst)
-
-    if len(rust_instances) == 0:
-        print(f"❌ No Rust instances found in dataset")
-        return False, []
-
-    # Limit dataset to specified number of instances
-    if args.num_instances is not None:
-        dataset = rust_instances[: min(args.num_instances, len(rust_instances))]
-    else:
-        dataset = rust_instances
-
-    print(f"\n✓ Found {len(rust_instances)} total Rust instances, testing {len(dataset)}")
-
-    # Statistics tracking
-    success_count = 0
-    failed_instances = []
-
-    # Process each instance
-    for idx, instance in enumerate(dataset):
-        instance_id = instance["instance_id"]
-
-        print(f"\n{'=' * 80}")
-        print(f"Processing Rust instance [{idx + 1}/{len(dataset)}]: {instance_id}")
-        print(f"{'=' * 80}")
-
-        try:
-            # Download and checkout repository
-            dataset_obj.process_instance(instance)
-            repo_path = dataset_obj.get_repo_path(instance)
-
-            # Set output path
-            output_path = f"./scip_output/rust/{instance_id}"
-
-            # Check if Cargo.toml exists
-            cargo_toml = Path(repo_path) / "Cargo.toml"
-            if not cargo_toml.exists():
-                print(f"\n⚠️  No Cargo.toml found, skipping...")
-                failed_instances.append((instance_id, "No Cargo.toml found"))
-                continue
-
-            # Create Rust indexer
-            indexer = SCIPRustIndexer(repo_path, output_dir=output_path)
-
-            # Run complete pipeline
-            print("\n[Running CodeGraph pipeline...]")
-            graph = indexer.run_pipeline(
-                exclude_vendored_libraries=True,
-                skip_level="graph",
-            )
-
-            if not graph:
-                print(f"\n❌ Failed to generate CodeGraph for {instance_id}")
-                failed_instances.append((instance_id, "CodeGraph generation failed"))
-                continue
-
-            # Analyze the graph
-            stats = analyze_graph(graph)
-
-            # Export to JSON
-            json_file = Path(output_path) / "codegraph.json"
-            export_graph_to_json(graph, json_file, language="Rust", indexer="rust-analyzer")
-
-            print(f"\n✅ Successfully processed {instance_id}")
-            print(f"   Nodes: {stats['total_nodes']}, Edges: {stats['total_edges']}")
-
-            success_count += 1
-
-        except Exception as e:
-            print(f"\n❌ Error processing {instance_id}: {str(e)}")
-            failed_instances.append((instance_id, str(e)))
-            continue
-
-    return success_count == len(dataset), failed_instances
-
-
-# ==============================================================================
-# TypeScript Tests
-# ==============================================================================
-
-def test_ts_simple(repo_path=None):
-    """Test TypeScript CodeGraph generation with simple project."""
-    print("=" * 80)
-    print("TypeScript SCIP CodeGraph Test")
-    print("=" * 80)
-
-    # Use provided path or default to typescript_simple
-    if repo_path:
-        project_path = Path(repo_path).absolute()
-    else:
-        project_path = Path(__file__).parent.parent / "scip" / "simple_repos" / "typescript_simple"
-
-    if not project_path.exists():
-        print(f"\n❌ Test project not found at {project_path}")
-        return False
-
-    print(f"\nProject path: {project_path}")
-    output_path = "./scip_output/ts"
-    print(f"Output path: {output_path}")
-
-    # Create TypeScript indexer
-    indexer = SCIPTypeScriptIndexer(
-        str(project_path),
-        output_dir=output_path,
-    )
-
-    print("\n" + "=" * 80)
-    print("Running SCIP TypeScript Pipeline")
-    print("=" * 80)
-
-    # Run the complete pipeline
-    print("\nRunning pipeline...")
-    graph = indexer.run_pipeline(
-        infer_tsconfig=False,
-        skip_level="graph",
-    )
-
-    if not graph:
-        print("\n❌ Failed to generate CodeGraph")
-        return False
-
-    # Analyze the graph
-    stats = analyze_graph(graph)
-
-    # Export to JSON
-    json_file = Path(output_path) / "codegraph.json"
-    export_graph_to_json(graph, json_file, language="TypeScript", indexer="scip-typescript")
-
-    print("\n" + "=" * 80)
-    print("Test Summary")
-    print("=" * 80)
-    print(f"\nNodes: {stats['total_nodes']}")
-    print(f"Edges: {stats['total_edges']}")
-    print(f"References: {stats['reference_edges']}")
-    print(f"Containments: {stats['containment_edges']}")
-    print(f"\n✅ TypeScript CodeGraph test completed!")
-    print(f"\nGraph saved to: {indexer.graph_file}")
-    print("=" * 80 + "\n")
-
-    return True
-
-
-def test_ts_multisweb(args):
-    """Test TypeScript SCIP CodeGraph with Multi-SWE-bench dataset."""
-    # Load dataset
-    dataset_obj = SwebenchDataset(
-        dataset="SWE-bench/SWE-bench_Multilingual",
-        split="test",
-        filter_instance=".*",
-    )
-    all_dataset = dataset_obj.load()
-
-    # Filter for TypeScript/JavaScript projects
-    ts_instances = []
-    ts_repo_keywords = [
-        "vuejs/",
-        "mui/",
-        "darkreader/",
-        "sveltejs/",
-        "axios/",
-        "expressjs/",
-        "insomnia/",
-        "dayjs/",
+    # Filter by repo keywords
+    instances = [
+        inst
+        for inst in all_dataset
+        if any(kw in inst["repo"] for kw in cfg["repo_keywords"])
     ]
 
-    for inst in all_dataset:
-        repo = inst["repo"]
-        if any(keyword in repo for keyword in ts_repo_keywords):
-            ts_instances.append(inst)
+    if not instances:
+        print(f"❌ No {display} instances found in dataset")
+        return 0, 0, []
 
-    if len(ts_instances) == 0:
-        print(f"❌ No TypeScript instances found in dataset")
-        return False, []
-
-    # Limit to requested number
     if args.num_instances is not None:
-        dataset = ts_instances[: min(args.num_instances, len(ts_instances))]
+        dataset = instances[: min(args.num_instances, len(instances))]
     else:
-        dataset = ts_instances
+        dataset = instances
 
-    print(f"\n✓ Found {len(ts_instances)} total TypeScript instances, testing {len(dataset)}")
+    print(
+        f"\n✓ Found {len(instances)} total {display} instances, testing {len(dataset)}"
+    )
 
-    # Statistics
     success_count = 0
     failed_instances = []
 
-    # Process each instance
     for idx, instance in enumerate(dataset):
         instance_id = instance["instance_id"]
+
         print(f"\n{'=' * 80}")
-        print(f"Processing TypeScript instance [{idx + 1}/{len(dataset)}]: {instance_id}")
+        print(
+            f"Processing {display} instance [{idx + 1}/{len(dataset)}]: {instance_id}"
+        )
         print(f"{'=' * 80}")
 
         try:
-            # Download repository
             dataset_obj.process_instance(instance)
             repo_path = dataset_obj.get_repo_path(instance)
 
-            # Set output path
-            output_path = f"./scip_output/ts/{instance_id}"
+            output_path = f"./scip_output/{lang}/{instance_id}"
 
-            # Create indexer
-            indexer = SCIPTypeScriptIndexer(repo_path, output_dir=output_path)
+            indexer = LSIndexer(repo_path, output_dir=output_path, language=lang)
 
-            # Check if tsconfig.json exists
-            tsconfig = Path(repo_path) / "tsconfig.json"
-            infer_tsconfig = not tsconfig.exists()
-
-            if infer_tsconfig:
-                print("  ⚠️  No tsconfig.json found, will infer TypeScript configuration")
-
-            # Install dependencies if package.json exists
-            package_json = Path(repo_path) / "package.json"
-            if package_json.exists():
-                print("  Installing dependencies...")
-                try:
-                    result = subprocess.run(
-                        ["npm", "install"],
-                        cwd=repo_path,
-                        capture_output=True,
-                        text=True,
-                        timeout=300,
-                    )
-                    if result.returncode != 0:
-                        print(f"  ⚠️  npm install failed: {result.stderr[:200]}")
-                except subprocess.TimeoutExpired:
-                    print("  ⚠️  npm install timed out (5 min)")
-                except Exception as e:
-                    print(f"  ⚠️  npm install error: {e}")
-
-            # Run pipeline
             print("\n[Running CodeGraph pipeline...]")
             graph = indexer.run_pipeline(
-                skip_level="graph",
-                infer_tsconfig=infer_tsconfig,
+                skip_level="graph", **cfg["pipeline_kwargs"]
             )
 
             if not graph:
-                print(f"❌ Failed to generate CodeGraph for {instance_id}")
+                print(f"\n❌ Failed to generate CodeGraph for {instance_id}")
                 failed_instances.append((instance_id, "CodeGraph generation failed"))
                 continue
 
-            # Analyze graph
             stats = analyze_graph(graph)
 
-            # Export to JSON
             json_file = Path(output_path) / "codegraph.json"
-            export_graph_to_json(graph, json_file, language="TypeScript", indexer="scip-typescript")
+            export_graph_to_json(
+                graph, json_file, language=display, indexer=cfg["indexer_name"]
+            )
 
             print(f"\n✅ Successfully processed {instance_id}")
             print(f"   Nodes: {stats['total_nodes']}, Edges: {stats['total_edges']}")
@@ -757,19 +467,18 @@ def test_ts_multisweb(args):
 
         except Exception as e:
             print(f"\n❌ Error processing {instance_id}: {str(e)}")
-            import traceback
-            traceback.print_exc()
             failed_instances.append((instance_id, str(e)))
             continue
 
-    return success_count == len(dataset), failed_instances
+    return success_count, len(dataset), failed_instances
 
 
 # ==============================================================================
 # Sample Mode - Test N instances from each language
 # ==============================================================================
 
-def test_sample_mode(num_instances=5):
+
+def run_sample_mode(num_instances=5):
     """
     Test N instances from EACH language (C++, Rust, TypeScript).
 
@@ -783,62 +492,83 @@ def test_sample_mode(num_instances=5):
     print(f"Sample Mode: Testing {num_instances} instances from each language")
     print("=" * 80)
 
-    # Create args object for each language test
     args = argparse.Namespace(num_instances=num_instances)
 
     results = {}
     all_failed = []
 
-    # Test C++
-    print("\n" + "=" * 80)
-    print(f"Testing C++ ({num_instances} instances)")
-    print("=" * 80)
-    cpp_success, cpp_failed = test_cpp_multisweb(args)
-    results["C++"] = {"success": cpp_success, "failed_count": len(cpp_failed)}
-    all_failed.extend([("C++", f) for f in cpp_failed])
+    for lang, cfg in LANG_CONFIG.items():
+        display = cfg["display_name"]
+        print("\n" + "=" * 80)
+        print(f"Testing {display} ({num_instances} instances)")
+        print("=" * 80)
 
-    # Test Rust
-    print("\n" + "=" * 80)
-    print(f"Testing Rust ({num_instances} instances)")
-    print("=" * 80)
-    rust_success, rust_failed = test_rust_multisweb(args)
-    results["Rust"] = {"success": rust_success, "failed_count": len(rust_failed)}
-    all_failed.extend([("Rust", f) for f in rust_failed])
-
-    # Test TypeScript
-    print("\n" + "=" * 80)
-    print(f"Testing TypeScript ({num_instances} instances)")
-    print("=" * 80)
-    ts_success, ts_failed = test_ts_multisweb(args)
-    results["TypeScript"] = {"success": ts_success, "failed_count": len(ts_failed)}
-    all_failed.extend([("TypeScript", f) for f in ts_failed])
+        ok, total, failed = run_multi(lang, args)
+        results[display] = {
+            "success": total > 0 and ok == total,
+            "failed_count": len(failed),
+        }
+        all_failed.extend([(display, f) for f in failed])
 
     # Print overall summary
     print("\n" + "=" * 80)
     print("Sample Mode Summary")
     print("=" * 80)
 
-    for lang, result in results.items():
-        status = "✅ PASSED" if result["success"] else f"❌ FAILED ({result['failed_count']} failures)"
-        print(f"\n{lang}: {status}")
+    for lang_display, result in results.items():
+        status = (
+            "✅ PASSED"
+            if result["success"]
+            else f"❌ FAILED ({result['failed_count']} failures)"
+        )
+        print(f"\n{lang_display}: {status}")
 
     if all_failed:
         print(f"\n\nFailed instances across all languages:")
-        for lang, (instance_id, error) in all_failed:
+        for lang_display, (instance_id, error) in all_failed:
             error_msg = error[:80] + "..." if len(error) > 80 else error
-            print(f"  [{lang}] {instance_id}: {error_msg}")
+            print(f"  [{lang_display}] {instance_id}: {error_msg}")
 
     print("\n" + "=" * 80)
 
-    # Return true only if all languages passed
     return all(r["success"] for r in results.values())
 
 
 # ==============================================================================
-# Main
+# Pytest
 # ==============================================================================
 
-def main():
+
+@pytest.fixture(scope="session")
+def swebench_args() -> argparse.Namespace:
+    parser = build_parser()
+    return parser.parse_args(
+        ["--lang", "cpp", "--swebench-multilingual", "--num-instances", "1"]
+    )
+
+
+def test_cpp_multi(swebench_args: argparse.Namespace) -> None:
+    if not _tools_ready("cpp"):
+        pytest.skip("clangd/cmake not available")
+    ok, total, failed = run_multi("cpp", swebench_args)
+    assert ok > 0, f"All {total} C++ instances failed: {failed}"
+
+
+def test_rust_multi(swebench_args: argparse.Namespace) -> None:
+    if not _tools_ready("rust"):
+        pytest.skip("rust-analyzer not available")
+    ok, total, failed = run_multi("rust", swebench_args)
+    assert ok > 0, f"All {total} Rust instances failed: {failed}"
+
+
+def test_ts_multi(swebench_args: argparse.Namespace) -> None:
+    if not _tools_ready("ts"):
+        pytest.skip("scip-typescript/npx not available")
+    ok, total, failed = run_multi("ts", swebench_args)
+    assert ok > 0, f"All {total} TypeScript instances failed: {failed}"
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Unified SCIP CodeGraph test for C++, Rust, and TypeScript"
     )
@@ -851,21 +581,28 @@ def main():
         help="Test N instances from EACH language (C++, Rust, TypeScript)",
     )
     mode_group.add_argument(
-        "--multisweb",
+        "--swebench-multilingual",
+        dest="swebench_multilingual",
         action="store_true",
-        help="Test with Multi-SWE-bench dataset for selected language",
+        help="Test with SWE-bench_Multilingual dataset for selected language",
+    )
+    mode_group.add_argument(
+        "--multisweb",
+        dest="swebench_multilingual",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     mode_group.add_argument(
         "--repo",
         type=str,
-        help="Path to local repository (simple mode)",
+        help="Path to local repository (local mode)",
     )
 
     # Language selection (not used in sample mode)
     parser.add_argument(
         "--lang",
         choices=["cpp", "rust", "ts"],
-        help="Language to test (required for --repo and --multisweb modes)",
+        help="Language to test (required for --repo and --swebench-multilingual modes)",
     )
 
     # Number of instances
@@ -876,50 +613,45 @@ def main():
         help="Number of instances to test (default: 5)",
     )
 
+    return parser
+
+
+# ==============================================================================
+# Main
+# ==============================================================================
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     # Sample mode - test all languages
     if args.sample:
         print("\n=== Running in Sample mode ===")
         print(f"Testing {args.num_instances} instances from EACH language\n")
-        success = test_sample_mode(args.num_instances)
+        success = run_sample_mode(args.num_instances)
         sys.exit(0 if success else 1)
 
     # For other modes, language is required
     if not args.lang:
         parser.error("--lang is required when not using --sample mode")
 
-    # Multi-SWE-bench mode
-    if args.multisweb:
-        print(f"\n=== Running in Multi-SWE-bench mode ({args.lang.upper()}) ===\n")
-        if args.lang == "cpp":
-            success, _ = test_cpp_multisweb(args)
-        elif args.lang == "rust":
-            success, _ = test_rust_multisweb(args)
-        elif args.lang == "ts":
-            success, _ = test_ts_multisweb(args)
-        sys.exit(0 if success else 1)
+    # SWE-bench_Multilingual mode
+    if args.swebench_multilingual:
+        display = LANG_CONFIG[args.lang]["display_name"]
+        print(f"\n=== Running in SWE-bench_Multilingual mode ({display}) ===\n")
+        ok, total, _ = run_multi(args.lang, args)
+        sys.exit(0 if ok == total else 1)
 
-    # Simple mode with custom repo
+    # Local mode
     if args.repo:
-        print(f"\n=== Running in Simple mode ({args.lang.upper()}) ===\n")
-        if args.lang == "cpp":
-            success = test_cpp_simple(args.repo)
-        elif args.lang == "rust":
-            success = test_rust_simple(args.repo)
-        elif args.lang == "ts":
-            success = test_ts_simple(args.repo)
-        sys.exit(0 if success else 1)
+        display = LANG_CONFIG[args.lang]["display_name"]
+        print(f"\n=== Running in Local mode ({display}) ===\n")
+    else:
+        display = LANG_CONFIG[args.lang]["display_name"]
+        print(f"\n=== Running in Local mode (default, {display}) ===\n")
 
-    # Default: simple mode with default repo
-    print(f"\n=== Running in Simple mode (default, {args.lang.upper()}) ===\n")
-    if args.lang == "cpp":
-        success = test_cpp_simple(None)
-    elif args.lang == "rust":
-        success = test_rust_simple(None)
-    elif args.lang == "ts":
-        success = test_ts_simple(None)
-
+    success = run_local(args.lang, args.repo)
     sys.exit(0 if success else 1)
 
 

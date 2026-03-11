@@ -68,6 +68,20 @@ class CppCodeChunker(BaseCodeChunker):
                     methods = self._find_class_methods(node)
                     definitions.extend(methods)
 
+        # Top-level variable/const declarations and macros (direct children only
+        # to avoid picking up field declarations inside class bodies).
+        for child in root_node.children:
+            if child.type == "declaration":
+                if self._is_function_prototype(child):
+                    continue
+                name = self._extract_declaration_name(child)
+                if name:
+                    definitions.append((child, name, "declaration"))
+            elif child.type in ("preproc_def", "preproc_function_def"):
+                name = self._extract_macro_name(child)
+                if name:
+                    definitions.append((child, name, "macro"))
+
         # Sort by start line
         definitions.sort(key=lambda x: x[0].start_point[0])
         return definitions
@@ -81,6 +95,8 @@ class CppCodeChunker(BaseCodeChunker):
             "function": ("compound_statement",),
             "method": ("compound_statement",),
             "class": ("field_declaration_list",),
+            "declaration": (),
+            "macro": (),
         }.get(def_type, ("compound_statement",))
         return self._extract_signature_text_default(node, stop_types, code_content)
 
@@ -101,7 +117,7 @@ class CppCodeChunker(BaseCodeChunker):
             if def_type == "method":
                 if not include_l2:
                     continue
-                parent = name.split("::", 1)[0] if "::" in name else None
+                parent = name.split(".", 1)[0] if "." in name else None
                 if parent and parent in container_names:
                     # Already represented inside the class skeleton.
                     continue
@@ -174,7 +190,7 @@ class CppCodeChunker(BaseCodeChunker):
                         method_name = self._extract_method_name(member)
                         if method_name:
                             full_name = (
-                                f"{class_name}::{method_name}"
+                                f"{class_name}.{method_name}"
                                 if class_name
                                 else method_name
                             )
@@ -189,7 +205,7 @@ class CppCodeChunker(BaseCodeChunker):
                                 )
                                 if method_name:
                                     full_name = (
-                                        f"{class_name}::{method_name}"
+                                        f"{class_name}.{method_name}"
                                         if class_name
                                         else method_name
                                     )
@@ -222,6 +238,31 @@ class CppCodeChunker(BaseCodeChunker):
         """
         for child in declarator_node.children:
             if child.type in ("identifier", "field_identifier"):
+                return child.text.decode("utf-8")
+        return None
+
+    def _is_function_prototype(self, decl_node) -> bool:
+        """Check if a declaration node is a function prototype."""
+        for child in decl_node.children:
+            if child.type == "function_declarator":
+                return True
+        return False
+
+    def _extract_declaration_name(self, node) -> Optional[str]:
+        """Extract the declared identifier from a top-level declaration."""
+        for child in node.children:
+            if child.type == "identifier":
+                return child.text.decode("utf-8")
+            if child.type == "init_declarator":
+                for grandchild in child.children:
+                    if grandchild.type == "identifier":
+                        return grandchild.text.decode("utf-8")
+        return None
+
+    def _extract_macro_name(self, node) -> Optional[str]:
+        """Extract the macro name from preproc_def or preproc_function_def."""
+        for child in node.children:
+            if child.type == "identifier":
                 return child.text.decode("utf-8")
         return None
 

@@ -5,11 +5,10 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from ..graph.code_graph import CodeGraph
-from ..graph.transverse_graph import traverse_tree_structure
-from ..llm.litellm_chat import human_message
+from ..graph.traverse_graph import traverse_tree_structure
 from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
 from ..log_utils import get_logger
-from ..scip_interface import SCIPIndexer
+from ..ls_router import LSIndexer
 from ..types import NODE_TYPE_FILE, ROOT_NODE, QueriedNode, is_symbol_node
 from ..utils import wrap_code_snippet
 
@@ -147,7 +146,7 @@ class AgentlessPipeline:
 
         scip_output_dir.mkdir(parents=True, exist_ok=True)
 
-        scip_indexer = SCIPIndexer(self.repo_path, output_dir=str(scip_output_dir))
+        scip_indexer = LSIndexer(self.repo_path, output_dir=str(scip_output_dir))
         self.code_graph: CodeGraph = scip_indexer.run_pipeline(
             project_name=f"{repo_name}@{commit_identifier}",
             skip_level="graph",  # Enable cache: load from graph.pkl if exists
@@ -328,9 +327,9 @@ class AgentlessPipeline:
                 ) from exc
 
             if not node_data_list:
-                raise ValueError(f"No code data found for node: {symbol_node_id}")
+                raise ValueError(f"No code data returned for {symbol_node_id}")
 
-            code_content = node_data_list[0].get("code_content", "")
+            code_content = node_data_list[0].get("code", "")
             code_segments.append(
                 f"### {symbol_node_id} ###\n```\n{code_content}\n```\n"
             )

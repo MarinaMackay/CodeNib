@@ -3,25 +3,9 @@
 Regression tests for the Rust code chunker.
 """
 
-import subprocess
 from pathlib import Path
 
-import pytest
-
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
-
-ARRAYVEC_URL = "https://github.com/bluss/arrayvec.git"
-ARRAYVEC_PATH = Path("/tmp/arrayvec-chunker")
-
-
-@pytest.fixture(scope="module")
-def arrayvec_repo():
-    if not ARRAYVEC_PATH.exists():
-        subprocess.run(
-            ["git", "clone", "--depth", "1", ARRAYVEC_URL, str(ARRAYVEC_PATH)],
-            check=True,
-        )
-    return ARRAYVEC_PATH
 
 
 def _collect_chunks(repo_root: Path, chunk_depth: int):
@@ -50,6 +34,13 @@ def test_rust_chunker_skips_methods_in_level_one(arrayvec_repo):
     chunk_types = {chunk.chunk_type for chunk in chunks}
     assert "method" not in chunk_types
     assert {"function", "struct", "impl"}.issubset(chunk_types)
+    # Top-level const/static/type declarations should be present when the
+    # repo uses them (arrayvec defines type aliases and constants).
+    assert chunk_types & {
+        "const",
+        "static",
+        "type",
+    }, f"Expected at least one of const/static/type in L1 chunk types, got {chunk_types}"
 
 
 def test_rust_chunker_includes_methods_in_level_two(arrayvec_repo):

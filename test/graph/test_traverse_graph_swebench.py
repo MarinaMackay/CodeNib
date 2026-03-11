@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from codeminer.dataset.swebench import SwebenchDataset
-from codeminer.graph.transverse_graph import traverse_tree_structure
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.graph.traverse_graph import traverse_tree_structure
+from codeminer.ls_router import LSIndexer
 from codeminer.types import (
     NODE_TYPE_CLASS,
     NODE_TYPE_FILE,
@@ -43,7 +43,7 @@ def indexed_repo(test_instance):
     repo_path = dataset_obj.get_repo_path(test_instance)
     output_path = str(Path.home()) + "/.codeminer/" + test_instance["instance_id"]
 
-    repo_indexer = SCIPIndexer(repo_path, output_dir=output_path)
+    repo_indexer = LSIndexer(repo_path, output_dir=output_path)
     graph = repo_indexer.run_pipeline(project_name="test_swebench", skip_level="graph")
 
     return graph

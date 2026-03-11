@@ -36,8 +36,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from codeminer.dataset.swebench import SwebenchDataset
-from codeminer.scip_interface.scip_decode import SCIPGraphDecoder
-from codeminer.scip_interface.scip_indexer import SCIPIndexer
+from codeminer.ls_router import LSGraphDecoder
+from codeminer.ls_router import LSIndexer
 
 # Default instances for testing
 DEFAULT_TEST_INSTANCES = [
@@ -107,7 +107,7 @@ def generate_scip_index(project_root: Path, output_dir: Path) -> Path:
     """
     try:
         # Create indexer
-        indexer = SCIPIndexer(project_root=project_root, output_dir=output_dir)
+        indexer = LSIndexer(project_root=project_root, output_dir=output_dir)
 
         # Generate and decode index
         # Use skip_level='raw' to reuse existing index.scip if it exists
@@ -212,7 +212,7 @@ def python_decode(scip_file: Path, project_root: Path, output_file: Path) -> boo
 
         # Decode using Python
         start_time = time.time()
-        decoder = SCIPGraphDecoder(str(decoded_scip), str(project_root))
+        decoder = LSGraphDecoder(str(decoded_scip), str(project_root))
         print(f"  Decoding into a graph...")
         graph = decoder.decode()
         elapsed = time.time() - start_time

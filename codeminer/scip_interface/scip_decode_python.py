@@ -1,32 +1,15 @@
+#!/usr/bin/env python3
 """
-Unified SCIP decoder that supports multiple languages (C++, Rust, TypeScript, Python).
+SCIP decoder for Python projects.
 
-This module provides a single SCIPDecoder class that can decode SCIP indexes for multiple
-languages by selecting the appropriate language-specific decoder based on the 'language' parameter.
-
-Supported languages:
-    - 'cpp', 'c++', 'c': C/C++ projects
-    - 'rust', 'rs': Rust projects
-    - 'ts', 'typescript', 'js', 'javascript': TypeScript/JavaScript projects
-    - 'python', 'py': Python projects [default]
-
-Example:
-    # C++ decoder
-    decoder = SCIPDecoder(index_file_path="path/to/index.decoded", language="cpp")
-    graph = decoder.decode()
-
-    # Rust decoder
-    decoder = SCIPDecoder(index_file_path="path/to/index.decoded", language="rust")
-    graph = decoder.decode()
-
-    # Python decoder (original behavior)
-    decoder = SCIPDecoder(index_file_path="path/to/index.decoded", language="python")
-    # Or omit language parameter for backward compatibility
-    decoder = SCIPDecoder(index_file_path="path/to/index.decoded")
+Decodes SCIP index files into CodeGraph format, focusing on:
+- Classes
+- Methods and fields
+- Functions
+- Module-level references
 """
 import re
 from pathlib import Path
-from typing import Optional
 
 from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger, register_scip_logger
@@ -41,134 +24,39 @@ from ..types import (
 )
 
 
-class SCIPDecoder:
+class SCIPPythonGraphDecoder:
     """
-    Unified SCIP decoder that supports multiple languages.
+    Decoder for Python SCIP indices.
 
-    This class can work in two modes:
-    1. Language-agnostic mode (default, backward compatible): Acts as Python SCIP decoder
-    2. Multi-language mode: Delegates to language-specific decoders based on 'language' parameter
+    Parses decoded SCIP index files and builds a CodeGraph representing:
+    - Classes
+    - Methods and fields within classes
+    - Module-level functions
+    - References between symbols
     """
 
-    # Language aliases for flexibility
-    LANGUAGE_ALIASES = {
-        'cpp': 'cpp',
-        'c++': 'cpp',
-        'c': 'cpp',
-        'rust': 'rust',
-        'rs': 'rust',
-        'typescript': 'ts',
-        'ts': 'ts',
-        'javascript': 'ts',
-        'js': 'ts',
-        'python': 'python',
-        'py': 'python',
-    }
-
-    def __init__(
-        self,
-        index_file_path: str,
-        project_root: Optional[str] = None,
-        language: Optional[str] = None,
-    ):
+    def __init__(self, index_file_path, project_root=None):
         """
-        Initialize the SCIP decoder.
+        Initialize the Python SCIP decoder.
 
         Args:
             index_file_path: Path to the decoded SCIP index file
-            project_root: Root directory of the project (optional)
-            language: Programming language ('cpp', 'rust', 'ts', 'python', or None for Python)
-
-        Raises:
-            ValueError: If the language is not supported
+            project_root: Root directory of the Python project
         """
         self.index_file_path = index_file_path
         self.project_root = project_root
-
-        # Normalize language name (None means Python for backward compatibility)
-        if language is None:
-            self.language = 'python'
-            self._delegate = None  # Use built-in Python decoder
-        else:
-            language_lower = language.lower()
-            if language_lower not in self.LANGUAGE_ALIASES:
-                supported = ', '.join(sorted(set(self.LANGUAGE_ALIASES.keys())))
-                raise ValueError(
-                    f"Unsupported language: '{language}'. "
-                    f"Supported languages: {supported}"
-                )
-            self.language = self.LANGUAGE_ALIASES[language_lower]
-
-            # Create delegate for non-Python languages
-            if self.language != 'python':
-                self._delegate = self._create_language_decoder(
-                    index_file_path=index_file_path,
-                    project_root=project_root,
-                )
-                # Copy code_graph from delegate
-                self.code_graph = self._delegate.code_graph
-                return
-            else:
-                self._delegate = None
-
-        # Python-specific initialization (original behavior)
         self.code_graph = CodeGraph(project_root)
         self.indexed_directories = set()
         self.logger = get_logger(__name__)
-        # Register this module for SCIP debug logging
         register_scip_logger(__name__)
-
-    def _create_language_decoder(
-        self,
-        index_file_path: str,
-        project_root: Optional[str],
-    ):
-        """
-        Create the appropriate language-specific decoder.
-
-        Args:
-            index_file_path: Path to the decoded SCIP index file
-            project_root: Root directory of the project
-
-        Returns:
-            Language-specific decoder instance
-        """
-        if self.language == 'cpp':
-            from .scip_decode_clang import SCIPCppGraphDecoder
-            return SCIPCppGraphDecoder(
-                index_file_path=index_file_path,
-                project_root=project_root,
-            )
-
-        elif self.language == 'rust':
-            from .scip_decode_rust import SCIPRustGraphDecoder
-            return SCIPRustGraphDecoder(
-                index_file_path=index_file_path,
-                project_root=project_root,
-            )
-
-        elif self.language == 'ts':
-            from .scip_decode_ts import SCIPTypeScriptGraphDecoder
-            return SCIPTypeScriptGraphDecoder(
-                index_file_path=index_file_path,
-                project_root=project_root,
-            )
-
-        else:
-            raise ValueError(f"No decoder implementation for language: {self.language}")
 
     def decode(self):
         """
-        Decode the SCIP index into a CodeGraph.
+        Decode the SCIP index and build the CodeGraph.
 
         Returns:
-            CodeGraph: The decoded graph
+            CodeGraph: The constructed code graph
         """
-        # Delegate to language-specific decoder if available
-        if self._delegate is not None:
-            return self._delegate.decode()
-
-        # Python-specific implementation (original behavior)
         self.logger.info(f"Starting SCIP Python decode from {self.index_file_path}")
         try:
             with open(self.index_file_path, "r") as f:
@@ -191,56 +79,13 @@ class SCIPDecoder:
 
         return self.code_graph
 
-    def save_graph(self, output_path: str):
+    def _process_document(self, document_text):
         """
-        Save the decoded graph to a file.
+        Process a single document block from the SCIP index.
 
         Args:
-            output_path: Path to save the graph
+            document_text: Text content of the document block
         """
-        # Delegate to language-specific decoder if available
-        if self._delegate is not None:
-            return self._delegate.save_graph(output_path)
-
-        # Python-specific implementation
-        self.code_graph.save_graph(output_path)
-
-
-# Backward compatibility alias
-class SCIPGraphDecoder(SCIPDecoder):
-    """
-    Backward compatibility alias for SCIPDecoder.
-
-    This class exists to maintain compatibility with existing code that uses SCIPGraphDecoder.
-    New code should use SCIPDecoder instead.
-    """
-    def __init__(self, index_file_path, project_root=None):
-        super().__init__(index_file_path=index_file_path, project_root=project_root, language='python')
-
-    def decode(self):
-        self.logger.info(f"Starting SCIP decode from {self.index_file_path}")
-        try:
-            with open(self.index_file_path, "r") as f:
-                content = f.read()
-        except Exception as e:
-            self.logger.error(f"Error reading SCIP index file: {e}")
-            raise
-
-        # Parse documents
-        document_blocks = re.findall(
-            r"documents\s*{(.*?)(?=documents\s*{|$)", content, re.DOTALL
-        )
-
-        # Add the root node to the graph
-        self.code_graph.add_root_node(ROOT_NODE)
-
-        # Process all documents
-        for document in document_blocks:
-            self._process_document(document)
-
-        return self.code_graph
-
-    def _process_document(self, document_text):
         # Extract file path
         file_match = re.search(r'relative_path:\s*"([^"]+)"', document_text)
         if not file_match:
@@ -248,15 +93,13 @@ class SCIPGraphDecoder(SCIPDecoder):
 
         file_path = file_match.group(1)
 
-        # Iteratively Extract the directory path from the file path
+        # Iteratively extract the directory path from the file path
         dir_path = Path(file_path).parent
         while dir_path != dir_path.parent:  # Stop at the root directory
             dir_path_str = str(dir_path)
             if dir_path_str not in self.indexed_directories:
-                # Add directory node if not already indexed
                 self.code_graph.add_directory_node(dir_path_str)
                 self.indexed_directories.add(dir_path_str)
-                # Add containment edge from parent directory to this directory
                 self.code_graph._add_edge(
                     str(dir_path.parent), dir_path_str, EDGE_TYPE_CONTAIN
                 )
@@ -276,6 +119,12 @@ class SCIPGraphDecoder(SCIPDecoder):
             self._process_occurrence(occurrence)
 
     def _process_occurrence(self, occurrence_text):
+        """
+        Process a single occurrence from the SCIP index.
+
+        Args:
+            occurrence_text: Text content of the occurrence
+        """
         # Skip stdlib symbols
         if "python-stdlib" in occurrence_text:
             return
@@ -319,7 +168,7 @@ class SCIPGraphDecoder(SCIPDecoder):
         - src.calculator`/Calculator# -> src/calculator.py:Calculator
         - src.calculator`/Calculator#add(). -> src/calculator.py:Calculator.add()
         - src.utils.helpers`/validate_input(). -> src/utils/helpers.py:validate_input()
-        - src.calculator`/Calculator#history. -> src/calculator.py:Calculator.history (assuming history is a field)
+        - src.calculator`/Calculator#history. -> src/calculator.py:Calculator.history
 
         Args:
             symbol: Original symbol name
@@ -373,23 +222,20 @@ class SCIPGraphDecoder(SCIPDecoder):
         Returns:
             Symbol type: NODE_TYPE_CLASS, NODE_TYPE_METHOD, NODE_TYPE_FIELD, or NODE_TYPE_FUNCTION
         """
-
         if ":" in unified_symbol:
             symbol_part = unified_symbol.split(":", 1)[1]
             if "." in symbol_part:
                 # Has a dot - could be method or field
-                # Check if the original symbol had parentheses (indicating method)
                 has_parentheses = False
                 if original_symbol:
                     has_parentheses = "()" in original_symbol or "(" in original_symbol
 
-                # If original had parentheses, it's a method; otherwise it's a field
                 if has_parentheses:
                     return NODE_TYPE_METHOD
                 else:
                     return NODE_TYPE_FIELD
             else:
-                # Could be class or function - check if it looks like a class
+                # Could be class or function
                 # Classes typically start with capital letter
                 if symbol_part and symbol_part[0].isupper():
                     return NODE_TYPE_CLASS
@@ -399,6 +245,15 @@ class SCIPGraphDecoder(SCIPDecoder):
             return NODE_TYPE_FUNCTION
 
     def _process_symbol(self, symbol, line, symbol_roles, enclosing_ranges):
+        """
+        Process a symbol and add it to the code graph.
+
+        Args:
+            symbol: Original symbol name from SCIP
+            line: Line number of the symbol
+            symbol_roles: Symbol roles bitfield (1=definition, 8=reference)
+            enclosing_ranges: Enclosing scope range values
+        """
         self.logger.scip_debug(
             f"Processing symbol: {symbol} at line {line}, roles: {symbol_roles}"
         )
@@ -427,9 +282,7 @@ class SCIPGraphDecoder(SCIPDecoder):
 
         module_path = match.group(1)
 
-        # Clean up the symbol by simply splitting on spaces and taking the last part
-        # For example: "scip-python python HttpieCliRepo 5b604c37c6c67e18e7c3e9aee6c88a8c22b98345 extras.profiling.benchmarks/QuietSimpleHTTPServer#log_message()."
-        # Will become: "extras.profiling.benchmarks/QuietSimpleHTTPServer#log_message()."
+        # Clean up the symbol by splitting on spaces and taking the last part
         cleaned_symbol = symbol.split(" ")[-1]
         cleaned_symbol = re.sub(r"`", "", cleaned_symbol)
 
@@ -441,13 +294,11 @@ class SCIPGraphDecoder(SCIPDecoder):
 
         # Handle __init__ symbols - convert to file reference
         if "/__init__" in unified_symbol:
-            # Extract the module path and use it as the target
             module_match = re.search(r"(.+)/(?:__init__)", unified_symbol)
             if module_match:
                 module_path = module_match.group(1)
                 file_path = module_path.replace(".", "/") + ".py"
 
-                # If this is a reference, point to the file instead
                 if symbol_roles == 8:
                     self.code_graph._add_edge(
                         self.code_graph.current_scope, file_path, EDGE_TYPE_REFERENCE
@@ -459,41 +310,40 @@ class SCIPGraphDecoder(SCIPDecoder):
             scope_start_line = int(enclosing_ranges[0])
             scope_end_line = int(enclosing_ranges[2])
 
-            # Add symbol node with scope range
             self.code_graph.add_symbol_node(
                 unified_symbol, line, scope_start_line, scope_end_line, symbol_type
             )
 
-            # Add containment edge
             self.logger.scip_debug(
-                f"Adding containment edge for {unified_symbol}, current scope: {self.code_graph.current_scope}"
+                f"Adding containment edge for {unified_symbol}, "
+                f"current scope: {self.code_graph.current_scope}"
             )
             self.code_graph.add_containment_edge(unified_symbol)
 
-            # Update current scope for classes and functions with enclosing ranges
-            # Now with proper scope exit handling, functions can safely become scopes
             if symbol_type in [NODE_TYPE_CLASS, NODE_TYPE_FUNCTION, NODE_TYPE_METHOD]:
                 try:
                     self.logger.scip_debug(
-                        f"Updating scope to {unified_symbol} [{scope_start_line}-{scope_end_line}]"
+                        f"Updating scope to {unified_symbol} "
+                        f"[{scope_start_line}-{scope_end_line}]"
                     )
                     self.code_graph.update_current_scope(
                         unified_symbol, scope_start_line, scope_end_line
                     )
                 except Exception as e:
-                    self.logger.error(f"Error updating scope for {unified_symbol}: {e}")
+                    self.logger.error(
+                        f"Error updating scope for {unified_symbol}: {e}"
+                    )
                     raise
 
-        # Handle definition (symbol_roles == 1) with no enclosing range
+        # Handle definition with no enclosing range
         elif symbol_roles == 1:
             self.logger.scip_debug(
-                f"Adding symbol without enclosing range: {unified_symbol}, current scope: {self.code_graph.current_scope}"
+                f"Adding symbol without enclosing range: {unified_symbol}, "
+                f"current scope: {self.code_graph.current_scope}"
             )
             self.code_graph.add_symbol_node(
                 unified_symbol, line, symbol_type=symbol_type
             )
-
-            # Add 'contain' edge from current scope to symbol
             self.code_graph._add_edge(
                 self.code_graph.current_scope, unified_symbol, EDGE_TYPE_CONTAIN
             )
@@ -505,4 +355,10 @@ class SCIPGraphDecoder(SCIPDecoder):
             )
 
     def save_graph(self, output_path):
+        """
+        Save the code graph to a file.
+
+        Args:
+            output_path: Path where the graph should be saved
+        """
         self.code_graph.save_graph(output_path)

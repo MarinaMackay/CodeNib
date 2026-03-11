@@ -17,19 +17,19 @@ Use the `skip_level` parameter to control which stages are cached:
 Run full pipeline from scratch. Regenerates everything.
 
 ```python
-from codeminer.scip_interface.scip_indexer import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
-indexer = SCIPIndexer(project_root="/path/to/repo")
+indexer = LSIndexer(project_root="/path/to/repo")
 graph = indexer.run_pipeline(skip_level=None)  # Full pipeline
 ```
 
-### `skip_level='index'`
+### `skip_level='raw'`
 Check if `index.scip` exists:
 - **If found**: Skip generation, proceed to decode + process
 - **If not found**: Run full pipeline
 
 ```python
-graph = indexer.run_pipeline(skip_level='index')
+graph = indexer.run_pipeline(skip_level='raw')
 ```
 
 **Use case**: Code hasn't changed, but you want to regenerate the graph with different processing logic.
@@ -72,7 +72,7 @@ By default, cache files are stored in `/tmp/<project_name>/`:
 Custom output directory:
 
 ```python
-indexer = SCIPIndexer(
+indexer = LSIndexer(
     project_root="/path/to/repo",
     output_dir="/path/to/cache"  # Custom cache location
 )
@@ -87,7 +87,7 @@ For SWE-bench or similar use cases with instance IDs:
 instance_id = "django__django-12345"
 output_dir = f"/cache/{instance_id}"
 
-indexer = SCIPIndexer(
+indexer = LSIndexer(
     project_root=repo_path,
     output_dir=output_dir
 )
@@ -101,19 +101,21 @@ graph = indexer.run_pipeline(skip_level='graph')  # Fast!
 
 ## CLI Usage
 
+> **Note:** ls_router currently has no CLI entry point (no `__main__` / argparse). Use the Python API above instead.
+
 ```bash
 # Full pipeline
-python -m codeminer.scip_interface.scip_indexer \
+python -m codeminer.ls_router \
   --project-dir /path/to/repo \
   --output graph.pkl
 
 # Use graph cache
-python -m codeminer.scip_interface.scip_indexer \
+python -m codeminer.ls_router \
   --project-dir /path/to/repo \
   --skip-level graph
 
 # Custom output directory
-python -m codeminer.scip_interface.scip_indexer \
+python -m codeminer.ls_router \
   --project-dir /path/to/repo \
   --output-dir /cache/instance-123 \
   --skip-level graph
@@ -123,17 +125,17 @@ python -m codeminer.scip_interface.scip_indexer \
 
 Typical timings for a medium-sized project:
 
-| Skip Level | Time     | What Runs                          |
+| Skip Level | Time     | What Runs                           |
 |------------|----------|-------------------------------------|
 | None       | ~60s     | Full: generate + decode + process   |
-| `index`    | ~30s     | Decode + process only               |
+| `raw`      | ~30s     | Decode + process only               |
 | `decode`   | ~10s     | Process only                        |
 | `graph`    | ~0.5s    | Load from disk                      |
 
 ## Example: Batch Processing with Cache
 
 ```python
-from codeminer.scip_interface.scip_indexer import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 # Process multiple instances efficiently
 instances = [
@@ -144,7 +146,7 @@ instances = [
 for instance in instances:
     cache_dir = f"/cache/{instance['id']}"
 
-    indexer = SCIPIndexer(
+    indexer = LSIndexer(
         project_root=instance['repo'],
         output_dir=cache_dir
     )

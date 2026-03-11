@@ -67,6 +67,66 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[test]"
 
+      - name: Install Rust toolchain + rust-analyzer
+        shell: bash -l {0}
+        run: |
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          fi
+          if [ -f "$HOME/.cargo/env" ]; then
+            . "$HOME/.cargo/env"
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup toolchain install stable nightly
+          rustup component add rust-analyzer --toolchain nightly
+
+      - name: Install clangd
+        shell: bash -l {0}
+        run: |
+          if ! command -v clangd >/dev/null 2>&1; then
+            if command -v apt-get >/dev/null 2>&1; then
+              if command -v sudo >/dev/null 2>&1; then
+                sudo apt-get update && sudo apt-get install -y clangd
+              elif [ "$(id -u)" = "0" ]; then
+                apt-get update && apt-get install -y clangd
+              else
+                echo "WARN: cannot install clangd without sudo/root"
+              fi
+            else
+              echo "WARN: apt-get not available; skipping clangd install"
+            fi
+          fi
+          clangd --version || true
+
+      - name: Install scip-typescript
+        shell: bash -l {0}
+        run: |
+          npm config set prefix "$HOME/.npm-global"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          npm install -g @sourcegraph/scip-typescript yarn
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+
+      - name: Install bear (best effort)
+        shell: bash -l {0}
+        run: |
+          if command -v bear >/dev/null 2>&1; then
+            bear --version || true
+            exit 0
+          fi
+          if command -v apt-get >/dev/null 2>&1; then
+            if command -v sudo >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y bear
+            elif [ "$(id -u)" = "0" ]; then
+              apt-get update
+              apt-get install -y bear
+            else
+              echo "WARN: apt-get available but no sudo/root; cannot install bear"
+            fi
+          else
+            echo "WARN: apt-get not available; skipping bear install"
+          fi
+
       - name: Run test suite
         shell: bash -l {0}
         run: pytest

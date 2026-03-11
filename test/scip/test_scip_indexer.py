@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from codeminer.scip_interface import SCIPIndexer
+from codeminer.ls_router import LSIndexer
 
 HTTPIE_REPO_URL = "https://github.com/httpie/cli.git"
 HTTPIE_REPO_PATH = Path("/tmp/httpie-cli")
@@ -29,8 +29,8 @@ def test_dir():
 
 @pytest.fixture
 def indexer(test_dir):
-    """Create a SCIPIndexer instance"""
-    return SCIPIndexer(test_dir)
+    """Create a LSIndexer instance"""
+    return LSIndexer(test_dir)
 
 
 @pytest.fixture
@@ -57,18 +57,21 @@ def samplemod_repo():
 
 def test_conda_environment(indexer):
     """Test the conda environment management functions"""
-    assert hasattr(indexer, "_ensure_conda_env")
-    assert hasattr(indexer, "_run_in_conda_env")
+    # After refactoring, LSIndexer delegates to SCIPPythonIndexer,
+    # so check the delegate for Python-specific attributes.
+    delegate = indexer._delegate
+    assert hasattr(delegate, "_ensure_conda_env")
+    assert hasattr(delegate, "_run_in_conda_env")
 
     # Check that the conda env file exists
     assert (
-        indexer.env_file.exists()
-    ), f"Conda environment file not found at {indexer.env_file}"
+        delegate.env_file.exists()
+    ), f"Conda environment file not found at {delegate.env_file}"
 
 
 def test_python_repo_indexing(httpie_cli_repo, test_output_dir, tmp_path_factory):
     """
-    Test indexing a python repository using SCIPIndexer.
+    Test indexing a python repository using LSIndexer.
     We use https://github.com/httpie/cli.git as a test repo.
     """
     # Verify the test repo exists
@@ -77,7 +80,7 @@ def test_python_repo_indexing(httpie_cli_repo, test_output_dir, tmp_path_factory
 
     # Create a new indexer for the cloned test repo
     scip_output_dir = tmp_path_factory.mktemp("httpie_cli_scip")
-    repo_indexer = SCIPIndexer(repo_path, output_dir=scip_output_dir)
+    repo_indexer = LSIndexer(repo_path, output_dir=scip_output_dir)
 
     # Run the indexing pipeline, allowing skip_index and skip_decode for faster tests
     graph = repo_indexer.run_pipeline(project_name="HttpieCliRepo", skip_level="graph")
@@ -121,7 +124,7 @@ def test_python_repo_indexing(httpie_cli_repo, test_output_dir, tmp_path_factory
 
 def test_samplemod_repo_indexing(samplemod_repo, test_output_dir, tmp_path_factory):
     """
-    Test indexing the sample module repository using SCIPIndexer.
+    Test indexing the sample module repository using LSIndexer.
     We use https://github.com/navdeep-G/samplemod as a test repo.
     This is a small sample repository suitable for testing.
     """
@@ -131,9 +134,9 @@ def test_samplemod_repo_indexing(samplemod_repo, test_output_dir, tmp_path_facto
     graph_image_file = str(test_output_dir / "samplemod_graph.jpg")
 
     # Create a new indexer for the cloned test repo
-    # Use our improved SCIPIndexer that stores data in /tmp
+    # Use our improved LSIndexer that stores data in /tmp
     scip_output_dir = tmp_path_factory.mktemp("samplemod_repo_scip")
-    repo_indexer = SCIPIndexer(samplemod_repo, output_dir=scip_output_dir)
+    repo_indexer = LSIndexer(samplemod_repo, output_dir=scip_output_dir)
 
     # Run the indexing pipeline
     graph = repo_indexer.run_pipeline(

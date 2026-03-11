@@ -15,7 +15,10 @@ Query Types:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import math
+import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +34,17 @@ from codeminer.dataset.utils import (
     QueryType,
     get_prompt_for_query_type,
 )
+from codeminer.graph.roi_subgraph import ROISubgraph
 from codeminer.log_utils import get_logger
+from codeminer.ls_router import LSIndexer
+from codeminer.types import (
+    NODE_TYPE_CLASS,
+    NODE_TYPE_FUNCTION,
+    NODE_TYPE_METHOD,
+    NodeInfo,
+    is_symbol_node,
+)
+from codeminer.utils import is_test_file
 
 logger = get_logger(__name__)
 
@@ -57,6 +70,16 @@ class TargetDiscoveryResult(BaseModel):
 
     target_files: List[str] = Field(default_factory=list)
     target_symbols: List[str] = Field(default_factory=list)
+    target_symbol_nodes: List[NodeInfo] = Field(default_factory=list)
+    rationale: Optional[str] = Field(default=None)
+
+
+class BehavioralSelectionResult(BaseModel):
+    """Structured output for behavior-first synthesis from sampled code blocks."""
+
+    question: str = Field(description="Natural-language behavioral question.")
+    focus: Optional[str] = Field(default=None)
+    required_block_ids: List[str] = Field(default_factory=list)
     rationale: Optional[str] = Field(default=None)
 
 
@@ -76,6 +99,50 @@ class RepoSnapshot:
             )
             parts.append(f"File extensions (top): {lang_summary}")
         return "\n\n".join(parts)
+
+
+@dataclass
+class SampledCodeBlock:
+    block_id: str
+    node_id: int
+    node_name: str
+    file_path: str
+    node_type: str
+    start_line: int
+    end_line: int
+    content: str
+    char_count: int
+    line_count: int
+
+    def to_node_info(self, *, include_content: bool = True) -> NodeInfo:
+        return NodeInfo(
+            node_name=self.node_name,
+            type=self.node_type,
+            file=self.file_path,
+            start_line=self.start_line,
+            end_line=self.end_line,
+            content=self.content if include_content else None,
+        )
+
+    def to_code_location(self) -> CodeLocation:
+        symbol_type = None
+        if self.node_type in (NODE_TYPE_FUNCTION, NODE_TYPE_METHOD):
+            symbol_type = "function"
+        elif self.node_type == NODE_TYPE_CLASS:
+            symbol_type = "class"
+        return CodeLocation(
+            file_path=self.file_path,
+            symbol_type=symbol_type,
+            start_line=self.start_line,
+            end_line=self.end_line,
+        )
+
+
+@dataclass
+class BehavioralContext:
+    core_block: SampledCodeBlock
+    candidate_blocks: List[SampledCodeBlock]
+    neighborhood_blocks: List[SampledCodeBlock]
 
 
 class ClaudeQuerySynthesizer:
@@ -100,6 +167,13 @@ class ClaudeQuerySynthesizer:
         max_metadata_chars: int = 800,
         max_top_level: int = 40,
         max_extensions: int = 8,
+        min_block_chars: int = 100,
+        max_candidate_blocks: int = 24,
+        max_neighbor_blocks: int = 8,
+        neighbor_k_hop: int = 1,
+        max_block_chars_in_prompt: int = 1800,
+        sampling_seed: Optional[int] = None,
+        behavioral_consensus_runs: int = 3,
     ) -> None:
         self.model = model
         self.max_turns = max_turns
@@ -109,6 +183,13 @@ class ClaudeQuerySynthesizer:
         self.max_metadata_chars = max_metadata_chars
         self.max_top_level = max_top_level
         self.max_extensions = max_extensions
+        self.min_block_chars = min_block_chars
+        self.max_candidate_blocks = max_candidate_blocks
+        self.max_neighbor_blocks = max_neighbor_blocks
+        self.neighbor_k_hop = neighbor_k_hop
+        self.max_block_chars_in_prompt = max_block_chars_in_prompt
+        self.sampling_seed = sampling_seed
+        self.behavioral_consensus_runs = max(1, behavioral_consensus_runs)
 
         # Parse query type (difficulty_level is a deprecated alias).
         if difficulty_level is not None:
@@ -150,23 +231,41 @@ class ClaudeQuerySynthesizer:
             instance, repo_root=repo_root, cache_dir=cache_dir
         )
         snapshot = self._snapshot_repo(repo_path)
-        discovered = self._discover_targets(instance, snapshot)
-        result = self._generate_question(
-            instance,
-            snapshot,
-            ground_truth=ground_truth,
-            discovered_targets=discovered,
+        behavioral_context = self._prepare_behavioral_context(
+            instance, repo_path, cache_dir=cache_dir
         )
+        if self.query_type == QueryType.BEHAVIORAL and behavioral_context is not None:
+            result = self._generate_behavioral_question_with_consensus(
+                instance=instance,
+                snapshot=snapshot,
+                behavioral_context=behavioral_context,
+            )
+            gt = self._build_ground_truth_from_blocks(
+                result.get("selected_blocks") or [behavioral_context.core_block]
+            )
+            discovered = self._build_discovery_from_blocks(
+                result.get("selected_blocks") or [behavioral_context.core_block]
+            )
+            target_symbol_nodes = self._build_symbol_nodes_from_blocks(
+                result.get("selected_blocks") or [behavioral_context.core_block]
+            )
+        else:
+            discovered = self._discover_targets(instance, snapshot)
+            result = self._generate_question(
+                instance,
+                snapshot,
+                ground_truth=ground_truth,
+                discovered_targets=discovered,
+            )
+            gt = self._build_ground_truth(
+                instance,
+                ground_truth,
+                discovered_targets=discovered,
+            )
+            target_symbol_nodes = self._build_symbol_nodes_from_ground_truth(gt)
 
         instance_id = instance.get("instance_id", "unknown")
         query_id = f"{instance_id}_{self.query_type.value}"
-
-        # Build ground truth structure
-        gt = self._build_ground_truth(
-            instance,
-            ground_truth,
-            discovered_targets=discovered,
-        )
 
         return {
             "query_id": query_id,
@@ -179,12 +278,20 @@ class ClaudeQuerySynthesizer:
             "ground_truth": gt.to_dict() if gt else None,
             "target_files": gt.to_dict()["target_files"] if gt else [],
             "target_symbols": gt.to_dict()["target_symbols"] if gt else [],
+            "target_symbol_nodes": [
+                self._dump_node_info(node) for node in target_symbol_nodes
+            ],
             "focus": result.get("focus"),
             "hints": result.get("hints"),
             "repo_snapshot": snapshot.format_summary(),
             "discovered_target_files": discovered.target_files,
             "discovered_target_symbols": discovered.target_symbols,
+            "discovered_target_symbol_nodes": [
+                self._dump_node_info(node) for node in discovered.target_symbol_nodes
+            ],
             "discovery_rationale": discovered.rationale,
+            "core_block_id": result.get("core_block_id"),
+            "selected_block_ids": result.get("selected_block_ids"),
         }
 
     async def synthesize_query_async(
@@ -211,23 +318,41 @@ class ClaudeQuerySynthesizer:
             instance, repo_root=repo_root, cache_dir=cache_dir
         )
         snapshot = self._snapshot_repo(repo_path)
-        discovered = await self._discover_targets_async(instance, snapshot)
-        result = await self._generate_question_async(
-            instance,
-            snapshot,
-            ground_truth=ground_truth,
-            discovered_targets=discovered,
+        behavioral_context = self._prepare_behavioral_context(
+            instance, repo_path, cache_dir=cache_dir
         )
+        if self.query_type == QueryType.BEHAVIORAL and behavioral_context is not None:
+            result = await self._generate_behavioral_question_with_consensus_async(
+                instance=instance,
+                snapshot=snapshot,
+                behavioral_context=behavioral_context,
+            )
+            gt = self._build_ground_truth_from_blocks(
+                result.get("selected_blocks") or [behavioral_context.core_block]
+            )
+            discovered = self._build_discovery_from_blocks(
+                result.get("selected_blocks") or [behavioral_context.core_block]
+            )
+            target_symbol_nodes = self._build_symbol_nodes_from_blocks(
+                result.get("selected_blocks") or [behavioral_context.core_block]
+            )
+        else:
+            discovered = await self._discover_targets_async(instance, snapshot)
+            result = await self._generate_question_async(
+                instance,
+                snapshot,
+                ground_truth=ground_truth,
+                discovered_targets=discovered,
+            )
+            gt = self._build_ground_truth(
+                instance,
+                ground_truth,
+                discovered_targets=discovered,
+            )
+            target_symbol_nodes = self._build_symbol_nodes_from_ground_truth(gt)
 
         instance_id = instance.get("instance_id", "unknown")
         query_id = f"{instance_id}_{self.query_type.value}"
-
-        # Build ground truth structure
-        gt = self._build_ground_truth(
-            instance,
-            ground_truth,
-            discovered_targets=discovered,
-        )
 
         return {
             "query_id": query_id,
@@ -240,12 +365,20 @@ class ClaudeQuerySynthesizer:
             "ground_truth": gt.to_dict() if gt else None,
             "target_files": gt.to_dict()["target_files"] if gt else [],
             "target_symbols": gt.to_dict()["target_symbols"] if gt else [],
+            "target_symbol_nodes": [
+                self._dump_node_info(node) for node in target_symbol_nodes
+            ],
             "focus": result.get("focus"),
             "hints": result.get("hints"),
             "repo_snapshot": snapshot.format_summary(),
             "discovered_target_files": discovered.target_files,
             "discovered_target_symbols": discovered.target_symbols,
+            "discovered_target_symbol_nodes": [
+                self._dump_node_info(node) for node in discovered.target_symbol_nodes
+            ],
             "discovery_rationale": discovered.rationale,
+            "core_block_id": result.get("core_block_id"),
+            "selected_block_ids": result.get("selected_block_ids"),
         }
 
     def synthesize_queries(
@@ -353,6 +486,498 @@ class ClaudeQuerySynthesizer:
     def _is_hidden(self, path: Path) -> bool:
         return any(part.startswith(".") for part in path.parts)
 
+    def _prepare_behavioral_context(
+        self,
+        instance: Dict[str, Any],
+        repo_path: str,
+        *,
+        cache_dir: Optional[str] = None,
+    ) -> Optional[BehavioralContext]:
+        graph = self._load_or_build_code_graph(
+            instance=instance,
+            repo_path=repo_path,
+            cache_dir=cache_dir,
+        )
+        if graph is None:
+            return None
+
+        candidates = self._sample_candidate_blocks(graph, instance)
+        if not candidates:
+            return None
+
+        core_block = self._pick_core_block(candidates, graph)
+        neighborhood = self._collect_neighborhood_blocks(
+            graph=graph,
+            core_block=core_block,
+            candidate_blocks=candidates,
+        )
+        return BehavioralContext(
+            core_block=core_block,
+            candidate_blocks=candidates,
+            neighborhood_blocks=neighborhood,
+        )
+
+    def _load_or_build_code_graph(
+        self,
+        instance: Dict[str, Any],
+        repo_path: str,
+        *,
+        cache_dir: Optional[str] = None,
+    ):
+        language = self._infer_instance_language(instance)
+        repo_name = (instance.get("repo") or "repo").replace("/", "__")
+        graph_cache_root = (
+            Path(cache_dir).expanduser() / "scip_graph_cache"
+            if cache_dir
+            else Path("/tmp") / "scip_graph_cache"
+        )
+        output_dir = graph_cache_root / repo_name
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            indexer = LSIndexer(
+                project_root=repo_path,
+                output_dir=output_dir,
+                language=language,
+            )
+            return indexer.run_pipeline(skip_level="graph", report_profile=False)
+        except Exception as exc:
+            logger.warning(
+                "Failed to build code graph for %s (%s): %s",
+                instance.get("instance_id", "unknown"),
+                language,
+                exc,
+            )
+            return None
+
+    def _infer_instance_language(self, instance: Dict[str, Any]) -> str:
+        language_group = (instance.get("language_group") or "").lower()
+        if "rust" in language_group:
+            return "rust"
+        if "javascript" in language_group or "typescript" in language_group:
+            return "ts"
+        if "c++" in language_group or language_group == "c":
+            return "cpp"
+        return "python"
+
+    def _sample_candidate_blocks(
+        self,
+        code_graph,
+        instance: Dict[str, Any],
+    ) -> List[SampledCodeBlock]:
+        graph = code_graph.get_graph()
+        blocks: List[SampledCodeBlock] = []
+
+        for node in graph.vs:
+            attrs = node.attributes()
+            node_type = attrs.get("type", "")
+            if not is_symbol_node(node_type):
+                continue
+
+            file_path = attrs.get("file")
+            if not file_path or is_test_file(file_path):
+                continue
+
+            start_line = attrs.get("start_line")
+            end_line = attrs.get("end_line")
+            if (
+                not isinstance(start_line, int)
+                or not isinstance(end_line, int)
+                or end_line <= start_line
+            ):
+                continue
+
+            content = code_graph.get_node_content(node.index)
+            if not content:
+                continue
+            content = content.strip()
+            if len(content) < self.min_block_chars:
+                continue
+
+            line_count = content.count("\n") + 1
+            block = SampledCodeBlock(
+                block_id=f"blk_{len(blocks) + 1:03d}",
+                node_id=node.index,
+                node_name=node["name"],
+                file_path=file_path,
+                node_type=node_type,
+                start_line=start_line,
+                end_line=end_line,
+                content=content,
+                char_count=len(content),
+                line_count=line_count,
+            )
+            blocks.append(block)
+
+        if not blocks:
+            return []
+
+        run_id = instance.get("synthesis_run_id")
+        if self.sampling_seed is None:
+            rng = random.Random()
+        else:
+            seed_input = (
+                f"{self.sampling_seed}:"
+                f"{instance.get('instance_id') or instance.get('repo') or 'seed'}:"
+                f"{run_id or 0}"
+            )
+            seed = int(hashlib.md5(seed_input.encode("utf-8")).hexdigest()[:8], 16)
+            rng = random.Random(seed)
+        if len(blocks) > self.max_candidate_blocks:
+            blocks = rng.sample(blocks, self.max_candidate_blocks)
+
+        return sorted(blocks, key=lambda blk: blk.char_count, reverse=True)
+
+    def _pick_core_block(
+        self, blocks: List[SampledCodeBlock], code_graph
+    ) -> SampledCodeBlock:
+        graph = code_graph.get_graph()
+        scored = sorted(
+            blocks,
+            key=lambda blk: blk.char_count + 20 * graph.degree(blk.node_id),
+            reverse=True,
+        )
+        return scored[0]
+
+    def _collect_neighborhood_blocks(
+        self,
+        *,
+        graph,
+        core_block: SampledCodeBlock,
+        candidate_blocks: List[SampledCodeBlock],
+    ) -> List[SampledCodeBlock]:
+        try:
+            roi = ROISubgraph(graph)
+            subgraph = roi.extract_subgraph(
+                [core_block.node_name],
+                k_hop=self.neighbor_k_hop,
+                direction="both",
+            )
+            nodes = roi.get_filtered_subgraph_nodes(
+                subgraph,
+                exclude_nodes=[core_block.node_name],
+                filter_tests=True,
+                node_types=[NODE_TYPE_FUNCTION, NODE_TYPE_METHOD, NODE_TYPE_CLASS],
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to collect neighborhood for core block %s: %s",
+                core_block.node_name,
+                exc,
+            )
+            nodes = []
+
+        by_name = {blk.node_name: blk for blk in candidate_blocks}
+        neighborhood: List[SampledCodeBlock] = []
+        for node in nodes:
+            matched = by_name.get(node.node_name)
+            if matched is None:
+                continue
+            if matched.block_id == core_block.block_id:
+                continue
+            neighborhood.append(matched)
+            if len(neighborhood) >= self.max_neighbor_blocks:
+                break
+
+        if not neighborhood:
+            for blk in candidate_blocks:
+                if blk.block_id == core_block.block_id:
+                    continue
+                neighborhood.append(blk)
+                if len(neighborhood) >= self.max_neighbor_blocks:
+                    break
+
+        return neighborhood
+
+    def _generate_behavioral_question(
+        self,
+        *,
+        instance: Dict[str, Any],
+        snapshot: RepoSnapshot,
+        behavioral_context: BehavioralContext,
+        run_index: int = 0,
+    ) -> Dict[str, Any]:
+        prompt = self._build_behavioral_prompt(
+            instance=instance,
+            snapshot=snapshot,
+            behavioral_context=behavioral_context,
+            run_index=run_index,
+        )
+        payload = self._run_agent(prompt, cwd=str(snapshot.root))
+        return self._parse_behavioral_payload(payload, behavioral_context)
+
+    async def _generate_behavioral_question_async(
+        self,
+        *,
+        instance: Dict[str, Any],
+        snapshot: RepoSnapshot,
+        behavioral_context: BehavioralContext,
+        run_index: int = 0,
+    ) -> Dict[str, Any]:
+        prompt = self._build_behavioral_prompt(
+            instance=instance,
+            snapshot=snapshot,
+            behavioral_context=behavioral_context,
+            run_index=run_index,
+        )
+        payload = await self._run_agent_async(prompt, cwd=str(snapshot.root))
+        return self._parse_behavioral_payload(payload, behavioral_context)
+
+    def _generate_behavioral_question_with_consensus(
+        self,
+        *,
+        instance: Dict[str, Any],
+        snapshot: RepoSnapshot,
+        behavioral_context: BehavioralContext,
+    ) -> Dict[str, Any]:
+        runs = []
+        for idx in range(self.behavioral_consensus_runs):
+            runs.append(
+                self._generate_behavioral_question(
+                    instance=instance,
+                    snapshot=snapshot,
+                    behavioral_context=behavioral_context,
+                    run_index=idx,
+                )
+            )
+        return self._aggregate_behavioral_consensus(runs, behavioral_context)
+
+    async def _generate_behavioral_question_with_consensus_async(
+        self,
+        *,
+        instance: Dict[str, Any],
+        snapshot: RepoSnapshot,
+        behavioral_context: BehavioralContext,
+    ) -> Dict[str, Any]:
+        runs = []
+        for idx in range(self.behavioral_consensus_runs):
+            runs.append(
+                await self._generate_behavioral_question_async(
+                    instance=instance,
+                    snapshot=snapshot,
+                    behavioral_context=behavioral_context,
+                    run_index=idx,
+                )
+            )
+        return self._aggregate_behavioral_consensus(runs, behavioral_context)
+
+    def _aggregate_behavioral_consensus(
+        self,
+        runs: List[Dict[str, Any]],
+        behavioral_context: BehavioralContext,
+    ) -> Dict[str, Any]:
+        if not runs:
+            return {
+                "question": self._fallback_question(None),
+                "focus": None,
+                "hints": None,
+                "selected_blocks": [behavioral_context.core_block],
+                "core_block_id": behavioral_context.core_block.block_id,
+                "selected_block_ids": [behavioral_context.core_block.block_id],
+            }
+
+        vote_counts: Dict[str, int] = {}
+        for run in runs:
+            for block in run.get("selected_blocks", []):
+                vote_counts[block.block_id] = vote_counts.get(block.block_id, 0) + 1
+
+        core_id = behavioral_context.core_block.block_id
+        majority = math.ceil(len(runs) / 2)
+
+        pool = {
+            blk.block_id: blk
+            for blk in [behavioral_context.core_block]
+            + behavioral_context.neighborhood_blocks
+        }
+        selected_blocks = [
+            pool[block_id]
+            for block_id, votes in sorted(
+                vote_counts.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+            if votes >= majority and block_id in pool
+        ]
+        if not selected_blocks:
+            selected_blocks = [behavioral_context.core_block]
+        if core_id not in {blk.block_id for blk in selected_blocks}:
+            selected_blocks.insert(0, behavioral_context.core_block)
+
+        best_run = max(
+            runs,
+            key=lambda run: sum(
+                vote_counts.get(blk.block_id, 0)
+                for blk in run.get("selected_blocks", [])
+            ),
+        )
+        return {
+            "question": best_run.get("question") or self._fallback_question(None),
+            "focus": best_run.get("focus"),
+            "hints": None,
+            "selected_blocks": selected_blocks,
+            "core_block_id": behavioral_context.core_block.block_id,
+            "selected_block_ids": [blk.block_id for blk in selected_blocks],
+        }
+
+    def _build_behavioral_prompt(
+        self,
+        *,
+        instance: Dict[str, Any],
+        snapshot: RepoSnapshot,
+        behavioral_context: BehavioralContext,
+        run_index: int = 0,
+    ) -> str:
+        core = behavioral_context.core_block
+        neighborhood = list(behavioral_context.neighborhood_blocks)
+        if neighborhood:
+            seed_src = (
+                f"{instance.get('instance_id', 'unknown')}:"
+                f"{instance.get('synthesis_run_id', 0)}:{run_index}"
+            )
+            seed = int(hashlib.md5(seed_src.encode("utf-8")).hexdigest()[:8], 16)
+            random.Random(seed).shuffle(neighborhood)
+        all_blocks = [core] + neighborhood
+
+        block_text = "\n\n".join(
+            self._format_prompt_block(block) for block in all_blocks
+        )
+        return (
+            "You are generating a behavioral code-search query from sampled code blocks.\n"
+            "Goal: describe what the behavior does, "
+            "without exposing implementation identifiers.\n"
+            "Rules:\n"
+            "1) The question MUST NOT mention function names, "
+            "class names, signatures, or file paths.\n"
+            "2) Pick required blocks (IDs) that are necessary to satisfy the behavior.\n"
+            "3) Always include the core block ID in required_block_ids.\n"
+            "4) Return strict JSON only with keys: question, "
+            "focus, required_block_ids, rationale.\n\n"
+            f"Repository summary:\n{snapshot.format_summary()}\n\n"
+            f"Source instance id: {instance.get('instance_id', 'unknown')}\n\n"
+            f"Verification pass: {run_index + 1}\n\n"
+            f"Sampled blocks:\n{block_text}"
+        )
+
+    def _format_prompt_block(self, block: SampledCodeBlock) -> str:
+        content = block.content
+        if len(content) > self.max_block_chars_in_prompt:
+            content = (
+                content[: self.max_block_chars_in_prompt]
+                + "\n# ... truncated for synthesis context ..."
+            )
+        return (
+            f"[{block.block_id}] type={block.node_type} "
+            f"lines={block.start_line}-{block.end_line} "
+            f"chars={block.char_count}\n"
+            f"{content}"
+        )
+
+    def _parse_behavioral_payload(
+        self,
+        payload: str,
+        behavioral_context: BehavioralContext,
+    ) -> Dict[str, Any]:
+        blob = self._extract_json_blob(payload)
+        try:
+            parsed = BehavioralSelectionResult.model_validate_json(blob)
+            question = parsed.question.strip()
+            focus = parsed.focus
+            selected_ids = parsed.required_block_ids
+        except ValidationError:
+            question = self._coerce_question_text(blob)
+            focus = None
+            selected_ids = []
+
+        question = self._sanitize_question(question)
+        if not question:
+            question = self._fallback_question(None)
+        if not question.endswith("?"):
+            question = question.rstrip(".") + "?"
+
+        pool = {
+            blk.block_id: blk
+            for blk in [behavioral_context.core_block]
+            + behavioral_context.neighborhood_blocks
+        }
+        selected_blocks = [
+            pool[block_id] for block_id in selected_ids if block_id in pool
+        ]
+        if behavioral_context.core_block.block_id not in {
+            blk.block_id for blk in selected_blocks
+        }:
+            selected_blocks.insert(0, behavioral_context.core_block)
+
+        return {
+            "question": question,
+            "focus": focus,
+            "hints": None,
+            "selected_blocks": selected_blocks,
+            "core_block_id": behavioral_context.core_block.block_id,
+            "selected_block_ids": [blk.block_id for blk in selected_blocks],
+        }
+
+    def _build_discovery_from_blocks(
+        self,
+        blocks: List[SampledCodeBlock],
+    ) -> TargetDiscoveryResult:
+        files = list(dict.fromkeys(block.file_path for block in blocks))
+        symbols = list(dict.fromkeys(block.node_name for block in blocks))
+        return TargetDiscoveryResult(
+            target_files=files,
+            target_symbols=symbols,
+            target_symbol_nodes=self._build_symbol_nodes_from_blocks(blocks),
+            rationale="graph-sampled behavioral blocks",
+        )
+
+    def _build_ground_truth_from_blocks(
+        self,
+        blocks: List[SampledCodeBlock],
+    ) -> Optional[GroundTruth]:
+        if not blocks:
+            return None
+
+        primary_locations: List[CodeLocation] = []
+        for block in blocks:
+            loc = block.to_code_location()
+            loc.symbol = self._extract_symbol_name(block.node_name, block.file_path)
+            primary_locations.append(loc)
+        return GroundTruth(primary_locations=primary_locations)
+
+    def _extract_symbol_name(self, node_name: str, file_path: str) -> Optional[str]:
+        if ":" in node_name:
+            prefix, symbol = node_name.split(":", 1)
+            if prefix.endswith(file_path) or prefix == file_path:
+                return symbol.rstrip("()") or None
+            return symbol.rstrip("()") or None
+        return node_name.rstrip("()") or None
+
+    def _build_symbol_nodes_from_blocks(
+        self,
+        blocks: List[SampledCodeBlock],
+    ) -> List[NodeInfo]:
+        return [block.to_node_info(include_content=True) for block in blocks]
+
+    def _build_symbol_nodes_from_ground_truth(
+        self,
+        gt: Optional[GroundTruth],
+    ) -> List[NodeInfo]:
+        if gt is None:
+            return []
+        nodes: List[NodeInfo] = []
+        for loc in gt.primary_locations:
+            nodes.append(
+                NodeInfo(
+                    node_name=loc.node_id,
+                    type=loc.symbol_type or "",
+                    file=loc.file_path,
+                    start_line=loc.start_line,
+                    end_line=loc.end_line,
+                )
+            )
+        return nodes
+
+    def _dump_node_info(self, node: NodeInfo) -> Dict[str, Any]:
+        return node.model_dump(exclude_none=True)
+
     def _build_ground_truth(
         self,
         instance: Dict[str, Any],
@@ -410,6 +1035,13 @@ class ClaudeQuerySynthesizer:
                             file_path=file_path,
                             symbol=symbol_name or None,
                             symbol_type=symbol_type,
+                        )
+                    )
+                elif discovered_targets.target_files:
+                    primary_locations.append(
+                        CodeLocation(
+                            file_path=discovered_targets.target_files[0],
+                            symbol=symbol_id.rstrip("()") or None,
                         )
                     )
 
@@ -722,7 +1354,7 @@ class ClaudeQuerySynthesizer:
         context_parts.append(
             "Explore the repository and identify likely implementation targets.\n"
             "Return strict JSON with keys: target_files (array of relative file paths), "
-            "target_symbols (array of `file_path:SymbolName` or `file_path:function_name()`), "
+            "target_symbols (array of symbol identifiers in repository-native format), "
             "rationale (string or null). Keep arrays concise (<= 8)."
         )
 
@@ -759,19 +1391,41 @@ class ClaudeQuerySynthesizer:
             cwd=cwd,
         )
         text_chunks: List[str] = []
-        async for message in query(prompt=prompt, options=options):
-            if message.__class__.__name__ != "AssistantMessage":
-                continue
-            content = getattr(message, "content", None)
-            if not content:
-                continue
-            block_texts: List[str] = []
-            for block in content:
-                text = getattr(block, "text", None)
-                if isinstance(text, str) and text.strip():
-                    block_texts.append(text.strip())
-            if block_texts:
-                text_chunks.append("\n".join(block_texts))
+        query_gen = query(prompt=prompt, options=options)
+
+        try:
+            async for message in query_gen:
+                msg_type = message.__class__.__name__
+                logger.debug(f"Agent message type: {msg_type}")
+
+                if msg_type == "ResultMessage":
+                    # Get result directly from ResultMessage
+                    result = getattr(message, "result", None)
+                    if result and isinstance(result, str):
+                        return result.strip()
+                    # If no result in ResultMessage, return accumulated text
+                    return "\n".join(text_chunks).strip()
+
+                if msg_type == "ErrorMessage":
+                    error_msg = getattr(message, "error", "Unknown error")
+                    logger.error(f"Agent error message: {error_msg}")
+                    raise RuntimeError(f"Agent returned error: {error_msg}")
+
+                if msg_type == "AssistantMessage":
+                    content = getattr(message, "content", None)
+                    if not content:
+                        continue
+                    block_texts: List[str] = []
+                    for block in content:
+                        text = getattr(block, "text", None)
+                        if isinstance(text, str) and text.strip():
+                            block_texts.append(text.strip())
+                    if block_texts:
+                        text_chunks.append("\n".join(block_texts))
+        finally:
+            # Ensure generator is properly closed
+            await query_gen.aclose()
+
         return "\n".join(text_chunks).strip()
 
     def _extract_json_blob(self, text: str) -> str:
@@ -876,11 +1530,15 @@ class ClaudeQuerySynthesizer:
             return TargetDiscoveryResult()
         file_pattern = r"\b[\w./-]+\.(?:py|rs|js|ts|go|java|cpp|c|h|hpp)\b"
         files = list(dict.fromkeys(re.findall(file_pattern, text)))
-        symbol_pattern = (
-            r"\b[\w./-]+\.(?:py|rs|js|ts|go|java|cpp|c|h|hpp):"
-            r"[A-Za-z_][\w.:]*(?:\(\))?\b"
-        )
-        symbols = list(dict.fromkeys(re.findall(symbol_pattern, text)))
+        symbol_patterns = [
+            r"\b[\w./-]+\.(?:py|rs|js|ts|go|java|cpp|c|h|hpp):[A-Za-z_][\w.:]*(?:\(\))?\b",
+            r"\b[\w/]+#[A-Za-z_]\w*(?:\(\))?\b",
+            r"\b[\w/]+/[A-Za-z_]\w*(?:\(\))?\b",
+        ]
+        symbols: List[str] = []
+        for pattern in symbol_patterns:
+            symbols.extend(re.findall(pattern, text))
+        symbols = list(dict.fromkeys(symbols))
         return TargetDiscoveryResult(
             target_files=files[:8],
             target_symbols=symbols[:8],
