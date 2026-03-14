@@ -105,34 +105,53 @@ class LLMConfig:
         return None
 
     def _get_vertex_credentials(self) -> tuple:
-        """Get Google Cloud service account credentials and project ID."""
+        """Get Google Cloud credentials and project ID.
+
+        Supports both service account JSON files (via
+        GOOGLE_APPLICATION_CREDENTIALS) and Application Default Credentials
+        (via ``gcloud auth application-default login``).
+        """
         try:
-            # Get credentials from GOOGLE_APPLICATION_CREDENTIALS env var
-            if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
-                raise LLMConfigurationError(
-                    "GOOGLE_APPLICATION_CREDENTIALS environment variable is required for Vertex AI. "
-                    "Set it to point to your service account JSON file."
-                )
+            sa_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            if sa_path:
+                sa_path = os.path.expanduser(sa_path)
+                if not os.path.exists(sa_path):
+                    raise LLMConfigurationError(
+                        f"Google Cloud credentials file not found: {sa_path}"
+                    )
+                # Try service account first
+                try:
+                    credentials = service_account.Credentials.from_service_account_file(
+                        sa_path,
+                        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                    )
+                    return credentials, credentials.project_id
+                except ValueError:
+                    pass  # Not a service account file, fall through to ADC
 
-            service_account_path = os.path.expanduser(
-                os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
-            )
-            if not os.path.exists(service_account_path):
-                raise LLMConfigurationError(
-                    f"Google Cloud Service Account file not found: {service_account_path}"
-                )
-
-            credentials = service_account.Credentials.from_service_account_file(
-                service_account_path,
+            # Fall back to Application Default Credentials
+            import google.auth
+            credentials, project_id = google.auth.default(
                 scopes=["https://www.googleapis.com/auth/cloud-platform"],
             )
-            return credentials, credentials.project_id
+            if not project_id:
+                project_id = getattr(credentials, "quota_project_id", None)
+            if not project_id:
+                project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
+            if not project_id:
+                raise LLMConfigurationError(
+                    "Could not determine Google Cloud project ID. "
+                    "Run 'gcloud config set project <PROJECT_ID>' or set GOOGLE_CLOUD_PROJECT."
+                )
+            return credentials, project_id
 
         except Exception as e:
             if isinstance(e, LLMConfigurationError):
                 raise
             raise LLMConfigurationError(
-                f"Failed to load service account credentials: {e}"
+                f"Failed to load Google Cloud credentials: {e}. "
+                "Either set GOOGLE_APPLICATION_CREDENTIALS to a service account JSON, "
+                "or run 'gcloud auth application-default login'."
             ) from e
 
 
