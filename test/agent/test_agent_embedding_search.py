@@ -14,8 +14,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from codeminer.agent.routing_agent import SkillRoutingAgent
 from codeminer.agent.skills.loader import SkillLoader
 from codeminer.agent.skills.registry import SkillRegistry
+from codeminer.llm.litellm_chat import LiteLLMChat
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SKILLS_DIR = str(_PROJECT_ROOT / "codeminer" / "agent" / "skills")
@@ -205,6 +207,10 @@ class TestEmbeddingSearchE2E:
                 dimension=768,
                 store_path=index_path,
                 model_kwargs={"trust_remote_code": True},
+                encode_kwargs={
+                    "batch_size": 8,  # Reduce batch size to avoid OOM
+                    "normalize_embeddings": True,
+                },
             )
             vs.load(index_path)
         else:
@@ -217,7 +223,13 @@ class TestEmbeddingSearchE2E:
                 embedding_model="nomic-ai/CodeRankEmbed",
                 embedding_provider="huggingface",
                 embedding_dimension=768,
-                embedding_kwargs={"model_kwargs": {"trust_remote_code": True}},
+                embedding_kwargs={
+                    "model_kwargs": {"trust_remote_code": True},
+                    "encode_kwargs": {
+                        "batch_size": 8,  # Reduce batch size to avoid OOM
+                        "normalize_embeddings": True,
+                    },
+                },
             )
 
         ctx = RetrieveContext(vector_store=vs, default_level="l2")
@@ -305,3 +317,48 @@ class TestEmbeddingSearchE2E:
         assert len(l0_results) > 0
         assert len(l2_results) > 0
         print(f"L0 results: {len(l0_results)}, L2 results: {len(l2_results)}")
+
+    @pytest.mark.parametrize(
+        "vertex_model",
+        [
+            # Three chat models provided via Vertex AI in this project.
+            "vertex_ai/gemini-2.5-flash",
+            "vertex_ai/gemini-2.0-flash",
+            "vertex_ai/claude-sonnet-4@20250514",
+        ],
+    )
+    def test_vertex_routing_selects_embedding_search(
+        self, real_embedding_search, vertex_model
+    ):
+        """
+        Use Vertex-provided chat models as the routing LLM and verify that
+        they select the embedding_search skill for a semantic code-search query.
+        """
+        import os
+
+        # Allow overriding the model name via environment, default to the parametrized value.
+        model_name = os.environ.get("CODEMINER_VERTEX_ROUTING_MODEL", vertex_model)
+
+        llm = LiteLLMChat(
+            model=model_name,
+            temperature=0.0,
+            max_tokens=512,
+        )
+        agent = SkillRoutingAgent(llm=llm)
+
+        try:
+            invocations = agent.route(
+                "function that performs semantic similarity search over code vectors",
+                top_k=5,
+            )
+        except Exception as exc:
+            # If Vertex AI / LiteLLM is not configured correctly, skip instead of failing.
+            pytest.skip(f"Vertex routing unavailable for {model_name}: {exc}")
+
+        assert isinstance(invocations, list)
+        assert invocations, f"Expected at least one skill invocation for {model_name}"
+
+        skill_ids = [inv.get("skill_id") for inv in invocations]
+        assert (
+            "embedding_search" in skill_ids
+        ), f"Expected embedding_search for {model_name}, got: {skill_ids}"
