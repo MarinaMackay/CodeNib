@@ -3,12 +3,12 @@ Rerank agent for ranking code nodes based on relevance to a query.
 This module uses LLM APIs to rank NodeInfo objects and return QueriedNode objects.
 """
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
+from ..llm.litellm_chat import human_message, system_message
 from ..llm.llm_config import LLMConfig, create_llm
 from ..log_utils import get_logger
 from ..types import NodeInfo, QueriedNode
@@ -71,7 +71,8 @@ class RerankAgent:
             nodes (List[NodeInfo]): List of nodes with content to rank
             top_k (Optional[int]): Maximum number of results to return (None for all)
             window_size (Optional[int]): Number of nodes per rerank window. None -> all nodes.
-            window_step (Optional[int]): Step size between sliding windows. Defaults to window_size.
+            window_step (Optional[int]): Step size between sliding
+                windows. Defaults to window_size.
             include_content (bool): Whether to include node content in the result objects.
 
         Returns:
@@ -118,7 +119,7 @@ class RerankAgent:
                 window_step = window_size
 
             aggregated_scores: Dict[int, float] = defaultdict(float)
-            appearance_count: Dict[int, int] = defaultdict(int)
+            appearance_count: Counter[int] = Counter()
 
             window_starts = list(range(0, total_nodes, window_step))
             tail_start = max(total_nodes - window_size, 0)
@@ -216,21 +217,23 @@ class RerankAgent:
                 f"Type: {node.type}\n"
                 f"File: {node.file}\n"
                 f"Lines: {node.start_line}-{node.end_line}\n"
-                f"Content:\n{node.content[:1000]}{'...' if len(node.content) > 1000 else ''}\n\n"
+                f"Content:\n{node.content[:1000]}"
+                f"{'...' if len(node.content) > 1000 else ''}\n\n"
             )
             node_descriptions.append(description)
 
         user_prompt = (
             f"Query: {query}\n\n"
-            f"Please rank the following {len(window_nodes)} code nodes by relevance to the query:\n\n"
+            f"Please rank the following {len(window_nodes)} "
+            "code nodes by relevance to the query:\n\n"
             + "\n".join(node_descriptions)
             + f"\n\nRank all {len(window_nodes)} nodes by relevance and provide scores. "
             "Return the indices (0-based) in order of relevance (most relevant first) "
             "and corresponding relevance scores (0.0 to 1.0)."
         )
 
-        system_msg = SystemMessage(content=system_prompt)
-        user_msg = HumanMessage(content=user_prompt)
+        system_msg = system_message(system_prompt)
+        user_msg = human_message(user_prompt)
 
         try:
             rerank_result = self.structured_llm.invoke([system_msg, user_msg])
@@ -272,7 +275,8 @@ def rerank_nodes_with_query(
     Args:
         query (str): The query to rank nodes against
         nodes (List[NodeInfo]): List of nodes with content to rank
-        llm_config (LLMConfig): LLM configuration containing model, provider, and other settings.
+        llm_config (LLMConfig): LLM configuration containing model,
+            provider, and other settings.
         top_k (Optional[int]): Maximum number of results to return (None for all)
         window_size (Optional[int]): Optional sliding window size for reranking.
         window_step (Optional[int]): Optional stride between sliding windows.

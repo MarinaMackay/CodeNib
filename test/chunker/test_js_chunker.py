@@ -33,6 +33,10 @@ def test_js_chunker_level_one(express_repo):
     chunk_types = {chunk.chunk_type for chunk in chunks}
     assert "method" not in chunk_types
     assert "function" in chunk_types
+    # Top-level plain variable/constant declarations should be emitted at L1.
+    assert (
+        "variable" in chunk_types or "object" in chunk_types
+    ), f"Expected variable or object in L1 chunk types, got {chunk_types}"
 
 
 def test_js_chunker_level_two(express_repo):

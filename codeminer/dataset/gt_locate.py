@@ -5,7 +5,7 @@ Analyze SWE-bench patches to extract symbol-level changes.
 This module extracts ground truth (GT) localization information from SWE-bench patches,
 identifying which symbols (functions, methods, classes) were modified, added,
 or deleted.
-Supports both SWE-bench Verified and Lite datasets.
+Supports both SWE-bench Verified/Lite and SWE-bench Multilingual datasets.
 
 Usage Examples:
     # Process all instances in the test split using Verified dataset (default)
@@ -26,12 +26,19 @@ Output Format:
         "repo": "astropy/astropy",
         "base_commit": "6500928dc0e57be8f06d1162eacc3ba5e2eff692",
         "target_files":     ["astropy/coordinates/builtin_frames/itrs.py", ...],
-        "symbols_modified": ["astropy/coordinates/builtin_frames/itrs.py:ITRS", ...],
-        "symbols_added":    [
-            "astropy/coordinates/builtin_frames/"
-            "itrs_observed_transforms.py:itrs_to_observed()",
-            ...,
+        "code_blocks": [
+            {
+                "file_path": "astropy/coordinates/builtin_frames/itrs.py",
+                "symbol": "ITRS",
+                "start_line": 10,
+                "end_line": 50,
+                "symbol_type": "class",
+                "change_type": "modified"
+            },
+            ...
         ],
+        "symbols_modified": ["astropy/coordinates/builtin_frames/itrs.py:ITRS", ...],
+        "symbols_added":    [...],
         "symbols_deleted": [],
         "error": null
     }
@@ -48,27 +55,87 @@ import os
 import re
 import shutil
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..code_chunking import create_chunker
+from ..code_chunking.base import CodeChunk
 from ..log_utils import get_logger
 from .swebench import SwebenchDataset
 
 logger = get_logger(__name__)
 
+# Map file extensions to chunker language identifiers.
+EXTENSION_TO_LANGUAGE: Dict[str, str] = {
+    ".py": "python",
+    ".go": "go",
+    ".rs": "rust",
+    ".c": "cpp",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".h": "cpp",
+    ".hpp": "cpp",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+}
+
+# Symbol chunk_types that represent meaningful code blocks.
+SYMBOL_CHUNK_TYPES = frozenset(
+    {
+        "function",
+        "method",
+        "class",
+        "struct",
+        "type",
+        "interface",
+        "object",
+        "enum",
+        "trait",
+        "impl",  # Rust (pre-existing, now registered)
+        "var",
+        "const",  # Go
+        "static",  # Rust
+        "declaration",
+        "macro",  # C/C++
+        "variable",  # JS/TS
+    }
+)
+
+
+def language_for_file(file_path: str) -> Optional[str]:
+    """Return the chunker language for *file_path*, or ``None`` if unsupported."""
+    ext = os.path.splitext(file_path)[1].lower()
+    return EXTENSION_TO_LANGUAGE.get(ext)
+
+
+def _chunk_to_code_block(chunk: CodeChunk, change_type: str) -> Dict[str, Any]:
+    """Convert a CodeChunk to a ground-truth code block dict with 1-based lines."""
+    file_path, _, symbol = chunk.node_id.partition(":")
+    return {
+        "file_path": file_path,
+        "symbol": symbol or chunk.name,
+        "start_line": chunk.start_line + 1,  # 0-based -> 1-based
+        "end_line": chunk.end_line + 1,  # 0-based -> 1-based
+        "symbol_type": chunk.chunk_type,
+        "change_type": change_type,
+    }
+
 
 class GTLocator:
     """Ground truth locator that analyzes patches to extract symbol-level changes."""
 
-    def __init__(self, work_dir: str = None, language: str = "python"):
+    def __init__(self, work_dir: str = None, language: Optional[str] = None):
         """
         Initialize the ground truth locator.
 
         Args:
             work_dir: Working directory for cloning repos (default: ~/.codeminer/tmp)
-            language: Programming language to analyze (default: python)
+            language: Programming language to analyze. When ``None`` (default),
+                the language is auto-detected from each file's extension.
         """
         if work_dir is None:
             # Create a temporary directory under ~/.codeminer
@@ -81,8 +148,17 @@ class GTLocator:
             self.work_dir = work_dir
             self.is_temp_dir = False
         self.language = language
-        self.chunker = create_chunker(language)
+        # Cache chunkers per language so we only create each once.
+        self._chunkers: Dict[str, Any] = {}
+        if language is not None:
+            self._chunkers[language] = create_chunker(language)
         logger.info(f"Initialized GTLocator with work_dir: {self.work_dir}")
+
+    def _get_chunker(self, language: str):
+        """Return a cached chunker for *language*, creating it on first use."""
+        if language not in self._chunkers:
+            self._chunkers[language] = create_chunker(language)
+        return self._chunkers[language]
 
     def get_target_files(self, patch_content: str) -> List[str]:
         """
@@ -167,8 +243,11 @@ class GTLocator:
         return dict(changed_ranges)
 
     def extract_symbols_from_file(
-        self, file_path: str, relative_path: Optional[str] = None
-    ) -> Dict[str, any]:
+        self,
+        file_path: str,
+        relative_path: Optional[str] = None,
+        language: Optional[str] = None,
+    ) -> Dict[str, CodeChunk]:
         """
         Extract all symbols from a file with their chunks.
 
@@ -176,6 +255,9 @@ class GTLocator:
             file_path: Absolute path to the source file
             relative_path: Relative path for node_id generation. If provided,
                           the returned dictionary keys will use this path prefix.
+            language: Override language for chunker selection. When ``None``,
+                uses the instance-level language or auto-detects from the file
+                extension.
 
         Returns:
             Dictionary mapping node_id (file:symbol format) to CodeChunk objects
@@ -184,16 +266,29 @@ class GTLocator:
             logger.debug(f"File does not exist: {file_path}")
             return {}
 
+        lang = language or self.language or language_for_file(file_path)
+        if lang is None:
+            logger.debug(f"Unsupported file type, skipping: {file_path}")
+            return {}
+
         try:
-            chunks = self.chunker.chunk_file(file_path, relative_path)
+            chunker = self._get_chunker(lang)
+            chunks = chunker.chunk_file(file_path, relative_path)
             symbols = {}
 
             for chunk in chunks:
-                if chunk.chunk_type in ("function", "method", "class"):
-                    # Use chunk.node_id directly (already in file:symbol format)
+                if chunk.chunk_type in SYMBOL_CHUNK_TYPES:
                     symbols[chunk.node_id] = chunk
 
             logger.debug(f"Extracted {len(symbols)} symbols from {file_path}")
+            if not symbols and chunks:
+                chunk_type_counts = dict(Counter(chunk.chunk_type for chunk in chunks))
+                logger.debug(
+                    "No symbol chunks matched in %s (lang=%s). chunk_type counts: %s",
+                    file_path,
+                    lang,
+                    chunk_type_counts,
+                )
             return symbols
         except Exception as e:
             logger.warning(f"Failed to extract symbols from {file_path}: {e}")
@@ -278,6 +373,61 @@ class GTLocator:
 
             # Checkout to the base commit
             logger.info(f"Checking out commit {commit_hash}")
+            try:
+                subprocess.run(
+                    ["git", "checkout", "-f", commit_hash],
+                    cwd=repo_dir,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                return True
+            except subprocess.CalledProcessError as e:
+                logger.warning(
+                    "Initial checkout failed for %s: %s",
+                    commit_hash,
+                    e.stderr.decode("utf-8").strip(),
+                )
+
+            # Reused repo caches may be shallow clones from sampling.
+            try:
+                shallow = subprocess.run(
+                    ["git", "rev-parse", "--is-shallow-repository"],
+                    cwd=repo_dir,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                ).stdout.strip()
+                if shallow == "true":
+                    logger.info("Repository is shallow; running git fetch --unshallow")
+                    subprocess.run(
+                        ["git", "fetch", "--unshallow"],
+                        cwd=repo_dir,
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+            except subprocess.CalledProcessError:
+                logger.warning("Failed to determine/expand shallow clone state")
+
+            # Try targeted fetch for the specific commit.
+            subprocess.run(
+                ["git", "fetch", "origin", commit_hash],
+                cwd=repo_dir,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            subprocess.run(
+                ["git", "fetch", "--all", "--tags"],
+                cwd=repo_dir,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            # Retry checkout after fetching full history.
             subprocess.run(
                 ["git", "checkout", "-f", commit_hash],
                 cwd=repo_dir,
@@ -327,10 +477,14 @@ class GTLocator:
 
     def compare_symbols(
         self,
-        symbols_before: Dict[str, any],
-        symbols_after: Dict[str, any],
+        symbols_before: Dict[str, CodeChunk],
+        symbols_after: Dict[str, CodeChunk],
         changed_ranges: Dict[str, List[Tuple[int, int]]],
-    ) -> Tuple[List[str], List[str], List[str]]:
+    ) -> Tuple[
+        List[Tuple[str, CodeChunk]],
+        List[Tuple[str, CodeChunk]],
+        List[Tuple[str, CodeChunk]],
+    ]:
         """
         Compare symbols before and after patch to identify changes.
 
@@ -342,7 +496,10 @@ class GTLocator:
             changed_ranges: Dictionary mapping file paths to list of changed line ranges
 
         Returns:
-            Tuple of (symbols_modified, symbols_added, symbols_deleted)
+            Tuple of three lists of ``(node_id, CodeChunk)`` pairs:
+            ``(modified, added, deleted)``.  For *modified* and *added* the
+            chunk comes from ``symbols_after``; for *deleted* it comes from
+            ``symbols_before``.
         """
         logger.debug(
             (
@@ -355,16 +512,18 @@ class GTLocator:
         after_set = set(symbols_after.keys())
 
         # Symbols that were deleted
-        symbols_deleted = sorted(list(before_set - after_set))
+        deleted = sorted(before_set - after_set)
+        symbols_deleted = [(name, symbols_before[name]) for name in deleted]
         logger.debug(f"Found {len(symbols_deleted)} deleted symbols")
 
         # Symbols that were added
-        symbols_added = sorted(list(after_set - before_set))
+        added = sorted(after_set - before_set)
+        symbols_added = [(name, symbols_after[name]) for name in added]
         logger.debug(f"Found {len(symbols_added)} added symbols")
 
         # Symbols that exist in both - check if they were modified
         common = before_set & after_set
-        symbols_modified = []
+        symbols_modified: List[Tuple[str, CodeChunk]] = []
 
         for symbol_name in common:
             file_path, _, _ = symbol_name.partition(":")
@@ -379,7 +538,7 @@ class GTLocator:
             length_after = chunk_after.end_line - chunk_after.start_line + 1
 
             if length_before != length_after:
-                symbols_modified.append(symbol_name)
+                symbols_modified.append((symbol_name, chunk_after))
                 logger.debug(
                     f"Symbol modified (length changed): {symbol_name} "
                     f"(before: {length_before} lines, after: {length_after} lines)"
@@ -397,7 +556,7 @@ class GTLocator:
             if has_overlap:
                 # Length is same but has changes in range, compare content directly
                 if chunk_before.content != chunk_after.content:
-                    symbols_modified.append(symbol_name)
+                    symbols_modified.append((symbol_name, chunk_after))
                     logger.debug(
                         f"Symbol modified (content changed): {symbol_name} "
                         f"(lines {chunk_after.start_line}-{chunk_after.end_line})"
@@ -407,7 +566,7 @@ class GTLocator:
                         f"Content identical for {symbol_name}, not marking as modified"
                     )
 
-        symbols_modified = sorted(symbols_modified)
+        symbols_modified.sort(key=lambda t: t[0])
         logger.debug(f"Found {len(symbols_modified)} modified symbols")
 
         return symbols_modified, symbols_added, symbols_deleted
@@ -420,7 +579,9 @@ class GTLocator:
             instance: Dictionary containing instance data
 
         Returns:
-            Dictionary with analysis results
+            Dictionary with analysis results including ``code_blocks`` — a list
+            of ground-truth code block dicts with 1-based ``start_line`` /
+            ``end_line``.
         """
         instance_id = instance["instance_id"]
         repo = instance["repo"]
@@ -434,6 +595,7 @@ class GTLocator:
             "repo": repo,
             "base_commit": base_commit,
             "target_files": [],
+            "code_blocks": [],
             "symbols_modified": [],
             "symbols_added": [],
             "symbols_deleted": [],
@@ -466,26 +628,23 @@ class GTLocator:
             result["error"] = "No target files found in patch"
             return result
 
-        # Filter for Python files only (for now)
-        python_files = [f for f in target_files if f.endswith(".py")]
+        # Filter to files whose language we can parse.
+        supported_files = [f for f in target_files if language_for_file(f) is not None]
         logger.info(
-            (
-                f"Found {len(python_files)} Python files in {len(target_files)} "
-                "target files"
-            )
+            f"Found {len(supported_files)} supported files in "
+            f"{len(target_files)} target files"
         )
 
-        if not python_files:
-            logger.info(f"No Python files affected in {instance_id}")
+        if not supported_files:
+            logger.info(f"No supported source files affected in {instance_id}")
             return result
 
         # Extract symbols before patch
         logger.info("Extracting symbols BEFORE patch")
-        symbols_before = {}
-        for file_path in python_files:
+        symbols_before: Dict[str, CodeChunk] = {}
+        for file_path in supported_files:
             full_path = os.path.join(repo_dir, file_path)
             if os.path.exists(full_path):
-                # Pass relative_path for proper node_id generation
                 file_symbols = self.extract_symbols_from_file(full_path, file_path)
                 symbols_before.update(file_symbols)
         logger.info(f"Extracted {len(symbols_before)} symbols before patch")
@@ -501,30 +660,39 @@ class GTLocator:
 
         # Extract symbols after patch
         logger.info("Extracting symbols AFTER patch")
-        symbols_after = {}
-        for file_path in python_files:
+        symbols_after: Dict[str, CodeChunk] = {}
+        for file_path in supported_files:
             full_path = os.path.join(repo_dir, file_path)
             if os.path.exists(full_path):
-                # Pass relative_path for proper node_id generation
                 file_symbols = self.extract_symbols_from_file(full_path, file_path)
                 symbols_after.update(file_symbols)
         logger.info(f"Extracted {len(symbols_after)} symbols after patch")
 
         # Compare symbols to identify changes
         logger.info("Comparing symbols to identify changes")
-        symbols_modified, symbols_added, symbols_deleted = self.compare_symbols(
+        modified, added, deleted = self.compare_symbols(
             symbols_before, symbols_after, changed_ranges
         )
 
-        result["symbols_modified"] = symbols_modified
-        result["symbols_added"] = symbols_added
-        result["symbols_deleted"] = symbols_deleted
+        # Build code_blocks with 1-based line numbers.
+        code_blocks: List[Dict[str, Any]] = []
+        for _, chunk in modified:
+            code_blocks.append(_chunk_to_code_block(chunk, "modified"))
+        for _, chunk in added:
+            code_blocks.append(_chunk_to_code_block(chunk, "added"))
+        for _, chunk in deleted:
+            code_blocks.append(_chunk_to_code_block(chunk, "deleted"))
+
+        result["code_blocks"] = code_blocks
+        result["symbols_modified"] = [name for name, _ in modified]
+        result["symbols_added"] = [name for name, _ in added]
+        result["symbols_deleted"] = [name for name, _ in deleted]
 
         logger.info(
             f"Completed analysis for {instance_id}: "
-            f"{len(symbols_modified)} modified, "
-            f"{len(symbols_added)} added, "
-            f"{len(symbols_deleted)} deleted"
+            f"{len(modified)} modified, "
+            f"{len(added)} added, "
+            f"{len(deleted)} deleted"
         )
 
         return result
@@ -542,8 +710,9 @@ def build_gt_metadata(
     dataset,
     work_dir: Optional[str] = None,
     keep_repos: bool = True,
-) -> List[Dict[str, Optional[str]]]:
-    locator = GTLocator(work_dir=work_dir)
+    language: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    locator = GTLocator(work_dir=work_dir, language=language)
     results = []
     for i, instance in enumerate(dataset):
         logger.info(f"Processing instance {i+1}/{len(dataset)}")

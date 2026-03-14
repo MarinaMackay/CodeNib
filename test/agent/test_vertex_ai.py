@@ -5,6 +5,7 @@ Simple test script for Vertex AI LLM generation using CodeMiner's LLM configurat
 
 import os
 
+from codeminer.llm.litellm_chat import human_message
 from codeminer.llm.llm_config import LLMConfig, LLMProvider, create_llm
 
 
@@ -12,7 +13,7 @@ def test_vertex_ai_gemini():
     """Test that Vertex AI Gemini can successfully generate text."""
     print("Testing Vertex AI Gemini text generation...")
     modelconfig = LLMConfig(
-        model_name="gemini-1.5-pro",
+        model_name="gemini-2.5-flash",
         provider=LLMProvider.VERTEX_GEMINI,
         temperature=0.7,
         max_tokens=1024,
@@ -23,17 +24,21 @@ def test_vertex_ai_gemini():
         llm = create_llm(modelconfig)
 
         # Test generation with a simple prompt
-        response = llm.complete(
-            "What is machine learning? Please provide a brief explanation."
+        response = llm.invoke(
+            [
+                human_message(
+                    "What is machine learning? Please provide a brief explanation."
+                )
+            ]
         )
 
-        print(f"Response: {response.text}")
+        print(f"Response: {response}")
 
         # Check that we got a non-empty response
-        assert response.text, "Response text is empty"
-        assert len(response.text.strip()) > 0, "Response text is just whitespace"
+        assert response, "Response text is empty"
+        assert len(response.strip()) > 0, "Response text is just whitespace"
 
-        print("✅ Vertex AI Gemini generation test passed!\n")
+        print("Vertex AI Gemini generation test passed!\n")
         return True
 
     except Exception as e:
@@ -45,7 +50,7 @@ def test_vertex_ai_gemini_flash():
     """Test that Vertex AI Gemini Flash can successfully generate text."""
     print("Testing Vertex AI Gemini Flash text generation...")
     modelconfig = LLMConfig(
-        model_name="gemini-2.0-flash",
+        model_name="gemini-2.5-flash",
         provider=LLMProvider.VERTEX_GEMINI,
         temperature=0.7,
         max_tokens=150,
@@ -56,17 +61,21 @@ def test_vertex_ai_gemini_flash():
         llm = create_llm(modelconfig)
 
         # Test generation with a more complex prompt
-        response = llm.complete(
-            "How many R's are in the word 'strawberry'? Count carefully."
+        response = llm.invoke(
+            [
+                human_message(
+                    "How many R's are in the word 'strawberry'? Count carefully."
+                )
+            ]
         )
 
-        print(f"Response: {response.text}")
+        print(f"Response: {response}")
 
         # Check that we got a non-empty response
-        assert response.text, "Response text is empty"
-        assert len(response.text.strip()) > 0, "Response text is just whitespace"
+        assert response, "Response text is empty"
+        assert len(response.strip()) > 0, "Response text is just whitespace"
 
-        print("✅ Vertex AI Gemini Flash generation test passed!\n")
+        print("Vertex AI Gemini Flash generation test passed!\n")
         return True
 
     except Exception as e:
@@ -88,15 +97,17 @@ def test_anthropic_vertex():
         llm = create_llm(modelconfig)
 
         # Test generation
-        response = llm.complete("What are the benefits of using cloud computing?")
+        response = llm.invoke(
+            [human_message("What are the benefits of using cloud computing?")]
+        )
 
-        print(f"Response: {response.text}")
+        print(f"Response: {response}")
 
         # Check that we got a non-empty response
-        assert response.text, "Response text is empty"
-        assert len(response.text.strip()) > 0, "Response text is just whitespace"
+        assert response, "Response text is empty"
+        assert len(response.strip()) > 0, "Response text is just whitespace"
 
-        print("✅ Vertex AI Anthropic Claude test passed!\n")
+        print("Vertex AI Anthropic Claude test passed!\n")
         return True
 
     except Exception as e:
