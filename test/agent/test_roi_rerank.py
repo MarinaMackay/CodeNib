@@ -75,7 +75,7 @@ if __name__ == "__main__":
 
         # Print filtered nodes (sample 3 nodes), return type is NodeInfo
         for i, node in enumerate(filtered_nodes[:3]):
-            print(f"Filtered node {i+1}")
+            print(f"Filtered node {i + 1}")
             print(f"Node Name: {node.node_name}")
             print(f"Node Type: {node.type}")
             print(f"Node File: {node.file}")
@@ -101,7 +101,7 @@ if __name__ == "__main__":
 
         # Print ranked nodes
         for i, node in enumerate(ranked_nodes):
-            print(f"Rank {i+1} (Score: {node.score:.4f})")
+            print(f"Rank {i + 1} (Score: {node.score:.4f})")
             print(f"Node Name: {node.node_name}")
             print(f"Node Type: {node.type}")
             print(f"Node File: {node.file}")

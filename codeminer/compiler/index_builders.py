@@ -7,7 +7,8 @@ when ``ResourcePlan`` indicates they are missing or stale.
 Concrete builders wrap existing index infrastructure:
   - ``BM25IndexBuilder``   → ``BM25CodeIndexer``
   - ``VectorIndexBuilder`` → ``build_hierarchical_vector_store``
-  - ``SymbolGraphBuilder`` → ``SCIPIndexer``
+  - ``SymbolGraphBuilder`` → ``SCIPPythonIndexer``
+  / ``SCIPRustIndexer`` / ``SCIPTypeScriptIndexer``
 """
 
 from __future__ import annotations
