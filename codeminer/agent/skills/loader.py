@@ -27,6 +27,7 @@ _CONTEXT_KEY_FOR_TYPE: Dict[str, str] = {
     "aggregate": "retrieve",
     "rerank": "rerank",
     "transform": "transform",
+    "expand": "expand",
 }
 
 
