@@ -1,0 +1,29 @@
+"""Data types for the agent runner."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class ToolCallRecord:
+    """Record of a single tool invocation during an agent run."""
+
+    tool_call_id: str
+    skill_id: str
+    arguments: Dict[str, Any]
+    result: Any = None
+    duration_ms: float = 0.0
+    error: Optional[str] = None
+
+
+@dataclass
+class AgentResult:
+    """Outcome of ``AgentRunner.run()``."""
+
+    answer: str
+    tool_calls: List[ToolCallRecord] = field(default_factory=list)
+    messages: List[Dict[str, Any]] = field(default_factory=list)
+    total_turns: int = 0
+    total_duration_ms: float = 0.0
