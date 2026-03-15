@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 
 @dataclass(slots=True)
@@ -117,6 +117,27 @@ class HybridUnion(AlgebraOp):
 
     def with_children(self, children: Sequence[AlgebraOp]) -> "HybridUnion":
         return replace(self, branches=list(children))
+
+
+@dataclass(slots=True)
+class GraphExpand(AlgebraOp):
+    """Graph-based context expansion (BFS k-hop or PPR)."""
+
+    method: str = "bfs"
+    top_k: int = 50
+    hops: int = 2
+    direction: str = "both"
+    damping: float = 0.85
+    edge_types: Optional[List[str]] = None
+    source: AlgebraOp = field(default_factory=RelationRef)
+
+    def iter_children(self) -> Iterable[AlgebraOp]:
+        yield self.source
+
+    def with_children(self, children: Sequence[AlgebraOp]) -> "GraphExpand":
+        if len(children) != 1:
+            raise ValueError("GraphExpand expects one child.")
+        return replace(self, source=children[0])
 
 
 @dataclass(slots=True)

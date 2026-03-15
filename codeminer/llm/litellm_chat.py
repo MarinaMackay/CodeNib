@@ -82,10 +82,13 @@ class LiteLLMChat:
     def _call(self, messages: List[ChatMessage], **overrides: Any) -> Any:
         """Build kwargs and call ``litellm.completion``."""
         msg_dicts = [{"role": m.role, "content": m.content} for m in messages]
+        return self._call_raw(msg_dicts, **overrides)
 
+    def _call_raw(self, messages: List[Dict[str, Any]], **overrides: Any) -> Any:
+        """Like ``_call`` but accepts raw message dicts (for tool-calling flows)."""
         kwargs: Dict[str, Any] = {
             "model": self.model,
-            "messages": msg_dicts,
+            "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             **self.extra_kwargs,

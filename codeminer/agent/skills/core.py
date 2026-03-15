@@ -22,6 +22,7 @@ class SkillType(str, Enum):
     TRANSFORM = "transform"
     RERANK = "rerank"
     AGGREGATE = "aggregate"
+    EXPAND = "expand"
     CUSTOM = "custom"
 
 
