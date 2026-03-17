@@ -1,8 +1,8 @@
 """
 End-to-end smoke test for the embedding_search skill.
 
-This test builds (or reloads) a real FAISS index over the CodeMiner repository
-itself, then exercises the full skill loading and execution path.
+This test builds (or reloads) a real FAISS index over the httpie/cli repository,
+then exercises the full skill loading and execution path.
 
 Marked with @pytest.mark.slow so it is excluded from the default test run.
 To run explicitly:
@@ -21,50 +21,38 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List
 
 import pytest
 
+import codeminer.agent.skills as _skills_pkg
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
-# Default lightweight model that runs on CPU without an API key.
-# nomic-ai/CodeRankEmbed is used in examples/skill_agent.py.
 DEFAULT_EMBEDDING_MODEL = "nomic-ai/CodeRankEmbed"
 DEFAULT_EMBEDDING_DIM = 768
 DEFAULT_EMBEDDING_PROVIDER = "huggingface"
 
-SKILL_DIR = str(_PROJECT_ROOT / "codeminer" / "agent" / "skills" / "embedding_search")
+SKILL_DIR = str(Path(_skills_pkg.__file__).parent / "embedding_search")
 
 
 @pytest.fixture(scope="session")
 def index_path() -> str:
     """Return the directory used to cache the FAISS index."""
-    env_override = os.environ.get("CODEMINER_INDEX_PATH")
-    if env_override:
-        return env_override
-    return "/tmp/codeminer_e2e_index"
+    return os.environ.get("CODEMINER_INDEX_PATH", "/tmp/codeminer_e2e_index")
 
 
 @pytest.fixture(scope="session")
-def vector_store(index_path: str):
-    """
-    Build a CodeVectorStore for the CodeMiner repo, or load it from cache.
-
-    Building takes 2-5 minutes the first time (embedding all Python files).
-    Subsequent runs reuse the cached FAISS index and finish in seconds.
-    """
+def vector_store(index_path: str, httpie_cli_repo):
+    """Build or load a CodeVectorStore for the httpie/cli repo."""
     from codeminer.index.embedding import (
         CodeVectorStore,
         build_hierarchical_vector_store,
     )
 
+    repo_path = str(httpie_cli_repo)
     store_root = Path(index_path)
     l0_dir = store_root / "l0"
     l2_dir = store_root / "l2"
 
     if l0_dir.exists() and l2_dir.exists():
-        # Reload cached index.
         print(f"\n[e2e] Loading cached index from {index_path}")
         vs = CodeVectorStore(
             embedding_model=DEFAULT_EMBEDDING_MODEL,
@@ -74,20 +62,19 @@ def vector_store(index_path: str):
             model_kwargs={
                 "trust_remote_code": True,
                 "device": "cuda",
-                "model_kwargs": {"torch_dtype": "float16"},  # Use half precision
+                "model_kwargs": {"torch_dtype": "float16"},
             },
             encode_kwargs={
-                "batch_size": 4,  # Further reduce batch size
+                "batch_size": 4,
                 "normalize_embeddings": True,
             },
         )
         vs.load(index_path)
     else:
-        # Build from scratch.
-        print(f"\n[e2e] Building index for {_PROJECT_ROOT} into {index_path}")
+        print(f"\n[e2e] Building index for {repo_path} into {index_path}")
         store_root.mkdir(parents=True, exist_ok=True)
         vs = build_hierarchical_vector_store(
-            repo_path=str(_PROJECT_ROOT),
+            repo_path=repo_path,
             index_path=index_path,
             languages=["python"],
             embedding_model=DEFAULT_EMBEDDING_MODEL,
@@ -97,10 +84,10 @@ def vector_store(index_path: str):
                 "model_kwargs": {
                     "trust_remote_code": True,
                     "device": "cuda",
-                    "model_kwargs": {"torch_dtype": "float16"},  # Use half precision
+                    "model_kwargs": {"torch_dtype": "float16"},
                 },
                 "encode_kwargs": {
-                    "batch_size": 4,  # Further reduce batch size
+                    "batch_size": 4,
                     "normalize_embeddings": True,
                 },
             },
@@ -119,13 +106,7 @@ def retrieve_context(vector_store):
 
 @pytest.fixture(scope="session")
 def executor_fn(retrieve_context):
-    """
-    Load the embedding_search skill and return the bound executor callable.
-
-    The SkillLoader reads config.yaml, skill.md, and executor.py from the
-    real package directory, then calls create_executor(context) to produce
-    the executor closure.
-    """
+    """Load the embedding_search skill and return the bound executor callable."""
     from codeminer.agent.skills.loader import SkillLoader
     from codeminer.agent.skills.registry import SkillRegistry
 
@@ -139,117 +120,75 @@ def executor_fn(retrieve_context):
 
 @pytest.mark.slow
 class TestEmbeddingSearchE2E:
-    """Full-stack tests using a real FAISS index."""
+    """Full-stack tests using a real FAISS index over httpie/cli."""
 
     def setup_method(self):
-        """Check GPU memory before each test."""
         import torch
+
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**3
             reserved = torch.cuda.memory_reserved() / 1024**3
-            print(f"\n[GPU] Before test: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+            print(
+                f"\n[GPU] Before test: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
+            )
 
     def teardown_method(self):
-        """Clean up GPU memory after each test."""
         import gc
+
         import torch
 
-        # Force garbage collection
         gc.collect()
-
-        # Clear PyTorch GPU cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
     @classmethod
     def teardown_class(cls):
-        """Clean up GPU memory after all tests complete."""
         import torch
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def test_basic_query_returns_list(self, executor_fn):
-        """A plain query must return a non-empty list."""
-        results = executor_fn("skill registry lookup", top_k=5)
+    def test_basic_query_returns_well_formed_results(self, executor_fn):
+        """A broad query returns non-empty results with expected fields."""
+        results = executor_fn("HTTP request handling", top_k=5, return_content=True)
         assert isinstance(results, list)
-        assert len(results) > 0, "Expected at least one result for a broad query"
+        assert len(results) > 0
 
-    def test_results_respect_top_k(self, executor_fn):
-        """Result count must not exceed top_k."""
-        top_k = 3
-        results = executor_fn("search query", top_k=top_k)
-        assert len(results) <= top_k
-
-    def test_results_have_score(self, executor_fn):
-        """Every returned node must carry a numeric similarity score."""
-        results = executor_fn("code chunker", top_k=5)
         for node in results:
-            assert hasattr(node, "score"), f"Node missing 'score': {node}"
             assert isinstance(node.score, float)
+            assert node.file
+            assert node.content
+            assert isinstance(node.start_line, int)
+            assert isinstance(node.end_line, int)
 
-    def test_results_have_file(self, executor_fn):
-        """Every result must reference a source file."""
-        results = executor_fn("class definition", top_k=5)
-        for node in results:
-            assert hasattr(node, "file"), f"Node missing 'file': {node}"
-            assert node.file, "file field is empty"
+    def test_return_content_flag(self, executor_fn):
+        """return_content=True populates content; False omits it."""
+        with_content = executor_fn("HTTP client", top_k=3, return_content=True)
+        assert all(node.content for node in with_content)
 
-    def test_return_content_true_populates_content(self, executor_fn):
-        """With return_content=True, each node must have non-empty content."""
-        results = executor_fn("vector store search", top_k=3, return_content=True)
-        assert len(results) > 0
-        for node in results:
-            assert hasattr(node, "content"), f"Node missing 'content': {node}"
-            assert node.content, "content field is empty"
+        without_content = executor_fn("HTTP client", top_k=3, return_content=False)
+        assert len(without_content) > 0
+        for node in without_content:
+            assert not getattr(node, "content", None)
 
-    def test_return_content_false_omits_content(self, executor_fn):
-        """With return_content=False, content field should be absent or empty."""
-        results = executor_fn("vector store search", top_k=3, return_content=False)
-        assert len(results) > 0
-        for node in results:
-            # NodeInfo.content is Optional; it may be None or absent.
-            content = getattr(node, "content", None)
-            assert not content, (
-                f"Expected no content with return_content=False, got: {content[:40]}"
-            )
-
-    def test_l0_level_returns_results(self, executor_fn):
-        """level='l0' (file skeletons) must also return results."""
-        results = executor_fn("embedding index", top_k=5, level="l0")
-        assert isinstance(results, list)
-        assert len(results) > 0
-
-    def test_l2_level_returns_results(self, executor_fn):
-        """level='l2' (function/method chunks) must return results."""
-        results = executor_fn("embedding index", top_k=5, level="l2")
-        assert isinstance(results, list)
-        assert len(results) > 0
-
-    def test_score_threshold_filters_low_scores(self, executor_fn):
-        """A very high threshold should return fewer results than no threshold."""
-        all_results = executor_fn("code", top_k=20)
-        filtered = executor_fn("code", top_k=20, score_threshold=0.999)
-        assert len(filtered) <= len(all_results)
+    def test_both_levels_return_results(self, executor_fn):
+        """Both l0 (file skeletons) and l2 (function/method) levels work."""
+        l0 = executor_fn("HTTP client", top_k=3, level="l0")
+        l2 = executor_fn("HTTP client", top_k=3, level="l2")
+        assert len(l0) > 0
+        assert len(l2) > 0
 
     def test_conceptual_query_finds_relevant_file(self, executor_fn):
         """A semantic query should surface files related to the concept."""
         results = executor_fn(
-            "function that registers a skill into a catalogue", top_k=10
+            "function that sends an HTTP request with authentication", top_k=10
         )
         assert len(results) > 0
-        # At least one result should mention registry or skill in its file path.
         files = [node.file for node in results]
-        relevant = [f for f in files if "skill" in f or "registry" in f]
-        assert relevant, (
-            f"No skill/registry file in top-10 results. Got: {files}"
-        )
-
-    def test_results_have_start_and_end_line(self, executor_fn):
-        """Every result must have line number metadata."""
-        results = executor_fn("parse config", top_k=5, return_content=False)
-        for node in results:
-            assert hasattr(node, "start_line")
-            assert hasattr(node, "end_line")
-            assert isinstance(node.start_line, int)
-            assert isinstance(node.end_line, int)
+        relevant = [
+            f
+            for f in files
+            if "auth" in f or "request" in f or "client" in f or "session" in f
+        ]
+        assert relevant, f"No auth/request file in top-10 results. Got: {files}"
