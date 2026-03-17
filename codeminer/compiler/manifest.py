@@ -5,7 +5,7 @@ and query compilation (Phase 2).
 Phase 1 (``IndexCompiler``) builds all index artifacts for a repository
 and writes a ``RepoManifest`` recording what was built, where, and when.
 
-Phase 2 (``SkillCompiler`` + ``ResourceResolver``) reads the manifest via
+Phase 2 (``AgentRunner`` + ``ResourceGuard``) reads the manifest via
 ``ManifestIndexStateStore`` to resolve index freshness at query time.
 """
 

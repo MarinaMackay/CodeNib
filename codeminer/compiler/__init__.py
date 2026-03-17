@@ -1,40 +1,41 @@
 """
-Intermediate representation layers, lowering utilities, and skill compilation for Codeminer.
+Compiler infrastructure for Codeminer.
 
-The package exposes four IR layers (logical, algebraic, physical, execution)
-alongside optimization plumbing used to turn user intents into executable jobs.
+The package provides:
 
-The ``skills`` sub-package provides the skill compilation pipeline:
-type checking → dependency resolution → policy scheduling → ExecutionPlan.
+- **Index compilation** (Phase 1): ``IndexCompiler`` builds all indexes for a
+  repository and writes a ``RepoManifest`` recording what was built, where,
+  and when.
+
+- **Resource management**: ``ResourceResolver`` checks index freshness and
+  produces ``ResourcePlan`` decisions used by ``ResourceGuard`` to filter
+  available skills at query time.
+
+- **Parameter resolution**: ``SessionContext`` + ``resolve_params`` merge
+  config defaults, session adjustments, and query-time overrides.
 """
 
-from .ir_algebra import AlgebraOp, AlgebraPlan
-from .ir_exec import ExecutionGraph, ExecutionNode
-from .ir_logical import (
-    AgentMode,
-    Expand,
-    Filter,
-    LogicalPlan,
-    LogicalQuery,
-    Rerank,
-    Search,
-    Transform,
-)
-from .ir_physical import PhysicalOp, PhysicalPlan
+from .index_builders import IndexBuilderRegistry
+from .index_compiler import IndexCompiler, IndexCompilerConfig
+from .manifest import ManifestIndexStateStore, RepoManifest
+from .params import ResolvedParams, SessionContext, resolve_params
+from .resources import IndexRequirement, IndexState, ResourcePlan, ResourceResolver
 
 __all__ = [
-    "AgentMode",
-    "LogicalPlan",
-    "LogicalQuery",
-    "Search",
-    "Filter",
-    "Expand",
-    "Transform",
-    "Rerank",
-    "AlgebraOp",
-    "AlgebraPlan",
-    "PhysicalOp",
-    "PhysicalPlan",
-    "ExecutionNode",
-    "ExecutionGraph",
+    # Index compilation
+    "IndexCompiler",
+    "IndexCompilerConfig",
+    "IndexBuilderRegistry",
+    # Manifest
+    "RepoManifest",
+    "ManifestIndexStateStore",
+    # Resources
+    "ResourceResolver",
+    "ResourcePlan",
+    "IndexRequirement",
+    "IndexState",
+    # Parameters
+    "SessionContext",
+    "resolve_params",
+    "ResolvedParams",
 ]

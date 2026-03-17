@@ -20,10 +20,8 @@ def test_vertex_ai_gemini():
     )
 
     try:
-        # Create LLM using the new configuration system
         llm = create_llm(modelconfig)
 
-        # Test generation with a simple prompt
         response = llm.invoke(
             [
                 human_message(
@@ -34,11 +32,10 @@ def test_vertex_ai_gemini():
 
         print(f"Response: {response}")
 
-        # Check that we got a non-empty response
-        assert response, "Response text is empty"
-        assert len(response.strip()) > 0, "Response text is just whitespace"
+        assert response, "Response content is empty"
+        assert len(response.strip()) > 0, "Response content is just whitespace"
 
-        print("Vertex AI Gemini generation test passed!\n")
+        print("✅ Vertex AI Gemini generation test passed!\n")
         return True
 
     except Exception as e:
@@ -50,17 +47,15 @@ def test_vertex_ai_gemini_flash():
     """Test that Vertex AI Gemini Flash can successfully generate text."""
     print("Testing Vertex AI Gemini Flash text generation...")
     modelconfig = LLMConfig(
-        model_name="gemini-2.5-flash",
+        model_name="gemini-2.0-flash",
         provider=LLMProvider.VERTEX_GEMINI,
         temperature=0.7,
         max_tokens=150,
     )
 
     try:
-        # Create LLM using the new configuration system
         llm = create_llm(modelconfig)
 
-        # Test generation with a more complex prompt
         response = llm.invoke(
             [
                 human_message(
@@ -71,11 +66,10 @@ def test_vertex_ai_gemini_flash():
 
         print(f"Response: {response}")
 
-        # Check that we got a non-empty response
-        assert response, "Response text is empty"
-        assert len(response.strip()) > 0, "Response text is just whitespace"
+        assert response, "Response content is empty"
+        assert len(response.strip()) > 0, "Response content is just whitespace"
 
-        print("Vertex AI Gemini Flash generation test passed!\n")
+        print("✅ Vertex AI Gemini Flash generation test passed!\n")
         return True
 
     except Exception as e:
@@ -93,21 +87,18 @@ def test_anthropic_vertex():
         max_tokens=1024,
     )
     try:
-        # Create Claude model through Vertex AI
         llm = create_llm(modelconfig)
 
-        # Test generation
         response = llm.invoke(
             [human_message("What are the benefits of using cloud computing?")]
         )
 
         print(f"Response: {response}")
 
-        # Check that we got a non-empty response
-        assert response, "Response text is empty"
-        assert len(response.strip()) > 0, "Response text is just whitespace"
+        assert response, "Response content is empty"
+        assert len(response.strip()) > 0, "Response content is just whitespace"
 
-        print("Vertex AI Anthropic Claude test passed!\n")
+        print("✅ Vertex AI Anthropic Claude test passed!\n")
         return True
 
     except Exception as e:
