@@ -5,7 +5,7 @@ from typing import Optional
 
 from ..agent.rerank_agent import RerankAgent
 from ..index.embedding.vector_store import CodeVectorStore
-from ..llm.llm_config import LLMConfig
+from ..llm.litellm_chat import LiteLLMChat
 from ..log_utils import get_logger
 
 logger = get_logger(__name__)
@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 class RerankContext:
     """Shared context carrying the rerank agent and configuration."""
 
-    llm_config: Optional[LLMConfig] = None
+    llm: Optional[LiteLLMChat] = None
     agent: Optional[RerankAgent] = None
     embedding_store: Optional[CodeVectorStore] = None
     top_k: Optional[int] = None
@@ -25,11 +25,11 @@ class RerankContext:
 
     def ensure_agent(self) -> RerankAgent:
         if self.agent is None:
-            if self.llm_config is None:
-                raise RuntimeError("Rerank agent requested but no LLMConfig provided.")
+            if self.llm is None:
+                raise RuntimeError("Rerank agent requested but no LLM was provided.")
             logger.info(
                 "Creating rerank agent.",
-                extra={"model": self.llm_config.model_name},
+                extra={"model": self.llm.model},
             )
-            self.agent = RerankAgent(llm_config=self.llm_config)
+            self.agent = RerankAgent(llm=self.llm)
         return self.agent

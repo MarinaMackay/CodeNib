@@ -8,8 +8,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
-from ..llm.litellm_chat import human_message, system_message
-from ..llm.llm_config import LLMConfig, create_llm
+from ..llm.litellm_chat import LiteLLMChat, human_message, system_message
 from ..log_utils import get_logger
 from ..types import NodeInfo, QueriedNode
 
@@ -33,26 +32,16 @@ class RerankAgent:
 
     def __init__(
         self,
-        llm_config: LLMConfig,
-        **kwargs,
+        llm: LiteLLMChat,
     ):
         """Initialize the rerank agent.
 
         Args:
-            llm_config: LLM configuration containing model, provider, and other settings.
-            **kwargs: Additional keyword arguments forwarded to the LLM factory.
+            llm: A configured LiteLLMChat instance.
         """
-        self.llm_config = llm_config
-        self.llm = create_llm(
-            config=llm_config,
-            **kwargs,
-        )
-
-        # Convert the LLM to a structured output LLM
+        self.llm = llm
         self.structured_llm = self.llm.with_structured_output(RerankResult)
-        logger.info(
-            f"Initialized rerank agent with model: {self.llm_config.model_name}"
-        )
+        logger.info(f"Initialized rerank agent with model: {self.llm.model}")
 
     def rerank_nodes(
         self,
@@ -262,34 +251,28 @@ class RerankAgent:
 def rerank_nodes_with_query(
     query: str,
     nodes: List[NodeInfo],
-    llm_config: LLMConfig,
+    llm: LiteLLMChat,
     top_k: Optional[int] = None,
     window_size: Optional[int] = None,
     window_step: Optional[int] = None,
     include_content: bool = False,
-    **kwargs,
 ) -> List[QueriedNode]:
     """
     Convenience function to rerank nodes with a query.
 
     Args:
-        query (str): The query to rank nodes against
-        nodes (List[NodeInfo]): List of nodes with content to rank
-        llm_config (LLMConfig): LLM configuration containing model,
-            provider, and other settings.
-        top_k (Optional[int]): Maximum number of results to return (None for all)
-        window_size (Optional[int]): Optional sliding window size for reranking.
-        window_step (Optional[int]): Optional stride between sliding windows.
-        include_content (bool): Whether to include node content in the result objects.
-        **kwargs: Additional arguments to pass to the LLM
+        query: The query to rank nodes against.
+        nodes: List of nodes with content to rank.
+        llm: A configured LiteLLMChat instance.
+        top_k: Maximum number of results to return (None for all).
+        window_size: Optional sliding window size for reranking.
+        window_step: Optional stride between sliding windows.
+        include_content: Whether to include node content in the result objects.
 
     Returns:
         List[QueriedNode]: Ranked nodes with relevance scores
     """
-    agent = RerankAgent(
-        llm_config=llm_config,
-        **kwargs,
-    )
+    agent = RerankAgent(llm=llm)
     return agent.rerank_nodes(
         query,
         nodes,

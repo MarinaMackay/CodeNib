@@ -7,8 +7,7 @@ from typing import List
 
 from pydantic import BaseModel, Field
 
-from ..llm.litellm_chat import human_message
-from ..llm.llm_config import LLMConfig, create_llm
+from ..llm.litellm_chat import LiteLLMChat, human_message
 from ..log_utils import get_logger
 
 logger = get_logger(__name__)
@@ -26,24 +25,14 @@ class KeywordExtractor:
 
     def __init__(
         self,
-        llm_config: LLMConfig,
-        **kwargs,
+        llm: LiteLLMChat,
     ):
         """Initialize the keyword extractor.
 
         Args:
-            llm_config: LLM configuration containing model, provider, and other settings.
-            **kwargs: Additional keyword arguments forwarded to the LLM factory.
+            llm: A configured LiteLLMChat instance.
         """
-        self.llm_config = llm_config
-
-        # Build the LLM instance using the configuration
-        self.llm = create_llm(
-            config=llm_config,
-            **kwargs,
-        )
-
-        # Convert the LLM to a structured output LLM using LangChain style
+        self.llm = llm
         self.structured_llm = self.llm.with_structured_output(KeywordExtraction)
 
     def extract_keywords(self, problem_statement: str) -> KeywordExtraction:
@@ -92,23 +81,17 @@ class KeywordExtractor:
 
 def extract_keywords_from_statement(
     problem_statement: str,
-    llm_config: LLMConfig,
-    **kwargs,
+    llm: LiteLLMChat,
 ) -> KeywordExtraction:
     """
     Extract keywords from a problem statement.
 
     Args:
-        problem_statement (str): The problem statement to extract keywords from
-        llm_config (LLMConfig): LLM configuration containing model,
-            provider, and other settings.
-        **kwargs: Additional arguments forwarded to the LLM factory
+        problem_statement: The problem statement to extract keywords from.
+        llm: A configured LiteLLMChat instance.
 
     Returns:
         KeywordExtraction: Structured output with extracted keywords
     """
-    extractor = KeywordExtractor(
-        llm_config=llm_config,
-        **kwargs,
-    )
+    extractor = KeywordExtractor(llm=llm)
     return extractor.extract_keywords(problem_statement)
