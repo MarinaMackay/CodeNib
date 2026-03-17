@@ -28,6 +28,10 @@ Guidelines:
 - Start with broad searches, then narrow down.
 - Use graph_expand to find structurally related code after an initial search.
 - When you have enough context, provide a final answer directly.
+- Prefer lower-cost skills unless the query clearly requires semantic understanding.
+- For simple exact-name lookups use bm25_search; \
+for conceptual / intent queries use embedding_search; \
+for maximum coverage use hybrid_search.
 """
 
 # Maximum characters for a single tool result to avoid context blowup.
@@ -39,29 +43,61 @@ class AgentRunner:
 
     Usage::
 
-        from codeminer.llm.litellm_chat import LiteLLMChat
         from codeminer.agent.skills.registry import SkillRegistry
 
-        llm = LiteLLMChat(model="gpt-4o")
-        runner = AgentRunner(llm, SkillRegistry())
+        runner = AgentRunner(model="gpt-4o", registry=SkillRegistry())
         result = runner.run("How does authentication work in this repo?")
         print(result.answer)
     """
 
     def __init__(
         self,
-        llm: LiteLLMChat,
+        llm: Optional[LiteLLMChat] = None,
         registry: Optional[SkillRegistry] = None,
         *,
+        model: Optional[str] = None,
+        temperature: float = 0.0,
+        max_tokens: int = 512,
         system_prompt: Optional[str] = None,
         max_turns: int = 10,
         exclude_skills: Optional[Set[str]] = None,
+        manifest: Optional[Any] = None,
+        session_ctx: Optional[Any] = None,
     ) -> None:
-        self.llm = llm
+        if llm is not None:
+            self.llm = llm
+        elif model is not None:
+            self.llm = LiteLLMChat(
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        else:
+            raise ValueError("Either 'llm' or 'model' must be provided")
         self.registry = registry or SkillRegistry()
-        self.system_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
         self.max_turns = max_turns
-        self.tools = registry_to_tools(self.registry, exclude=exclude_skills)
+        self.session_ctx = session_ctx
+
+        # Resource guard: filter unavailable skills and collect warnings
+        exclude = set(exclude_skills) if exclude_skills else set()
+        resource_warnings: List[str] = []
+
+        if manifest is not None:
+            from .resource_guard import ResourceGuard
+
+            guard = ResourceGuard(manifest, self.registry)
+            report = guard.preflight()
+            exclude |= report.unavailable
+            resource_warnings = report.warnings
+
+        self.tools = registry_to_tools(self.registry, exclude=exclude)
+
+        # Build system prompt with optional resource warnings
+        base_prompt = system_prompt or _DEFAULT_SYSTEM_PROMPT
+        if resource_warnings:
+            warnings_text = "\n".join(f"- {w}" for w in resource_warnings)
+            base_prompt += f"\nIndex warnings:\n{warnings_text}\n"
+        self.system_prompt = base_prompt
 
     def run(
         self,
@@ -159,9 +195,12 @@ class AgentRunner:
                 error=f"Skill {skill_id!r} not available",
             )
 
+        # Apply parameter scaling if session context is available
+        resolved_args = self._resolve_params(meta, arguments)
+
         start = time.monotonic()
         try:
-            result = meta.executor_fn(**arguments)
+            result = meta.executor_fn(**resolved_args)
             elapsed = (time.monotonic() - start) * 1000
             logger.debug(
                 "tool %s completed in %.0fms",
@@ -185,6 +224,20 @@ class AgentRunner:
                 error=str(exc),
                 duration_ms=elapsed,
             )
+
+    def _resolve_params(self, meta: Any, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge config defaults + session adjustments + LLM arguments."""
+        if self.session_ctx is None:
+            return arguments
+
+        from ..compiler.params import resolve_params
+
+        resolved = resolve_params(
+            defaults=meta.defaults or {},
+            session_ctx=self.session_ctx,
+            query_params=arguments,
+        )
+        return resolved.params
 
 
 # ---------------------------------------------------------------------------
