@@ -5,6 +5,7 @@ Simple test script for Vertex AI LLM generation using CodeMiner's LLM configurat
 
 import os
 
+from codeminer.llm.litellm_chat import human_message
 from codeminer.llm.llm_config import LLMConfig, LLMProvider, create_llm
 
 
@@ -22,13 +23,17 @@ def test_vertex_ai_gemini():
         llm = create_llm(modelconfig)
 
         response = llm.invoke(
-            "What is machine learning? Please provide a brief explanation."
+            [
+                human_message(
+                    "What is machine learning? Please provide a brief explanation."
+                )
+            ]
         )
 
-        print(f"Response: {response.content}")
+        print(f"Response: {response}")
 
-        assert response.content, "Response content is empty"
-        assert len(response.content.strip()) > 0, "Response content is just whitespace"
+        assert response, "Response content is empty"
+        assert len(response.strip()) > 0, "Response content is just whitespace"
 
         print("✅ Vertex AI Gemini generation test passed!\n")
         return True
@@ -52,13 +57,17 @@ def test_vertex_ai_gemini_flash():
         llm = create_llm(modelconfig)
 
         response = llm.invoke(
-            "How many R's are in the word 'strawberry'? Count carefully."
+            [
+                human_message(
+                    "How many R's are in the word 'strawberry'? Count carefully."
+                )
+            ]
         )
 
-        print(f"Response: {response.content}")
+        print(f"Response: {response}")
 
-        assert response.content, "Response content is empty"
-        assert len(response.content.strip()) > 0, "Response content is just whitespace"
+        assert response, "Response content is empty"
+        assert len(response.strip()) > 0, "Response content is just whitespace"
 
         print("✅ Vertex AI Gemini Flash generation test passed!\n")
         return True
@@ -80,12 +89,14 @@ def test_anthropic_vertex():
     try:
         llm = create_llm(modelconfig)
 
-        response = llm.invoke("What are the benefits of using cloud computing?")
+        response = llm.invoke(
+            [human_message("What are the benefits of using cloud computing?")]
+        )
 
-        print(f"Response: {response.content}")
+        print(f"Response: {response}")
 
-        assert response.content, "Response content is empty"
-        assert len(response.content.strip()) > 0, "Response content is just whitespace"
+        assert response, "Response content is empty"
+        assert len(response.strip()) > 0, "Response content is just whitespace"
 
         print("✅ Vertex AI Anthropic Claude test passed!\n")
         return True
