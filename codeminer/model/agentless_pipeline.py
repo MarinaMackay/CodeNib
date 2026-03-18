@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..graph.code_graph import CodeGraph
 from ..graph.traverse_graph import traverse_tree_structure
-from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
+from ..llm.litellm_chat import LiteLLMChat, human_message
 from ..log_utils import get_logger
 from ..ls_router import LSIndexer
 from ..types import NODE_TYPE_FILE, ROOT_NODE, QueriedNode, is_symbol_node
@@ -75,10 +75,9 @@ class AgentlessPipeline:
     Args:
         repo_path (str): Path to the repository to analyze.
         repo_commit (str): Git commit hash for version identification.
-        llm_model (str, optional): Name of the LLM to use.
+        llm_model (str, optional): Full litellm model identifier
+            (e.g., ``"gpt-4o"``, ``"vertex_ai/gemini-2.5-flash"``).
             (default: :obj:`"gpt-4o"`)
-        llm_provider (str, optional): LLM provider (e.g., "openai", "anthropic").
-            (default: :obj:`"openai"`)
         llm_temperature (float, optional): Temperature for LLM sampling.
             (default: :obj:`0.0`)
         llm_max_tokens (int, optional): Maximum tokens for LLM responses.
@@ -104,7 +103,6 @@ class AgentlessPipeline:
         repo_commit: str,
         # LLM configs
         llm_model: str = "gpt-4o",
-        llm_provider: str = "openai",
         llm_temperature: float = 0.0,
         llm_max_tokens: int = 2048,
         # Localization configs
@@ -155,14 +153,13 @@ class AgentlessPipeline:
         if not self.code_graph:
             raise ValueError("Failed to build code graph")
 
-        # Initialize LLM
-        llm_config = LLMConfig(
-            model_name=llm_model,
-            provider=LLMProvider(llm_provider),
+        # Initialize LLM — model string should be a full litellm identifier
+        # (e.g., "gpt-4o", "vertex_ai/gemini-2.5-flash").
+        self.llm = LiteLLMChat(
+            model=llm_model,
             max_tokens=llm_max_tokens,
             temperature=llm_temperature,
         )
-        self.llm = create_llm(config=llm_config)
 
         # Load prompt templates from files
         prompt_dir = Path(__file__).parent / "prompts"
@@ -178,7 +175,7 @@ class AgentlessPipeline:
         logger.info(
             f"AgentlessPipeline initialized: "
             f"repo={repo_name}@{commit_identifier}, "
-            f"llm={llm_provider}:{llm_model}, "
+            f"llm={llm_model}, "
             f"top_n_files={top_n_files}, "
             f"cache_dir={cache_dir}"
         )

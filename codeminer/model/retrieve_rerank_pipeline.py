@@ -10,7 +10,7 @@ import numpy as np
 from ..code_chunker import CodeChunker, RepoChunkingConfig
 from ..index.embedding import CodeVectorStore, build_hierarchical_vector_store
 from ..index.sparse_idx.bm25_index import BM25CodeIndexer
-from ..llm.llm_config import LLMConfig, LLMProvider
+from ..llm.litellm_chat import LiteLLMChat
 from ..log_utils import get_logger
 from ..ops.rerank import RerankContext
 from ..ops.retrieve import RetrieveContext
@@ -97,8 +97,7 @@ class RetrieveRerankPipeline:
         embedding_provider: str = "huggingface",
         embedding_dimension: int = 768,
         embedding_model_kwargs: Optional[dict] = None,
-        rerank_model: str = "Qwen/Qwen2.5-Coder-7B",
-        rerank_provider: LLMProvider = LLMProvider.VLLM_OPENAI,
+        rerank_model: str = "openai/Qwen/Qwen2.5-Coder-7B",
         rerank_temperature: float = 0.0,
         rerank_max_tokens: int = 2048,
         rerank_strategy: str = "llm",
@@ -172,14 +171,12 @@ class RetrieveRerankPipeline:
             raise ValueError("rerank_strategy must be 'llm' or 'embedding'.")
         self.rerank_strategy = strategy
 
-        llm_config = None
+        rerank_llm = None
         if strategy == "llm":
-            llm_config = LLMConfig(
-                model_name=rerank_model,
-                provider=rerank_provider,
+            rerank_llm = LiteLLMChat(
+                model=rerank_model,
                 max_tokens=rerank_max_tokens,
                 temperature=rerank_temperature,
-                config_data={"VLLM_TRUST_REMOTE_CODE": "true"},
             )
         else:
             rerank_model_kwargs = self._prepare_embedding_kwargs(
@@ -220,7 +217,7 @@ class RetrieveRerankPipeline:
 
         if self.enable_rerank:
             self.rerank_context = RerankContext(
-                llm_config=llm_config,
+                llm=rerank_llm,
                 embedding_store=self.rerank_vector_store or self.vector_store,
                 candidate_top_k=self.rerank_candidate_top_k,
                 window_size=rerank_window_size,

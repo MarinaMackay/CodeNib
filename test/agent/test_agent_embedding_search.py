@@ -11,12 +11,11 @@ from pathlib import Path
 
 import pytest
 
-import codeminer.agent.skills as _skills_pkg
 from codeminer.agent.runner import AgentRunner
 from codeminer.agent.skills.loader import SkillLoader
 from codeminer.agent.skills.registry import SkillRegistry
 
-SKILLS_DIR = str(Path(_skills_pkg.__file__).parent)
+EMBEDDING_INDEX_PATH = "/tmp/embedding_e2e_index"
 
 
 @pytest.mark.slow
@@ -24,8 +23,7 @@ class TestEmbeddingSearchE2E:
     """
     Full round-trip: real FAISS index + Vertex AI agent routing.
 
-    Index is cached at /tmp/codeminer_e2e_index (reused across runs).
-    Set CODEMINER_INDEX_PATH to override.
+    Index is cached at /tmp/embedding_e2e_index (reused across runs).
     """
 
     @pytest.fixture(scope="class", autouse=True)
@@ -37,8 +35,7 @@ class TestEmbeddingSearchE2E:
     @pytest.fixture(scope="class")
     def real_embedding_search(self, httpie_cli_repo):
         """Load embedding_search skill with real FAISS index over httpie/cli."""
-        import os
-
+        import codeminer.agent.skills as pkg
         from codeminer.index.embedding import (
             CodeVectorStore,
             build_hierarchical_vector_store,
@@ -46,30 +43,29 @@ class TestEmbeddingSearchE2E:
         from codeminer.ops.retrieve import RetrieveContext
 
         repo_path = str(httpie_cli_repo)
-        index_path = os.environ.get("CODEMINER_INDEX_PATH", "/tmp/codeminer_e2e_index")
-        l0 = Path(index_path) / "l0"
-        l2 = Path(index_path) / "l2"
+        l0 = Path(EMBEDDING_INDEX_PATH) / "l0"
+        l2 = Path(EMBEDDING_INDEX_PATH) / "l2"
 
         if l0.exists() and l2.exists():
-            print(f"Loading existing index from {index_path}")
+            print(f"Loading existing index from {EMBEDDING_INDEX_PATH}")
             vs = CodeVectorStore(
                 embedding_model="nomic-ai/CodeRankEmbed",
                 embedding_provider="huggingface",
                 dimension=768,
-                store_path=index_path,
+                store_path=EMBEDDING_INDEX_PATH,
                 model_kwargs={"trust_remote_code": True},
                 encode_kwargs={
                     "batch_size": 8,
                     "normalize_embeddings": True,
                 },
             )
-            vs.load(index_path)
+            vs.load(EMBEDDING_INDEX_PATH)
         else:
-            print(f"Building new index at {index_path}")
-            Path(index_path).mkdir(parents=True, exist_ok=True)
+            print(f"Building new index at {EMBEDDING_INDEX_PATH}")
+            Path(EMBEDDING_INDEX_PATH).mkdir(parents=True, exist_ok=True)
             vs = build_hierarchical_vector_store(
                 repo_path=repo_path,
-                index_path=index_path,
+                index_path=EMBEDDING_INDEX_PATH,
                 languages=["python"],
                 embedding_model="nomic-ai/CodeRankEmbed",
                 embedding_provider="huggingface",
@@ -86,7 +82,7 @@ class TestEmbeddingSearchE2E:
         ctx = RetrieveContext(vector_store=vs, default_level="l2")
         loader = SkillLoader()
 
-        skill_dir = str(Path(SKILLS_DIR) / "embedding_search")
+        skill_dir = str(Path(pkg.__file__).parent / "embedding_search")
         meta = loader.load_skill(skill_dir, contexts={"retrieve": ctx})
         assert meta is not None
         SkillRegistry().register(meta)
@@ -115,13 +111,9 @@ class TestEmbeddingSearchE2E:
         self, real_embedding_search, vertex_model
     ):
         """Vertex AI agent must select embedding_search for a semantic query."""
-        import os
-
-        model_name = os.environ.get("CODEMINER_VERTEX_ROUTING_MODEL", vertex_model)
-
         try:
             runner = AgentRunner(
-                model=model_name,
+                model=vertex_model,
                 registry=SkillRegistry(),
                 max_turns=3,
             )
@@ -129,7 +121,7 @@ class TestEmbeddingSearchE2E:
                 "function that sends an HTTP request with authentication",
             )
         except Exception as exc:
-            pytest.skip(f"Vertex agent unavailable for {model_name}: {exc}")
+            pytest.skip(f"Vertex agent unavailable for {vertex_model}: {exc}")
 
         assert result.total_turns >= 1
         assert len(result.tool_calls) >= 1
@@ -137,4 +129,4 @@ class TestEmbeddingSearchE2E:
         skill_ids = [tc.skill_id for tc in result.tool_calls]
         assert (
             "embedding_search" in skill_ids
-        ), f"Expected embedding_search for {model_name}, got: {skill_ids}"
+        ), f"Expected embedding_search for {vertex_model}, got: {skill_ids}"

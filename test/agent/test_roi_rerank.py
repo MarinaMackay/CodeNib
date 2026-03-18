@@ -5,7 +5,7 @@ from codeminer.agent.rerank_agent import RerankAgent
 from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.graph.roi_subgraph import ROISubgraph
 from codeminer.index import BM25CodeIndexer
-from codeminer.llm.llm_config import LLMConfig, LLMProvider
+from codeminer.llm.litellm_chat import LiteLLMChat
 from codeminer.ls_router import LSIndexer
 
 # args_dict = {
@@ -86,11 +86,8 @@ if __name__ == "__main__":
         print(
             f"\nReranking {len(filtered_nodes)} nodes by relevance to problem statement..."
         )
-        llm_config = LLMConfig(
-            model_name=args.model,
-            provider=LLMProvider.VERTEX_ANTHROPIC,
-        )
-        rerank_agent = RerankAgent(llm_config=llm_config)
+        llm = LiteLLMChat(model=f"vertex_ai/{args.model}")
+        rerank_agent = RerankAgent(llm=llm)
         ranked_nodes = rerank_agent.rerank_nodes(
             query=instance["problem_statement"],
             nodes=filtered_nodes,
