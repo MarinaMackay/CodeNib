@@ -101,6 +101,53 @@ _EXPECTED = {
             ("test/typescript/axios.ts", "index.d.ts:Axios.get()", "reference"),
         ],
     },
+    # caddyserver/caddy (caddyserver__caddy-4774) — scip-go indexer
+    # Predicted from decoder source (scip_decode_go.py) + caddy source:
+    #   internal_module = "github.com/caddyserver/caddy/v2"
+    #   _make_symbol_key: strips backtick module prefix → rel_pkg="" for root pkg
+    #   _classify_symbol_type: # → class, ().  → function/method, . after # → field
+    #   _get_unified_name: file_path:Display (# replaced with ., () for func/method)
+    "go": {
+        "nodes": [
+            ("caddy.go", "file"),
+            # type Config struct — descriptor `…/caddy/v2`/Config# → class
+            ("caddy.go:Config", "class"),
+            # func Run(cfg *Config) — descriptor …/Run(). → function
+            ("caddy.go:Run()", "function"),
+            # func Load(…) — descriptor …/Load(). → function
+            ("caddy.go:Load()", "function"),
+            # func Stop() — descriptor …/Stop(). → function
+            ("caddy.go:Stop()", "function"),
+            # func Validate(cfg *Config) — function
+            ("caddy.go:Validate()", "function"),
+            # type App interface — descriptor …/App# → class
+            ("caddy.go:App", "class"),
+            ("modules.go", "file"),
+            # type Module interface — descriptor …/Module# → class
+            ("modules.go:Module", "class"),
+            # type ModuleInfo struct — class
+            ("modules.go:ModuleInfo", "class"),
+            # type ModuleID string — type alias, descriptor …/ModuleID# → class
+            ("modules.go:ModuleID", "class"),
+            # func RegisterModule(instance Module) — function
+            ("modules.go:RegisterModule()", "function"),
+            # func GetModule(name string) — function
+            ("modules.go:GetModule()", "function"),
+            ("context.go", "file"),
+            # type Context struct — class
+            ("context.go:Context", "class"),
+            # func (ctx Context) LoadModule(…) — has # and (). → method
+            ("context.go:Context.LoadModule()", "method"),
+        ],
+        "edges": [
+            # File → symbol containment (definition in that file)
+            ("caddy.go", "caddy.go:Config", "contain"),
+            ("caddy.go", "caddy.go:Run()", "contain"),
+            ("modules.go", "modules.go:RegisterModule()", "contain"),
+            # Cross-file reference: caddy.go calls NewContext(Context{…})
+            ("caddy.go", "context.go:Context", "reference"),
+        ],
+    },
 }
 
 
@@ -111,6 +158,8 @@ def _tools_ready(language: str) -> bool:
         return bool(shutil.which("rust-analyzer"))
     if language == "ts":
         return bool(shutil.which("scip-typescript"))
+    if language == "go":
+        return bool(shutil.which("scip-go"))
     return False
 
 
@@ -161,6 +210,14 @@ def _repo_keywords(language: str) -> list[str]:
             "insomnia/",
             "dayjs/",
         ]
+    if language == "go":
+        return [
+            "gin-gonic/",
+            "gohugoio/",
+            "hashicorp/",
+            "prometheus/",
+            "caddyserver/",
+        ]
     return []
 
 
@@ -174,7 +231,7 @@ def _pick_swebench_multilingual_instance(language: str) -> dict:
     return dict(matches[0])
 
 
-@pytest.mark.parametrize("language", ["cpp", "rust", "ts"])
+@pytest.mark.parametrize("language", ["cpp", "rust", "ts", "go"])
 def test_run_pipeline_swebench_multilingual_instance(
     tmp_path: Path,
     language: str,
