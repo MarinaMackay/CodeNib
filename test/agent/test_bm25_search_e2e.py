@@ -9,45 +9,32 @@ To run explicitly:
 
     pytest test/agent/test_bm25_search_e2e.py -v -m slow
 
-The index is written to /tmp/codeminer_bm25_e2e_index/ and is reused
-across runs. Delete that directory to force a rebuild.
-
-Environment variable CODEMINER_BM25_INDEX_PATH can override the cache
-location.
+The index is written to /tmp/bm25_e2e_index/ and is reused across runs.
+Delete that directory to force a rebuild.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
-import codeminer.agent.skills as _skills_pkg
-
-SKILL_DIR = str(Path(_skills_pkg.__file__).parent / "bm25_search")
+BM25_INDEX_PATH = "/tmp/bm25_e2e_index"
 
 
 @pytest.fixture(scope="session")
-def bm25_index_path() -> str:
-    """Return the directory used to cache the BM25 index."""
-    return os.environ.get("CODEMINER_BM25_INDEX_PATH", "/tmp/codeminer_bm25_e2e_index")
-
-
-@pytest.fixture(scope="session")
-def bm25_indexer(bm25_index_path: str, httpie_cli_repo):
+def bm25_indexer(httpie_cli_repo):
     """Build or load a BM25CodeIndexer for the httpie/cli repo."""
     from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
     from codeminer.index.sparse_idx.bm25_index import BM25CodeIndexer
 
     repo_path = str(httpie_cli_repo)
-    cache_dir = Path(bm25_index_path)
-    documents_file = cache_dir / "documents.json"
+    documents_file = Path(BM25_INDEX_PATH) / "documents.json"
 
     if documents_file.exists():
-        print(f"\n[e2e] Loading cached BM25 index from {bm25_index_path}")
+        print(f"\n[e2e] Loading cached BM25 index from {BM25_INDEX_PATH}")
         indexer = BM25CodeIndexer(max_k=128)
-        indexer.load_index(bm25_index_path)
+        indexer.load_index(BM25_INDEX_PATH)
     else:
         print(f"\n[e2e] Building BM25 index for {repo_path}")
         chunker = CodeChunker(
@@ -62,8 +49,8 @@ def bm25_indexer(bm25_index_path: str, httpie_cli_repo):
         indexer = BM25CodeIndexer(chunks=chunks, max_k=128)
         indexer.project_root = repo_path
 
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        indexer.save_index(bm25_index_path)
+        Path(BM25_INDEX_PATH).mkdir(parents=True, exist_ok=True)
+        indexer.save_index(BM25_INDEX_PATH)
 
     return indexer
 
@@ -79,13 +66,16 @@ def bm25_retrieve_context(bm25_indexer):
 @pytest.fixture(scope="session")
 def bm25_executor_fn(bm25_retrieve_context):
     """Load the bm25_search skill and return the bound executor callable."""
+    import codeminer.agent.skills as pkg
     from codeminer.agent.skills.loader import SkillLoader
     from codeminer.agent.skills.registry import SkillRegistry
 
+    skill_dir = str(Path(pkg.__file__).parent / "bm25_search")
+
     SkillRegistry.reset()
     loader = SkillLoader()
-    meta = loader.load_skill(SKILL_DIR, contexts={"retrieve": bm25_retrieve_context})
-    assert meta is not None, f"SkillLoader returned None for {SKILL_DIR}"
+    meta = loader.load_skill(skill_dir, contexts={"retrieve": bm25_retrieve_context})
+    assert meta is not None, f"SkillLoader returned None for {skill_dir}"
     assert meta.executor_fn is not None, "executor_fn is None after loading"
     return meta.executor_fn
 

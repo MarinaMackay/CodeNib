@@ -9,38 +9,25 @@ To run explicitly:
 
     pytest test/agent/test_embedding_search_e2e.py -v -m slow
 
-The index is written to /tmp/codeminer_e2e_index/ and is reused across runs.
+The index is written to /tmp/embedding_e2e_index/ and is reused across runs.
 Delete that directory to force a rebuild.
-
-Environment variable CODEMINER_INDEX_PATH can override the cache location:
-
-    CODEMINER_INDEX_PATH=/my/path pytest ... -m slow
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
-
-import codeminer.agent.skills as _skills_pkg
 
 DEFAULT_EMBEDDING_MODEL = "nomic-ai/CodeRankEmbed"
 DEFAULT_EMBEDDING_DIM = 768
 DEFAULT_EMBEDDING_PROVIDER = "huggingface"
 
-SKILL_DIR = str(Path(_skills_pkg.__file__).parent / "embedding_search")
+EMBEDDING_INDEX_PATH = "/tmp/embedding_e2e_index"
 
 
 @pytest.fixture(scope="session")
-def index_path() -> str:
-    """Return the directory used to cache the FAISS index."""
-    return os.environ.get("CODEMINER_INDEX_PATH", "/tmp/codeminer_e2e_index")
-
-
-@pytest.fixture(scope="session")
-def vector_store(index_path: str, httpie_cli_repo):
+def vector_store(httpie_cli_repo):
     """Build or load a CodeVectorStore for the httpie/cli repo."""
     from codeminer.index.embedding import (
         CodeVectorStore,
@@ -48,17 +35,17 @@ def vector_store(index_path: str, httpie_cli_repo):
     )
 
     repo_path = str(httpie_cli_repo)
-    store_root = Path(index_path)
+    store_root = Path(EMBEDDING_INDEX_PATH)
     l0_dir = store_root / "l0"
     l2_dir = store_root / "l2"
 
     if l0_dir.exists() and l2_dir.exists():
-        print(f"\n[e2e] Loading cached index from {index_path}")
+        print(f"\n[e2e] Loading cached index from {EMBEDDING_INDEX_PATH}")
         vs = CodeVectorStore(
             embedding_model=DEFAULT_EMBEDDING_MODEL,
             embedding_provider=DEFAULT_EMBEDDING_PROVIDER,
             dimension=DEFAULT_EMBEDDING_DIM,
-            store_path=index_path,
+            store_path=EMBEDDING_INDEX_PATH,
             model_kwargs={
                 "trust_remote_code": True,
                 "device": "cuda",
@@ -69,13 +56,13 @@ def vector_store(index_path: str, httpie_cli_repo):
                 "normalize_embeddings": True,
             },
         )
-        vs.load(index_path)
+        vs.load(EMBEDDING_INDEX_PATH)
     else:
-        print(f"\n[e2e] Building index for {repo_path} into {index_path}")
+        print(f"\n[e2e] Building index for {repo_path} into {EMBEDDING_INDEX_PATH}")
         store_root.mkdir(parents=True, exist_ok=True)
         vs = build_hierarchical_vector_store(
             repo_path=repo_path,
-            index_path=index_path,
+            index_path=EMBEDDING_INDEX_PATH,
             languages=["python"],
             embedding_model=DEFAULT_EMBEDDING_MODEL,
             embedding_provider=DEFAULT_EMBEDDING_PROVIDER,
@@ -107,13 +94,16 @@ def retrieve_context(vector_store):
 @pytest.fixture(scope="session")
 def executor_fn(retrieve_context):
     """Load the embedding_search skill and return the bound executor callable."""
+    import codeminer.agent.skills as pkg
     from codeminer.agent.skills.loader import SkillLoader
     from codeminer.agent.skills.registry import SkillRegistry
 
+    skill_dir = str(Path(pkg.__file__).parent / "embedding_search")
+
     SkillRegistry.reset()
     loader = SkillLoader()
-    meta = loader.load_skill(SKILL_DIR, contexts={"retrieve": retrieve_context})
-    assert meta is not None, f"SkillLoader returned None for {SKILL_DIR}"
+    meta = loader.load_skill(skill_dir, contexts={"retrieve": retrieve_context})
+    assert meta is not None, f"SkillLoader returned None for {skill_dir}"
     assert meta.executor_fn is not None, "executor_fn is None after loading"
     return meta.executor_fn
 
