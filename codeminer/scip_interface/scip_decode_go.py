@@ -20,7 +20,6 @@ from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger, register_scip_logger
 from ..types import (
     EDGE_TYPE_CONTAIN,
-    EDGE_TYPE_REFERENCE,
     NODE_TYPE_CLASS,
     NODE_TYPE_FIELD,
     NODE_TYPE_FUNCTION,
