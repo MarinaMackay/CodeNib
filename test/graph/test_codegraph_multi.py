@@ -46,6 +46,8 @@ import pytest
 from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.ls_router import LSIndexer
 
+pytestmark = pytest.mark.integration
+
 # ==============================================================================
 # Language configuration
 # ==============================================================================
@@ -335,10 +337,7 @@ def run_local(lang, repo_path=None):
         project_path = Path(repo_path).absolute()
     else:
         project_path = (
-            Path(__file__).parent.parent
-            / "scip"
-            / "simple_repos"
-            / cfg["default_repo"]
+            Path(__file__).parent.parent / "scip" / "simple_repos" / cfg["default_repo"]
         )
 
     if not project_path.exists():
@@ -444,9 +443,7 @@ def run_multi(lang, args):
             indexer = LSIndexer(repo_path, output_dir=output_path, language=lang)
 
             print("\n[Running CodeGraph pipeline...]")
-            graph = indexer.run_pipeline(
-                skip_level="graph", **cfg["pipeline_kwargs"]
-            )
+            graph = indexer.run_pipeline(skip_level="graph", **cfg["pipeline_kwargs"])
 
             if not graph:
                 print(f"\n❌ Failed to generate CodeGraph for {instance_id}")

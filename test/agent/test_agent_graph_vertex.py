@@ -29,6 +29,8 @@ from codeminer.graph.code_graph import CodeGraph
 from codeminer.llm.litellm_chat import LiteLLMChat
 from codeminer.ops.expand import ExpandContext
 
+pytestmark = pytest.mark.slow
+
 # ---------------------------------------------------------------------------
 # Real SCIP graph from httpie/cli repo
 # ---------------------------------------------------------------------------
@@ -120,7 +122,6 @@ def _register_graph_expand(registry: SkillRegistry, graph: CodeGraph) -> None:
     )
 
 
-@pytest.mark.integration
 class TestAgentGraphVertexAI:
     """End-to-end: LLM agent uses graph_expand on the real httpie graph."""
 

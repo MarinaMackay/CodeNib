@@ -1,9 +1,13 @@
 import argparse
 from pathlib import Path
 
+import pytest
+
 from codeminer.dataset.locbench import LocbenchDataset
 from codeminer.index import BM25CodeIndexer
 from codeminer.ls_router import LSIndexer
+
+pytestmark = pytest.mark.integration
 
 args_dict = {
     "model": "gpt-4o",

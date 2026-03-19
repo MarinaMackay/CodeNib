@@ -12,6 +12,8 @@ import pytest
 from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.ls_router import LSIndexer
 
+pytestmark = pytest.mark.integration
+
 
 def _has_node(ig, expected_unified_name, node_type=None):
     """Check if any node has exactly this unified_name (strict match).
@@ -23,7 +25,9 @@ def _has_node(ig, expected_unified_name, node_type=None):
         if node_type in ("file", "directory"):
             matched = v["name"] == expected_unified_name
         else:
-            matched = (v.attributes().get("unified_name") or "") == expected_unified_name
+            matched = (
+                v.attributes().get("unified_name") or ""
+            ) == expected_unified_name
         if matched:
             if node_type is None or v["type"] == node_type:
                 return True
@@ -39,7 +43,9 @@ def _vertex_matches(v, expected):
 def _has_edge(ig, src_expected, tgt_expected, edge_type=None):
     """Check if an edge exists between nodes matching by unified_name or name."""
     for e in ig.es:
-        if _vertex_matches(ig.vs[e.source], src_expected) and _vertex_matches(ig.vs[e.target], tgt_expected):
+        if _vertex_matches(ig.vs[e.source], src_expected) and _vertex_matches(
+            ig.vs[e.target], tgt_expected
+        ):
             if edge_type is None or e["type"] == edge_type:
                 return True
     return False
@@ -62,8 +68,16 @@ _EXPECTED = {
             ("src/os.cc:fmt.file.write()", "method"),
         ],
         "edges": [
-            ("include/fmt/core.h", "include/fmt/core.h:fmt.to_string_view()", "contain"),
-            ("include/fmt/core.h:fmt.detail.make_arg()", "include/fmt/core.h:fmt.basic_format_arg", "reference"),
+            (
+                "include/fmt/core.h",
+                "include/fmt/core.h:fmt.to_string_view()",
+                "contain",
+            ),
+            (
+                "include/fmt/core.h:fmt.detail.make_arg()",
+                "include/fmt/core.h:fmt.basic_format_arg",
+                "reference",
+            ),
         ],
     },
     # astral-sh/ruff (astral-sh__ruff-15309)
@@ -72,15 +86,29 @@ _EXPECTED = {
             ("crates/ruff_linter/src/linter.rs", "file"),
             ("crates/ruff_linter/src/linter.rs:check_path()", "function"),
             ("crates/ruff_linter/src/directives.rs:extract_directives()", "function"),
-            ("crates/ruff_python_resolver/src/resolver.rs:resolve_import()", "function"),
+            (
+                "crates/ruff_python_resolver/src/resolver.rs:resolve_import()",
+                "function",
+            ),
             ("crates/ruff_linter/src/settings/types.rs:PythonVersion", "class"),
             ("crates/ruff_linter/src/line_width.rs:IndentWidth", "class"),
             ("crates/ruff_linter/src/source_kind.rs:SourceKind", "class"),
-            ("crates/ruff_linter/src/source_kind.rs:SourceKind.source_code()", "method"),
+            (
+                "crates/ruff_linter/src/source_kind.rs:SourceKind.source_code()",
+                "method",
+            ),
         ],
         "edges": [
-            ("crates/ruff_linter/src/linter.rs", "crates/ruff_linter/src/linter.rs:check_path()", "contain"),
-            ("crates/ruff_linter/src/linter.rs:check_path()", "crates/ruff_linter/src/settings/mod.rs:LinterSettings", "reference"),
+            (
+                "crates/ruff_linter/src/linter.rs",
+                "crates/ruff_linter/src/linter.rs:check_path()",
+                "contain",
+            ),
+            (
+                "crates/ruff_linter/src/linter.rs:check_path()",
+                "crates/ruff_linter/src/settings/mod.rs:LinterSettings",
+                "reference",
+            ),
         ],
     },
     # axios/axios (axios__axios-4731)
@@ -212,10 +240,10 @@ def test_run_pipeline_swebench_multilingual_instance(
     expected = _EXPECTED.get(language)
     if expected:
         for name, node_type in expected["nodes"]:
-            assert _has_node(ig, name, node_type), (
-                f"[{language}] missing node: '{name}' (type={node_type})"
-            )
+            assert _has_node(
+                ig, name, node_type
+            ), f"[{language}] missing node: {name!r} (type={node_type})"
         for src, tgt, edge_type in expected["edges"]:
-            assert _has_edge(ig, src, tgt, edge_type), (
-                f"[{language}] missing edge: '{src}' -> '{tgt}' ({edge_type})"
-            )
+            assert _has_edge(
+                ig, src, tgt, edge_type
+            ), f"[{language}] missing edge: {src!r} -> {tgt!r} ({edge_type})"

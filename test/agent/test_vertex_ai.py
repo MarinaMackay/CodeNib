@@ -5,7 +5,11 @@ Simple test script for Vertex AI LLM generation using LiteLLMChat.
 
 import os
 
+import pytest
+
 from codeminer.llm.litellm_chat import LiteLLMChat, human_message
+
+pytestmark = pytest.mark.slow
 
 
 def test_vertex_ai_gemini():
