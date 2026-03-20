@@ -271,7 +271,7 @@ class TestSimpleRust:
         changed = GraphPatcher.detect_changed_files(
             str(rust_repo), base, "HEAD", extensions={".rs"},
         )
-        stats = patcher.patch_files(changed, earlier_commit=base, later_commit="HEAD")
+        patcher.patch_files(changed, earlier_commit=base, later_commit="HEAD")
 
         unames = _get_unified_names(g)
 
@@ -595,6 +595,7 @@ class TestSWEBenchCpp:
             repo = _ensure_swebench_repo(self.REPO, self.LATER)
         except Exception as e:
             pytest.skip(f"Cannot clone repo: {e}")
+            return None  # unreachable; satisfies linter
         subprocess.run(
             ["cmake", "-S", str(repo), "-B", str(repo / "build"),
              "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
@@ -607,10 +608,6 @@ class TestSWEBenchCpp:
 
         _git("checkout", "-f", earlier, cwd=repo_dir)
         g = _build_graph_with_scip(repo_dir, "cpp", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"))
-
-        nodes_before = g.graph.vcount()
-
-        unames_before = _get_unified_names(g)
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(
@@ -681,6 +678,7 @@ class TestSWEBenchGo:
             return _ensure_swebench_repo(self.REPO, self.LATER)
         except Exception as e:
             pytest.skip(f"Cannot clone repo: {e}")
+            return None  # unreachable; satisfies linter
 
     def test_graph_patch(self, repo_dir, tmp_path):
         earlier = _get_earlier_commit(repo_dir, self.LATER, self.N_BACK)
@@ -693,10 +691,6 @@ class TestSWEBenchGo:
 
         g = _build_graph_with_scip(repo_dir, "go", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"))
         patcher.code_graph = g
-
-        nodes_before = g.graph.vcount()
-
-        unames_before = _get_unified_names(g)
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(
@@ -792,6 +786,7 @@ class TestSWEBenchRust:
             return _ensure_swebench_repo(self.REPO, self.LATER)
         except Exception as e:
             pytest.skip(f"Cannot clone repo: {e}")
+            return None  # unreachable; satisfies linter
 
     def test_graph_patch(self, repo_dir, tmp_path):
         earlier = _get_earlier_commit(repo_dir, self.LATER, self.N_BACK)
@@ -804,9 +799,6 @@ class TestSWEBenchRust:
 
         g = _build_graph_with_scip(repo_dir, "rust", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"))
         patcher.code_graph = g
-
-
-        unames_before = _get_unified_names(g)
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(
@@ -899,6 +891,7 @@ class TestSWEBenchPython:
             return _ensure_swebench_repo(self.REPO, self.LATER)
         except Exception as e:
             pytest.skip(f"Cannot clone repo: {e}")
+            return None  # unreachable; satisfies linter
 
     def test_graph_patch(self, repo_dir, tmp_path):
         earlier = _get_earlier_commit(repo_dir, self.LATER, self.N_BACK)
@@ -911,9 +904,6 @@ class TestSWEBenchPython:
 
         g = _build_graph_with_scip(repo_dir, "python", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"))
         patcher.code_graph = g
-
-
-        unames_before = _get_unified_names(g)
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(
@@ -1022,6 +1012,7 @@ class TestSWEBenchTypeScript:
             return _ensure_swebench_repo(self.REPO, self.LATER)
         except Exception as e:
             pytest.skip(f"Cannot clone repo: {e}")
+            return None  # unreachable; satisfies linter
 
     def test_graph_patch(self, repo_dir, tmp_path):
         earlier = _get_earlier_commit(repo_dir, self.LATER, self.N_BACK)
@@ -1036,9 +1027,6 @@ class TestSWEBenchTypeScript:
             repo_dir, "ts", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"), infer_tsconfig=True,
         )
         patcher.code_graph = g
-
-
-        unames_before = _get_unified_names(g)
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(

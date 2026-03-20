@@ -10,9 +10,6 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
-
-from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger
 from ..types import (
     EDGE_TYPE_CONTAIN,

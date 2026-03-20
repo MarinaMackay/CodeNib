@@ -7,7 +7,6 @@ behavior to patcher_lang subclasses.
 from __future__ import annotations
 
 from abc import abstractmethod
-from pathlib import Path
 from typing import Optional
 
 from ..graph.code_graph import CodeGraph

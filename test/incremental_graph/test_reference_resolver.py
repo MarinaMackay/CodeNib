@@ -1,12 +1,8 @@
 """Tests for LSPDecoderBase location matching logic (used by reference reconnection)."""
-import pytest
-
 from codeminer.graph.code_graph import CodeGraph
 from codeminer.types import (
     EDGE_TYPE_CONTAIN,
-    EDGE_TYPE_REFERENCE,
     NODE_TYPE_CLASS,
-    NODE_TYPE_FILE,
     NODE_TYPE_FUNCTION,
     NODE_TYPE_METHOD,
 )

@@ -53,12 +53,12 @@ class PatcherRust(PatcherBase):
         if for_idx >= 0:
             trait_part = text[:for_idx].strip()
             type_part = text[for_idx + 4:].strip()
-            trait_part = re.sub(r"<['\\'a-z_,\s]+>", "", trait_part)
+            trait_part = re.sub(r"<['\\a-z_,\s]+>", "", trait_part)
             if trait_part:
                 return f"{type_part}<{trait_part}>"
             return type_part
         else:
-            text = re.sub(r"<['\\'a-z_,\s]+>", "", text)
+            text = re.sub(r"<['\\a-z_,\s]+>", "", text)
             return text
 
     def _build_unified_name(self, file_path, name, parent_unified_part, kind):

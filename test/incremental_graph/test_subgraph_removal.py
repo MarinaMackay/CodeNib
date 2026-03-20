@@ -1,13 +1,10 @@
 """Tests for SubgraphMgr subgraph deletion and index building."""
-import pytest
-
 from codeminer.graph.code_graph import CodeGraph
 from codeminer.incremental_graph.patcher_rust import PatcherRust
 from codeminer.types import (
     EDGE_TYPE_CONTAIN,
     EDGE_TYPE_REFERENCE,
     NODE_TYPE_CLASS,
-    NODE_TYPE_FILE,
     NODE_TYPE_FUNCTION,
     NODE_TYPE_METHOD,
     ROOT_NODE,

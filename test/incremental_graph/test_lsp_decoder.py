@@ -8,20 +8,11 @@ Tests the full decode pipeline for each LSP message format:
 
 Uses mock LSP responses (no actual LSP server needed).
 """
-import pytest
-
 from codeminer.graph.code_graph import CodeGraph
 from codeminer.incremental_graph.patcher_rust import PatcherRust
 from codeminer.incremental_graph.patcher_ts import PatcherTS
 from codeminer.incremental_graph.patcher_go import PatcherGo
 from codeminer.incremental_graph.patcher_python import PatcherPython
-from codeminer.types import (
-    EDGE_TYPE_CONTAIN,
-    EDGE_TYPE_REFERENCE,
-    NODE_TYPE_CLASS,
-    NODE_TYPE_FUNCTION,
-    NODE_TYPE_METHOD,
-)
 
 
 # ═══════════════════════════════════════════════════════════════
