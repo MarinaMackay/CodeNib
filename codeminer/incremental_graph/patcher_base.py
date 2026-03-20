@@ -354,21 +354,7 @@ class PatcherBase(SubgraphMgr):
         )
 
         # Profiler summary
-        report = self.profiler.report(reset=True)
-        if report:
-            total_time = sum(s.total for _, s in report)
-            lines = [
-                f"[graph_patcher_{self._language_id()}] profiler summary: "
-                f"{total_time:.3f}s total across {len(report)} section(s)"
-            ]
-            for label, s in report:
-                avg = s.total / s.count if s.count else 0
-                lines.append(
-                    f"  {label:<40s} total={s.total:>7.3f}s "
-                    f"count={s.count:>3d} avg={avg:>7.3f}s "
-                    f"min={s.min_duration:>7.3f}s max={s.max_duration:>7.3f}s"
-                )
-            logger.info("\n".join(lines))
+        self.profiler.report(reset=True)
 
         return total_stats
 
