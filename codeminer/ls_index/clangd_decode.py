@@ -670,6 +670,9 @@ class ClangdGraphDecoder:
             # Skip symbols defined outside the project root
             if relative_file.startswith("/"):
                 continue
+            # Skip vendored/third-party code
+            if "third_party/" in relative_file:
+                continue
 
             # Ensure file hierarchy exists
             self._ensure_file_hierarchy(relative_file)
