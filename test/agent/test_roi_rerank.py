@@ -1,12 +1,16 @@
 import argparse
 from pathlib import Path
 
+import pytest
+
 from codeminer.agent.rerank_agent import RerankAgent
 from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.graph.roi_subgraph import ROISubgraph
 from codeminer.index import BM25CodeIndexer
 from codeminer.llm.litellm_chat import LiteLLMChat
 from codeminer.ls_router import LSIndexer
+
+pytestmark = pytest.mark.slow
 
 # args_dict = {
 #     "model": "claude-sonnet-4-5-20250929",

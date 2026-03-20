@@ -35,8 +35,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import pytest
+
 from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.ls_router import LSGraphDecoder
+
+pytestmark = pytest.mark.integration
 from codeminer.ls_router import LSIndexer
 
 # Default instances for testing

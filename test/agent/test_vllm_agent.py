@@ -1,8 +1,12 @@
 import argparse
 
+import pytest
+
 from codeminer.agent.extract_agent import KeywordExtractor
 from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.llm.litellm_chat import LiteLLMChat
+
+pytestmark = pytest.mark.slow
 
 args_dict = {
     "model": "Qwen/Qwen2.5-Coder-7B",
