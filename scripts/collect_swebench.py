@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Regex filter for instance IDs.",
     )
     parser.add_argument("--repos-per-language", type=int, default=5)
-    parser.add_argument("--instances-per-repo", type=int, default=3)
+    parser.add_argument("--instances-per-repo", type=int, default=4)
     parser.add_argument("--min-instances", type=int, default=3)
     parser.add_argument("--shallow-clone", action="store_true", default=True)
     parser.add_argument(
@@ -75,6 +75,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Optional path to save sampled instances as JSON.",
+    )
+    parser.add_argument(
+        "--difficulty-model",
+        type=str,
+        default="opus",
+        help="Model for agent difficulty classification (default: opus).",
+    )
+    parser.add_argument(
+        "--total-instances",
+        type=int,
+        default=100,
+        help="Target total number of instances to sample (default: 100). "
+        "Adaptively allocates extra instances from data-rich repos when "
+        "some repos have fewer than --instances-per-repo qualifying instances.",
+    )
+    parser.add_argument(
+        "--max-gt-code-blocks",
+        type=int,
+        default=10,
+        help="Maximum number of GT code blocks per instance (default: 10). "
+        "Instances exceeding this limit are excluded during sampling.",
     )
     return parser
 
@@ -98,6 +119,9 @@ def main() -> None:
         cache_dir=Path(args.cache_dir) if args.cache_dir else None,
         repo_cache_dir=Path(args.repo_cache_dir) if args.repo_cache_dir else None,
         output_dir=Path(args.output_dir) if args.output_dir else None,
+        difficulty_model=args.difficulty_model,
+        total_instances=args.total_instances,
+        max_gt_code_blocks=args.max_gt_code_blocks,
     )
 
     results = run_sampling(config)

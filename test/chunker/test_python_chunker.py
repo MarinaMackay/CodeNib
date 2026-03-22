@@ -9,6 +9,8 @@ import pytest
 
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
 
+pytestmark = pytest.mark.integration
+
 
 def _collect_chunks(repo_root: Path, chunk_depth: int, l2_level_exclusive: bool = True):
     repo_config = RepoChunkingConfig(languages=["python"])
@@ -60,7 +62,7 @@ def test_python_chunker_chunk_file(httpie_cli_repo):
 
 
 def _first_symbols_from_file(path: Path):
-    """Grab representative symbols from a real file for assertions."""
+    """Grab representative symbols from a repository file for assertions."""
     module_func = None
     class_name = None
     method_name = None
@@ -108,7 +110,7 @@ def _first_symbols_from_file(path: Path):
     return module_func, class_name, method_name, method_body_line
 
 
-def test_python_chunker_skeleton_mode_real_file(httpie_cli_repo):
+def test_python_chunker_skeleton_mode_repository_file(httpie_cli_repo):
     target_file = Path(httpie_cli_repo) / "httpie" / "manager" / "compat.py"
     if not target_file.exists():
         pytest.skip(f"Target file missing in fixture repo: {target_file}")
@@ -143,7 +145,7 @@ def test_python_chunker_skeleton_mode_real_file(httpie_cli_repo):
         assert method_body_line not in method_chunk.content
 
 
-def test_python_file_skeleton_includes_l2_real_file(httpie_cli_repo):
+def test_python_file_skeleton_includes_l2_repository_file(httpie_cli_repo):
     target_file = Path(httpie_cli_repo) / "httpie" / "manager" / "compat.py"
     if not target_file.exists():
         pytest.skip(f"Target file missing in fixture repo: {target_file}")
@@ -158,8 +160,6 @@ def test_python_file_skeleton_includes_l2_real_file(httpie_cli_repo):
 
     assert len(chunks) == 1
     content = chunks[0].content
-
-    print(content)
 
     if module_func:
         assert f"def {module_func}" in content

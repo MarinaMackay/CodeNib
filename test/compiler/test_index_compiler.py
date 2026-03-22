@@ -1,0 +1,405 @@
+"""Tests for concrete index builders and the IndexCompiler."""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from unittest.mock import MagicMock, patch
+
+from codeminer.compiler.index_builders import (
+    BM25IndexBuilder,
+    IndexBuilderRegistry,
+    SymbolGraphBuilder,
+    VectorIndexBuilder,
+    register_default_builders,
+)
+from codeminer.compiler.index_compiler import IndexCompiler, IndexCompilerConfig
+from codeminer.compiler.manifest import (
+    MANIFEST_FILENAME,
+    ManifestIndexStateStore,
+    RepoManifest,
+)
+from codeminer.compiler.resources import (
+    IndexRequirement,
+    IndexState,
+    IndexStatus,
+    ResourceResolver,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _mock_builder(index_type: str = "mock", file_count: int = 42):
+    """Create a mock builder that returns a canned IndexStatus."""
+
+    class MockBuilder:
+        def build(self, scope: str, **kwargs) -> IndexStatus:
+            output_dir = kwargs.get("output_dir", "/tmp/mock")
+            os.makedirs(output_dir, exist_ok=True)
+            return IndexStatus(
+                index_type=index_type,
+                state=IndexState.FRESH,
+                last_built=time.time(),
+                age_seconds=0.0,
+                scope=scope,
+                path=output_dir,
+                metadata={"file_count": file_count},
+            )
+
+        def incremental_update(self, scope: str, **kwargs) -> IndexStatus:
+            return self.build(scope, **kwargs)
+
+    return MockBuilder()
+
+
+def _failing_builder():
+    """Create a builder that always fails."""
+
+    class FailBuilder:
+        def build(self, scope: str, **kwargs) -> IndexStatus:
+            raise RuntimeError("Build failed intentionally")
+
+        def incremental_update(self, scope: str, **kwargs) -> IndexStatus:
+            raise RuntimeError("Update failed intentionally")
+
+    return FailBuilder()
+
+
+# ---------------------------------------------------------------------------
+# BM25IndexBuilder
+# ---------------------------------------------------------------------------
+
+
+class TestBM25IndexBuilder:
+    @patch("codeminer.index.sparse_idx.bm25_index.BM25CodeIndexer")
+    @patch("codeminer.code_chunker.CodeChunker")
+    def test_build_returns_fresh_status(self, MockChunker, MockIndexer, tmp_path):
+        # Mock chunker returns fake chunks
+        mock_chunker_instance = MagicMock()
+        mock_chunker_instance.chunk_repository.return_value = [
+            "chunk1",
+            "chunk2",
+            "chunk3",
+        ]
+        MockChunker.return_value = mock_chunker_instance
+
+        # Mock indexer
+        mock_indexer_instance = MagicMock()
+        MockIndexer.return_value = mock_indexer_instance
+
+        builder = BM25IndexBuilder(languages=["python"], max_k=64)
+        output = str(tmp_path / "bm25")
+
+        status = builder.build(
+            scope="current_repo",
+            repo_path="/fake/repo",
+            output_dir=output,
+        )
+
+        assert status.index_type == "bm25"
+        assert status.state == IndexState.FRESH
+        assert status.metadata["file_count"] == 3
+        assert status.metadata["max_k"] == 64
+        assert status.path == output
+        mock_indexer_instance.save_index.assert_called_once_with(output)
+
+    def test_incremental_delegates_to_build(self):
+        builder = BM25IndexBuilder()
+        with patch.object(builder, "build", return_value="result") as mock_build:
+            result = builder.incremental_update(
+                scope="repo", repo_path="/x", output_dir="/y"
+            )
+            mock_build.assert_called_once_with("repo", repo_path="/x", output_dir="/y")
+            assert result == "result"
+
+
+# ---------------------------------------------------------------------------
+# VectorIndexBuilder
+# ---------------------------------------------------------------------------
+
+
+class TestVectorIndexBuilder:
+    @patch("codeminer.index.embedding.builders.build_hierarchical_vector_store")
+    def test_build_returns_status_with_stats(self, mock_build_fn, tmp_path):
+        mock_vs = MagicMock()
+        mock_vs.l0_documents = ["d1", "d2"]
+        mock_vs.l2_documents = ["d3", "d4", "d5"]
+        mock_build_fn.return_value = mock_vs
+
+        builder = VectorIndexBuilder(
+            languages=["python"],
+            embedding_model="test-model",
+            embedding_dimension=384,
+        )
+        output = str(tmp_path / "vector")
+        status = builder.build(
+            scope="current_repo",
+            repo_path="/fake/repo",
+            output_dir=output,
+        )
+
+        assert status.index_type == "vector"
+        assert status.state == IndexState.FRESH
+        assert status.metadata["embedding_model"] == "test-model"
+        assert status.metadata["document_count"] == {"l0": 2, "l2": 3}
+        mock_build_fn.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# SymbolGraphBuilder
+# ---------------------------------------------------------------------------
+
+
+class TestSymbolGraphBuilder:
+    @patch("codeminer.scip_interface.SCIPPythonIndexer")
+    def test_build_returns_status(self, MockSCIP, tmp_path):
+        mock_graph = MagicMock()
+        mock_graph.graph.vs = list(range(50))  # 50 nodes
+        mock_indexer = MagicMock()
+        mock_indexer.run_pipeline.return_value = mock_graph
+        MockSCIP.return_value = mock_indexer
+
+        builder = SymbolGraphBuilder(language="python")
+        output = str(tmp_path / "graph")
+        status = builder.build(
+            scope="current_repo",
+            repo_path="/fake/repo",
+            output_dir=output,
+        )
+
+        assert status.index_type == "symbol_graph"
+        assert status.state == IndexState.FRESH
+        assert status.metadata["node_count"] == 50
+        assert status.metadata["language"] == "python"
+
+    @patch("codeminer.scip_interface.SCIPPythonIndexer")
+    def test_build_handles_none_graph(self, MockSCIP, tmp_path):
+        mock_indexer = MagicMock()
+        mock_indexer.run_pipeline.return_value = None
+        MockSCIP.return_value = mock_indexer
+
+        builder = SymbolGraphBuilder()
+        output = str(tmp_path / "graph")
+        status = builder.build(
+            scope="current_repo",
+            repo_path="/fake/repo",
+            output_dir=output,
+        )
+
+        assert status.metadata["node_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# register_default_builders
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterDefaultBuilders:
+    def test_registers_all_three(self):
+        registry = IndexBuilderRegistry()
+        register_default_builders(registry, languages=["python"])
+
+        assert registry.has("bm25")
+        assert registry.has("vector")
+        assert registry.has("symbol_graph")
+
+    def test_custom_params_forwarded(self):
+        registry = IndexBuilderRegistry()
+        register_default_builders(
+            registry,
+            languages=["rust", "python"],
+            embedding_model="custom-model",
+            embedding_dimension=512,
+        )
+
+        bm25 = registry.get("bm25")
+        assert isinstance(bm25, BM25IndexBuilder)
+        assert bm25.languages == ["rust", "python"]
+
+        vector = registry.get("vector")
+        assert isinstance(vector, VectorIndexBuilder)
+        assert vector.embedding_model == "custom-model"
+        assert vector.embedding_dimension == 512
+
+
+# ---------------------------------------------------------------------------
+# IndexCompiler
+# ---------------------------------------------------------------------------
+
+
+class TestIndexCompiler:
+    def test_compile_repo_with_mock_builders(self, tmp_path):
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25", file_count=100))
+        registry.register("vector", _mock_builder("vector", file_count=200))
+
+        config = IndexCompilerConfig(
+            index_types=["bm25", "vector"],
+            languages=["python"],
+        )
+        compiler = IndexCompiler(registry, config)
+        manifest = compiler.compile_repo(
+            str(tmp_path), cache_dir=str(tmp_path / "cache")
+        )
+
+        assert manifest.repo_path == str(tmp_path)
+        assert "bm25" in manifest.indexes
+        assert "vector" in manifest.indexes
+        assert manifest.indexes["bm25"].status == "fresh"
+        assert manifest.indexes["vector"].status == "fresh"
+        assert manifest.capabilities["sparse_search"] is True
+        assert manifest.capabilities["dense_search"] is True
+        assert manifest.capabilities["hybrid_search"] is True
+
+    def test_failed_builder_records_error(self, tmp_path):
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _failing_builder())
+
+        config = IndexCompilerConfig(index_types=["bm25"])
+        compiler = IndexCompiler(registry, config)
+        manifest = compiler.compile_repo(
+            str(tmp_path), cache_dir=str(tmp_path / "cache")
+        )
+
+        assert manifest.indexes["bm25"].status == "failed"
+        assert "error" in manifest.indexes["bm25"].metadata
+        assert (
+            "Build failed intentionally" in manifest.indexes["bm25"].metadata["error"]
+        )
+        assert manifest.capabilities["sparse_search"] is False
+
+    def test_missing_builder_skipped(self, tmp_path):
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25"))
+        # "vector" not registered
+
+        config = IndexCompilerConfig(index_types=["bm25", "vector"])
+        compiler = IndexCompiler(registry, config)
+        manifest = compiler.compile_repo(
+            str(tmp_path), cache_dir=str(tmp_path / "cache")
+        )
+
+        assert "bm25" in manifest.indexes
+        assert "vector" not in manifest.indexes
+
+    def test_manifest_file_written(self, tmp_path):
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25"))
+
+        config = IndexCompilerConfig(index_types=["bm25"])
+        compiler = IndexCompiler(registry, config)
+        cache_dir = str(tmp_path / "cache")
+        compiler.compile_repo(str(tmp_path), cache_dir=cache_dir)
+
+        manifest_path = os.path.join(cache_dir, MANIFEST_FILENAME)
+        assert os.path.exists(manifest_path)
+
+        with open(manifest_path) as f:
+            data = json.load(f)
+        assert data["version"] == "1.0"
+        assert "bm25" in data["indexes"]
+
+    def test_manifest_can_be_loaded(self, tmp_path):
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25"))
+
+        config = IndexCompilerConfig(index_types=["bm25"])
+        compiler = IndexCompiler(registry, config)
+        cache_dir = str(tmp_path / "cache")
+        compiler.compile_repo(str(tmp_path), cache_dir=cache_dir)
+
+        manifest_path = os.path.join(cache_dir, MANIFEST_FILENAME)
+        loaded = RepoManifest.load(manifest_path)
+        assert loaded.indexes["bm25"].status == "fresh"
+
+    def test_index_types_override(self, tmp_path):
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25"))
+        registry.register("vector", _mock_builder("vector"))
+
+        config = IndexCompilerConfig(index_types=["bm25", "vector"])
+        compiler = IndexCompiler(registry, config)
+        manifest = compiler.compile_repo(
+            str(tmp_path),
+            cache_dir=str(tmp_path / "cache"),
+            index_types=["bm25"],  # override: only build bm25
+        )
+
+        assert "bm25" in manifest.indexes
+        assert "vector" not in manifest.indexes
+
+    def test_build_duration_recorded(self, tmp_path):
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25"))
+
+        config = IndexCompilerConfig(index_types=["bm25"])
+        compiler = IndexCompiler(registry, config)
+        manifest = compiler.compile_repo(
+            str(tmp_path), cache_dir=str(tmp_path / "cache")
+        )
+
+        meta = manifest.indexes["bm25"].metadata
+        assert "build_duration_seconds" in meta
+        assert meta["build_duration_seconds"] >= 0
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: Phase 1 → Phase 2 integration
+# ---------------------------------------------------------------------------
+
+
+class TestTwoPhaseIntegration:
+    def test_phase1_phase2_roundtrip(self, tmp_path):
+        """IndexCompiler → manifest → ManifestIndexStateStore → ResourceResolver."""
+        # Phase 1: build indexes
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25", file_count=500))
+
+        config = IndexCompilerConfig(index_types=["bm25"])
+        compiler = IndexCompiler(registry, config)
+        cache_dir = str(tmp_path / "cache")
+        compiler.compile_repo(str(tmp_path), cache_dir=cache_dir)
+
+        # Phase 2: load manifest, resolve resources
+        manifest_path = os.path.join(cache_dir, MANIFEST_FILENAME)
+        loaded = RepoManifest.load(manifest_path)
+        state_store = ManifestIndexStateStore(loaded)
+        resolver = ResourceResolver(state_store)
+
+        plan = resolver.resolve(
+            [
+                IndexRequirement(index_type="bm25", max_age_seconds=3600),
+            ]
+        )
+
+        assert plan.can_execute
+        assert plan.decisions[0].action == "use"
+        assert plan.decisions[0].state == IndexState.FRESH
+
+    def test_phase2_detects_missing_index(self, tmp_path):
+        """Phase 2 correctly blocks when a needed index wasn't built."""
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25"))
+
+        config = IndexCompilerConfig(index_types=["bm25"])
+        compiler = IndexCompiler(registry, config)
+        cache_dir = str(tmp_path / "cache")
+        compiler.compile_repo(str(tmp_path), cache_dir=cache_dir)
+
+        manifest_path = os.path.join(cache_dir, MANIFEST_FILENAME)
+        loaded = RepoManifest.load(manifest_path)
+        state_store = ManifestIndexStateStore(loaded)
+        resolver = ResourceResolver(state_store)
+
+        plan = resolver.resolve(
+            [
+                IndexRequirement(index_type="bm25", max_age_seconds=3600),
+                IndexRequirement(index_type="vector", max_age_seconds=3600),
+            ]
+        )
+
+        assert not plan.can_execute
+        assert "vector" in plan.blocking_builds

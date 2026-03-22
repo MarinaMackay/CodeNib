@@ -13,6 +13,7 @@ INSTANCE_ID="${INSTANCE_ID:-}"
 QUERY_TYPES="${QUERY_TYPES:-behavioral}"
 SAMPLING_SEED="${SAMPLING_SEED:-}"
 BEHAVIORAL_CONSENSUS_RUNS="${BEHAVIORAL_CONSENSUS_RUNS:-3}"
+ALLOWED_TOOLS="${ALLOWED_TOOLS:-Read,Grep,Glob,Bash}"
 
 cd "${ROOT_DIR}"
 
@@ -34,4 +35,5 @@ PYTHONPATH=. python scripts/synthesize_swebench.py \
   --query-types "${QUERY_TYPES}" \
   --repeat-per-instance "${REPEAT_PER_INSTANCE}" \
   --behavioral-consensus-runs "${BEHAVIORAL_CONSENSUS_RUNS}" \
+  --allowed-tools "${ALLOWED_TOOLS}" \
   "${EXTRA_ARGS[@]}"

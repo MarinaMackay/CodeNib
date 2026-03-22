@@ -4,6 +4,7 @@ Code chunking module for splitting source code files into semantic chunks.
 
 from .base import BaseCodeChunker, CodeChunk
 from .cpp_chunker import CppCodeChunker
+from .go_chunker import GoCodeChunker
 from .js_chunker import JsTsCodeChunker
 from .python_chunker import PythonCodeChunker
 from .rust_chunker import RustCodeChunker
@@ -73,6 +74,15 @@ def create_chunker(
             skeleton_mode=skeleton_mode,
             include_l2_in_file_skeleton=include_l2_in_file_skeleton,
         )
+    elif language in ("go", "golang"):
+        return GoCodeChunker(
+            max_lines_per_chunk=max_lines_per_chunk,
+            chunk_depth=chunk_depth,
+            include_header_epilogue=include_header_epilogue,
+            l2_level_exclusive=l2_level_exclusive,
+            skeleton_mode=skeleton_mode,
+            include_l2_in_file_skeleton=include_l2_in_file_skeleton,
+        )
     elif language in ("javascript", "js", "typescript", "ts"):
         return JsTsCodeChunker(
             language=language,
@@ -93,6 +103,7 @@ __all__ = [
     "PythonCodeChunker",
     "CppCodeChunker",
     "RustCodeChunker",
+    "GoCodeChunker",
     "JsTsCodeChunker",
     "create_chunker",
 ]

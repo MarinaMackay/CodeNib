@@ -3,25 +3,13 @@
 Regression tests for the JavaScript/TypeScript code chunker.
 """
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
 
-EXPRESS_URL = "https://github.com/expressjs/express.git"
-EXPRESS_PATH = Path("/tmp/expressjs_express_test_repo")
-
-
-@pytest.fixture(scope="module")
-def express_repo():
-    if not EXPRESS_PATH.exists():
-        subprocess.run(
-            ["git", "clone", "--depth", "1", EXPRESS_URL, str(EXPRESS_PATH)],
-            check=True,
-        )
-    return EXPRESS_PATH
+pytestmark = pytest.mark.integration
 
 
 def _collect_chunks(repo_root: Path, chunk_depth: int):
@@ -49,6 +37,10 @@ def test_js_chunker_level_one(express_repo):
     chunk_types = {chunk.chunk_type for chunk in chunks}
     assert "method" not in chunk_types
     assert "function" in chunk_types
+    # Top-level plain variable/constant declarations should be emitted at L1.
+    assert (
+        "variable" in chunk_types or "object" in chunk_types
+    ), f"Expected variable or object in L1 chunk types, got {chunk_types}"
 
 
 def test_js_chunker_level_two(express_repo):

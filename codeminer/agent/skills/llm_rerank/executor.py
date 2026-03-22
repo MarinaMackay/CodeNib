@@ -1,0 +1,29 @@
+from __future__ import annotations
+
+from typing import Any, Callable, List
+
+
+def create_executor(context: Any) -> Callable[..., List[Any]]:
+    """Create an LLM rerank executor bound to the given RerankContext."""
+
+    def execute(
+        query: str, candidates: List[Any], top_k: int = 5, **kwargs: Any
+    ) -> List[Any]:
+        agent = context.ensure_agent()
+        candidate_top_k = kwargs.get("candidate_top_k", context.candidate_top_k)
+        window_size = kwargs.get("window_size", context.window_size)
+        window_step = kwargs.get("window_step", context.window_step)
+        include_content = kwargs.get("return_content", False)
+
+        nodes = candidates[:candidate_top_k] if candidate_top_k else candidates
+
+        return agent.rerank_nodes(
+            query=query,
+            nodes=nodes,
+            top_k=top_k,
+            window_size=window_size,
+            window_step=window_step,
+            include_content=include_content,
+        )
+
+    return execute

@@ -1,106 +1,106 @@
 #!/usr/bin/env python3
 """
-Simple test script for Vertex AI LLM generation using CodeMiner's LLM configuration.
+Simple test script for Vertex AI LLM generation using LiteLLMChat.
 """
 
 import os
 
-from codeminer.llm.llm_config import LLMConfig, LLMProvider, create_llm
+import pytest
+
+from codeminer.llm.litellm_chat import LiteLLMChat, human_message
+
+pytestmark = pytest.mark.slow
 
 
 def test_vertex_ai_gemini():
     """Test that Vertex AI Gemini can successfully generate text."""
     print("Testing Vertex AI Gemini text generation...")
-    modelconfig = LLMConfig(
-        model_name="gemini-1.5-pro",
-        provider=LLMProvider.VERTEX_GEMINI,
-        temperature=0.7,
-        max_tokens=1024,
-    )
 
     try:
-        # Create LLM using the new configuration system
-        llm = create_llm(modelconfig)
-
-        # Test generation with a simple prompt
-        response = llm.complete(
-            "What is machine learning? Please provide a brief explanation."
+        llm = LiteLLMChat(
+            model="vertex_ai/gemini-2.5-flash",
+            temperature=0.7,
+            max_tokens=1024,
         )
 
-        print(f"Response: {response.text}")
+        response = llm.invoke(
+            [
+                human_message(
+                    "What is machine learning? Please provide a brief explanation."
+                )
+            ]
+        )
 
-        # Check that we got a non-empty response
-        assert response.text, "Response text is empty"
-        assert len(response.text.strip()) > 0, "Response text is just whitespace"
+        print(f"Response: {response}")
 
-        print("✅ Vertex AI Gemini generation test passed!\n")
+        assert response, "Response content is empty"
+        assert len(response.strip()) > 0, "Response content is just whitespace"
+
+        print("Vertex AI Gemini generation test passed!\n")
         return True
 
     except Exception as e:
-        print(f"❌ Vertex AI Gemini generation test failed: {e}")
+        print(f"Vertex AI Gemini generation test failed: {e}")
         return False
 
 
 def test_vertex_ai_gemini_flash():
     """Test that Vertex AI Gemini Flash can successfully generate text."""
     print("Testing Vertex AI Gemini Flash text generation...")
-    modelconfig = LLMConfig(
-        model_name="gemini-2.0-flash",
-        provider=LLMProvider.VERTEX_GEMINI,
-        temperature=0.7,
-        max_tokens=150,
-    )
 
     try:
-        # Create LLM using the new configuration system
-        llm = create_llm(modelconfig)
-
-        # Test generation with a more complex prompt
-        response = llm.complete(
-            "How many R's are in the word 'strawberry'? Count carefully."
+        llm = LiteLLMChat(
+            model="vertex_ai/gemini-2.0-flash",
+            temperature=0.7,
+            max_tokens=150,
         )
 
-        print(f"Response: {response.text}")
+        response = llm.invoke(
+            [
+                human_message(
+                    "How many R's are in the word 'strawberry'? Count carefully."
+                )
+            ]
+        )
 
-        # Check that we got a non-empty response
-        assert response.text, "Response text is empty"
-        assert len(response.text.strip()) > 0, "Response text is just whitespace"
+        print(f"Response: {response}")
 
-        print("✅ Vertex AI Gemini Flash generation test passed!\n")
+        assert response, "Response content is empty"
+        assert len(response.strip()) > 0, "Response content is just whitespace"
+
+        print("Vertex AI Gemini Flash generation test passed!\n")
         return True
 
     except Exception as e:
-        print(f"❌ Vertex AI Gemini Flash generation test failed: {e}")
+        print(f"Vertex AI Gemini Flash generation test failed: {e}")
         return False
 
 
 def test_anthropic_vertex():
     """Test Vertex AI with Anthropic Claude model."""
     print("Testing Vertex AI with Anthropic Claude...")
-    modelconfig = LLMConfig(
-        model_name="claude-sonnet-4@20250514",
-        provider=LLMProvider.VERTEX_ANTHROPIC,
-        temperature=0.7,
-        max_tokens=1024,
-    )
+
     try:
-        # Create Claude model through Vertex AI
-        llm = create_llm(modelconfig)
+        llm = LiteLLMChat(
+            model="vertex_ai/claude-sonnet-4@20250514",
+            temperature=0.7,
+            max_tokens=1024,
+        )
 
-        # Test generation
-        response = llm.complete("What are the benefits of using cloud computing?")
+        response = llm.invoke(
+            [human_message("What are the benefits of using cloud computing?")]
+        )
 
-        print(f"Response: {response.text}")
+        print(f"Response: {response}")
 
-        # Check that we got a non-empty response
-        assert response.text, "Response text is empty"
-        assert len(response.text.strip()) > 0, "Response text is just whitespace"
+        assert response, "Response content is empty"
+        assert len(response.strip()) > 0, "Response content is just whitespace"
 
-        print("✅ Vertex AI Anthropic Claude test passed!\n")
+        print("Vertex AI Anthropic Claude test passed!\n")
         return True
 
     except Exception as e:
-        print(f"❌ Vertex AI Anthropic Claude test failed: {e}")
+        print(f"Vertex AI Anthropic Claude test failed: {e}")
         return False
 
 
@@ -139,7 +139,7 @@ def print_config_info():
 
 
 if __name__ == "__main__":
-    print("Running Vertex AI LLM tests with CodeMiner configuration...\n")
+    print("Running Vertex AI LLM tests with LiteLLMChat...\n")
 
     # Print configuration info
     print_config_info()
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     print("\n=== Test Results Summary ===")
     passed = 0
     for test_name, success in results:
-        status = "✅ PASSED" if success else "❌ FAILED"
+        status = "PASSED" if success else "FAILED"
         print(f"{test_name}: {status}")
         if success:
             passed += 1
@@ -171,9 +171,9 @@ if __name__ == "__main__":
     print(f"\nTotal: {passed}/{len(results)} tests passed")
 
     if passed == len(results):
-        print("🎉 All tests completed successfully!")
+        print("All tests completed successfully!")
     else:
-        print("⚠️ Some tests failed - check your credentials and configuration.")
+        print("Some tests failed - check your credentials and configuration.")
         print("\nTroubleshooting:")
         print(
             "1. Ensure GOOGLE_APPLICATION_CREDENTIALS points to a valid service account file"

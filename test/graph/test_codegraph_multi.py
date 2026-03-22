@@ -46,6 +46,8 @@ import pytest
 from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.ls_router import LSIndexer
 
+pytestmark = pytest.mark.integration
+
 # ==============================================================================
 # Language configuration
 # ==============================================================================
@@ -95,6 +97,19 @@ LANG_CONFIG = {
         ],
         "pipeline_kwargs": {},
     },
+    "go": {
+        "display_name": "Go",
+        "indexer_name": "scip-go",
+        "default_repo": "go_simple",
+        "repo_keywords": [
+            "gin-gonic/",
+            "gohugoio/",
+            "hashicorp/",
+            "prometheus/",
+            "caddyserver/",
+        ],
+        "pipeline_kwargs": {},
+    },
 }
 
 
@@ -106,6 +121,8 @@ def _tools_ready(language: str) -> bool:
         return bool(shutil.which("rust-analyzer"))
     if language == "ts":
         return bool(shutil.which("scip-typescript")) or bool(shutil.which("npx"))
+    if language == "go":
+        return bool(shutil.which("scip-go"))
     return False
 
 
@@ -335,10 +352,7 @@ def run_local(lang, repo_path=None):
         project_path = Path(repo_path).absolute()
     else:
         project_path = (
-            Path(__file__).parent.parent
-            / "scip"
-            / "simple_repos"
-            / cfg["default_repo"]
+            Path(__file__).parent.parent / "scip" / "simple_repos" / cfg["default_repo"]
         )
 
     if not project_path.exists():
@@ -444,9 +458,7 @@ def run_multi(lang, args):
             indexer = LSIndexer(repo_path, output_dir=output_path, language=lang)
 
             print("\n[Running CodeGraph pipeline...]")
-            graph = indexer.run_pipeline(
-                skip_level="graph", **cfg["pipeline_kwargs"]
-            )
+            graph = indexer.run_pipeline(skip_level="graph", **cfg["pipeline_kwargs"])
 
             if not graph:
                 print(f"\n❌ Failed to generate CodeGraph for {instance_id}")
@@ -568,6 +580,13 @@ def test_ts_multi(swebench_args: argparse.Namespace) -> None:
     assert ok > 0, f"All {total} TypeScript instances failed: {failed}"
 
 
+def test_go_multi(swebench_args: argparse.Namespace) -> None:
+    if not _tools_ready("go"):
+        pytest.skip("scip-go not available")
+    ok, total, failed = run_multi("go", swebench_args)
+    assert ok > 0, f"All {total} Go instances failed: {failed}"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Unified SCIP CodeGraph test for C++, Rust, and TypeScript"
@@ -601,7 +620,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Language selection (not used in sample mode)
     parser.add_argument(
         "--lang",
-        choices=["cpp", "rust", "ts"],
+        choices=["cpp", "rust", "ts", "go"],
         help="Language to test (required for --repo and --swebench-multilingual modes)",
     )
 

@@ -1,10 +1,14 @@
 import argparse
 from pathlib import Path
 
+import pytest
+
 from codeminer.code_chunker import CodeChunker
 from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.index import BM25CodeIndexer
 from codeminer.ls_router import LSIndexer
+
+pytestmark = pytest.mark.integration
 
 args_dict = {
     "model": "gpt-4o",

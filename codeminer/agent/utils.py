@@ -1,16 +1,14 @@
 import fnmatch
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
-
-from ..llm.llm_config import LLMProvider
+from typing import List, Tuple
 
 
 def find_matching_files_from_list(file_list: List[str], file_pattern: str) -> List[str]:
     """
-    Find and return a list of file paths from the given list that match the given keyword or pattern.
+    Find and return file paths matching the given keyword or pattern.
 
     :param file_list: A list of file paths to search through.
-    :param file_pattern: A keyword or pattern for file matching. Can be a simple keyword or a glob-style pattern.
+    :param file_pattern: A keyword or glob-style pattern.
 
     :return: A list of matching file paths
     """
@@ -22,30 +20,6 @@ def find_matching_files_from_list(file_list: List[str], file_pattern: str) -> Li
         matching_files = [file for file in file_list if file_pattern in file]
 
     return matching_files
-
-
-def resolve_llm_provider(
-    model_name: str, provider: Optional[Union[str, LLMProvider]] = None
-) -> LLMProvider:
-    """Resolve the LLM provider from an explicit hint or the model name."""
-
-    if isinstance(provider, LLMProvider):
-        return provider
-    if isinstance(provider, str):
-        normalized = provider.replace("-", "").replace("_", "").lower()
-        for candidate in LLMProvider:
-            if normalized in {candidate.value.lower(), candidate.name.lower()}:
-                return candidate
-        raise ValueError(f"Unsupported LLM provider: {provider}")
-
-    lowered = model_name.lower()
-    if "vertex" in lowered and "anthropic" in lowered:
-        return LLMProvider.VERTEX_ANTHROPIC
-    if "gemini" in lowered:
-        return LLMProvider.VERTEX_GEMINI
-    if "claude" in lowered or "anthropic" in lowered:
-        return LLMProvider.ANTHROPIC
-    return LLMProvider.OPENAI
 
 
 def merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
@@ -163,9 +137,9 @@ def search_entity_occurrence(lines: List[str], entity_name: str, file_name: str)
                 for j in range(len(context_lines))
             ]
             return (
-                f'**Found "{entity_name}" in {file_name}:**\n```python\n'
+                f"**Found {entity_name!r} in {file_name}:**\n```python\n"
                 + "\n".join(matching_lines)
                 + "\n```\n\n"
             )
 
-    return f'Entity "{entity_name}" not found in {file_name}\n\n'
+    return f"Entity {entity_name!r} not found in {file_name}\n\n"

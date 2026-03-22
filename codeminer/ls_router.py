@@ -39,6 +39,8 @@ LANGUAGE_ALIASES = {
     "js": "ts",
     "python": "python",
     "py": "python",
+    "go": "go",
+    "golang": "go",
 }
 
 
@@ -126,6 +128,15 @@ class LSIndexer:
             from .scip_interface.scip_indexer_python import SCIPPythonIndexer
 
             return SCIPPythonIndexer(
+                project_root=project_root,
+                output_dir=output_dir,
+                exclude_patterns=exclude_patterns,
+                profiler=profiler,
+            )
+        elif self.language == "go":
+            from .scip_interface.scip_indexer_go import SCIPGoIndexer
+
+            return SCIPGoIndexer(
                 project_root=project_root,
                 output_dir=output_dir,
                 exclude_patterns=exclude_patterns,

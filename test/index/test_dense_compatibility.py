@@ -9,6 +9,8 @@ from codeminer.code_chunker import CodeChunker
 from codeminer.index import BM25CodeIndexer
 from codeminer.ls_router import LSIndexer
 
+pytestmark = pytest.mark.integration
+
 
 def test_dense_compatibility(httpie_cli_repo, tmp_path_factory):
     """Test that all dense node IDs exist in BM25 graph nodes for httpie CLI."""

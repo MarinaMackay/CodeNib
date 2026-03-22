@@ -5,17 +5,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+import numpy as np
+
 from ..code_chunker import CodeChunker, RepoChunkingConfig
 from ..index.embedding import CodeVectorStore, build_hierarchical_vector_store
 from ..index.sparse_idx.bm25_index import BM25CodeIndexer
-from ..llm.llm_config import LLMConfig, LLMProvider
+from ..llm.litellm_chat import LiteLLMChat
 from ..log_utils import get_logger
-from ..ops.rerank import RerankContext, register_rerank_ops
-from ..ops.retrieve import RetrieveContext, register_retrieve_ops
-from ..plans.execution import ExecutionEngine
-from ..plans.ir_exec import ExecutionGraph, ExecutionNode
-from ..plans.ir_physical import PhysicalOperator
-from ..types import QueriedNode
+from ..ops.rerank import RerankContext
+from ..ops.retrieve import RetrieveContext
+from ..types import NodeInfo, QueriedNode
 
 logger = get_logger(__name__)
 
@@ -98,8 +97,7 @@ class RetrieveRerankPipeline:
         embedding_provider: str = "huggingface",
         embedding_dimension: int = 768,
         embedding_model_kwargs: Optional[dict] = None,
-        rerank_model: str = "Qwen/Qwen2.5-Coder-7B",
-        rerank_provider: LLMProvider = LLMProvider.VLLM_OPENAI,
+        rerank_model: str = "openai/Qwen/Qwen2.5-Coder-7B",
         rerank_temperature: float = 0.0,
         rerank_max_tokens: int = 2048,
         rerank_strategy: str = "llm",
@@ -126,7 +124,6 @@ class RetrieveRerankPipeline:
         self.enable_rerank = enable_rerank
         self.index_metric = "ip"
         self.profiler = None
-        # Retrieval level: "l0" (file skeletons) or "l2" (functions/methods)
         if retrieval_level not in ("l0", "l2"):
             raise ValueError(
                 f"Invalid retrieval_level {retrieval_level!r}. Must be 'l0' or 'l2'."
@@ -174,14 +171,12 @@ class RetrieveRerankPipeline:
             raise ValueError("rerank_strategy must be 'llm' or 'embedding'.")
         self.rerank_strategy = strategy
 
-        llm_config = None
+        rerank_llm = None
         if strategy == "llm":
-            llm_config = LLMConfig(
-                model_name=rerank_model,
-                provider=rerank_provider,
+            rerank_llm = LiteLLMChat(
+                model=rerank_model,
                 max_tokens=rerank_max_tokens,
                 temperature=rerank_temperature,
-                config_data={"VLLM_TRUST_REMOTE_CODE": "true"},
             )
         else:
             rerank_model_kwargs = self._prepare_embedding_kwargs(
@@ -211,7 +206,6 @@ class RetrieveRerankPipeline:
             else None
         )
 
-        self.engine = ExecutionEngine()
         self.retrieve_context = RetrieveContext(
             bm25=self.bm25_index,
             vector_store=self.vector_store,
@@ -220,17 +214,15 @@ class RetrieveRerankPipeline:
             default_level=self.retrieval_level,
             masks=vector_masks or {},
         )
-        register_retrieve_ops(self.engine, self.retrieve_context)
 
         if self.enable_rerank:
             self.rerank_context = RerankContext(
-                llm_config=llm_config,
+                llm=rerank_llm,
                 embedding_store=self.rerank_vector_store or self.vector_store,
                 candidate_top_k=self.rerank_candidate_top_k,
                 window_size=rerank_window_size,
                 window_step=rerank_window_step,
             )
-            register_rerank_ops(self.engine, self.rerank_context)
         else:
             self.rerank_context = None
 
@@ -286,20 +278,204 @@ class RetrieveRerankPipeline:
                 the rerank output. Retrieval always fetches RETRIEVAL_TOP_K
                 candidates internally.
         """
+        # Step 1: Run each retrieval branch
+        branch_results: List[List[QueriedNode]] = []
+        for stage in self.retrieve_plan:
+            results = self._run_retrieval_stage(query, stage)
+            branch_results.append(results)
 
-        # Build and execute the retrieval/rerank graph
-        graph, final_node_id = self._build_execution_graph(query, top_k)
-        state = self.engine.execute(graph)
-        results = state.get(final_node_id, [])
+        # Step 2: Merge branches (hybrid if multiple)
+        if len(branch_results) == 1:
+            candidates = branch_results[0]
+        else:
+            weights = [stage.weight for stage in self.retrieve_plan]
+            candidates = self._merge_hybrid(branch_results, weights, RETRIEVAL_TOP_K)
 
-        if not isinstance(results, list):
+        # Step 3: Rerank if enabled
+        if self.enable_rerank and self.rerank_context is not None:
+            candidates = self._run_rerank(query, candidates, top_k)
+
+        return candidates[:top_k]
+
+    # --------------------------------------------------------------------- #
+    # Retrieval
+    # --------------------------------------------------------------------- #
+
+    def _run_retrieval_stage(
+        self, query: str, stage: RetrieveStageConfig
+    ) -> List[QueriedNode]:
+        """Execute a single retrieval branch."""
+        stage_top_k = stage.top_k or RETRIEVAL_TOP_K
+
+        if stage.engine == "dense":
+            return self._retrieve_dense(query, stage_top_k)
+        if stage.engine == "sparse":
+            return self._retrieve_sparse(query, stage_top_k)
+        raise ValueError(f"Unsupported engine {stage.engine!r}.")
+
+    def _retrieve_dense(self, query: str, top_k: int) -> List[QueriedNode]:
+        """Retrieve via vector store (FAISS)."""
+        store = self.retrieve_context.vector_store
+        if store is None:
+            raise RuntimeError("Dense retrieval requested but no vector store.")
+
+        results = store.search_with_content(
+            query=query,
+            top_k=top_k,
+            level=self.retrieval_level,
+        )
+        return _to_queried_nodes(results)
+
+    def _retrieve_sparse(self, query: str, top_k: int) -> List[QueriedNode]:
+        """Retrieve via BM25 index."""
+        index = self.retrieve_context.bm25
+        if index is None:
+            raise RuntimeError("Sparse retrieval requested but no BM25 index.")
+
+        raw_results = index.search(
+            query=query,
+            top_k=top_k,
+            return_code_content=True,
+            wrap_with_ln=True,
+        )
+        return _to_queried_nodes(raw_results)
+
+    @staticmethod
+    def _merge_hybrid(
+        branches: List[List[QueriedNode]],
+        weights: List[float],
+        top_k: int,
+    ) -> List[QueriedNode]:
+        """Merge multiple retrieval branches with weighted scoring."""
+        if not weights or len(weights) != len(branches):
+            weights = [1.0] * len(branches)
+
+        accumulator: Dict[
+            Tuple[Optional[str], str, Optional[int], Optional[int]], QueriedNode
+        ] = {}
+
+        for weight, results in zip(weights, branches, strict=True):
+            for rank, item in enumerate(results):
+                base_score = item.score or 0.0
+                if base_score == 0.0:
+                    base_score = 1.0 / (rank + 1)
+
+                key = (item.file, item.node_name, item.start_line, item.end_line)
+                weighted = weight * base_score
+
+                if key not in accumulator:
+                    accumulator[key] = _with_score(item, weighted)
+                else:
+                    existing = accumulator[key]
+                    new_score = existing.score + weighted
+                    content = existing.content or item.content
+                    accumulator[key] = _with_score(existing, new_score, content)
+
+        merged = sorted(
+            accumulator.values(),
+            key=lambda node: node.score,
+            reverse=True,
+        )
+        return merged[:top_k]
+
+    # --------------------------------------------------------------------- #
+    # Reranking
+    # --------------------------------------------------------------------- #
+
+    def _run_rerank(
+        self, query: str, candidates: List[QueriedNode], top_k: int
+    ) -> List[QueriedNode]:
+        """Rerank candidates using the configured strategy."""
+        if not candidates:
             return []
 
-        nodes: List[QueriedNode] = []
-        for item in results[:top_k]:
-            if isinstance(item, QueriedNode):
-                nodes.append(item)
-        return nodes
+        if self.rerank_candidate_top_k is not None:
+            candidates = candidates[: self.rerank_candidate_top_k]
+
+        if self.rerank_strategy == "embedding":
+            return self._rerank_embedding(query, candidates, top_k)
+        return self._rerank_llm(query, candidates, top_k)
+
+    def _rerank_llm(
+        self, query: str, candidates: List[QueriedNode], top_k: int
+    ) -> List[QueriedNode]:
+        """Rerank using LLM listwise reranker."""
+        agent = self.rerank_context.ensure_agent()
+        logger.info(
+            "Running LLM rerank.",
+            extra={"candidate_count": len(candidates), "top_k": top_k},
+        )
+
+        nodes = [
+            NodeInfo(
+                node_name=c.node_name,
+                type=c.type,
+                file=c.file,
+                node_id=c.node_id,
+                start_line=c.start_line,
+                end_line=c.end_line,
+                score=c.score,
+                content=c.content,
+            )
+            for c in candidates
+        ]
+
+        return agent.rerank_nodes(
+            query=query,
+            nodes=nodes,
+            top_k=top_k,
+            window_size=self.rerank_window_size,
+            window_step=self.rerank_window_step,
+            include_content=True,
+        )
+
+    def _rerank_embedding(
+        self, query: str, candidates: List[QueriedNode], top_k: int
+    ) -> List[QueriedNode]:
+        """Rerank using embedding similarity."""
+        store = self.rerank_context.embedding_store
+        if store is None:
+            raise RuntimeError("Embedding rerank requested but no embedding store.")
+
+        candidates_with_content = [c for c in candidates if c.content]
+        if not candidates_with_content:
+            return []
+
+        query_vec = np.array(store.embedding.embed_query(query), dtype=np.float32)
+        doc_vectors = np.array(
+            store.embedding.embed_documents(
+                [c.content for c in candidates_with_content]
+            ),
+            dtype=np.float32,
+        )
+
+        metric = store.index_metric
+        if metric == "ip":
+            scores = np.dot(doc_vectors, query_vec).tolist()
+        elif metric == "l2":
+            scores = (-np.linalg.norm(doc_vectors - query_vec, axis=1)).tolist()
+        else:
+            raise ValueError(f"Unsupported index metric: {metric!r}")
+
+        ranked = sorted(
+            zip(scores, candidates_with_content, strict=True),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+
+        return [
+            QueriedNode(
+                node_name=c.node_name,
+                type=c.type,
+                file=c.file,
+                node_id=c.node_id,
+                start_line=c.start_line,
+                end_line=c.end_line,
+                score=float(score),
+                content=c.content,
+            )
+            for score, c in ranked[:top_k]
+        ]
 
     # --------------------------------------------------------------------- #
     # Internal helpers
@@ -348,12 +524,10 @@ class RetrieveRerankPipeline:
             **embedding_kwargs,
         )
         model_suffix = embedding_model.replace("/", "__")
-        # Check for hierarchical index structure (l0/ and l2/ directories)
         config_file = self.index_path / f"config_{model_suffix}.json"
         l0_path = self.index_path / "l0"
         l2_path = self.index_path / "l2"
 
-        # Load if either top-level config exists or hierarchical structure exists
         cache_exists = config_file.exists() or (l0_path.exists() and l2_path.exists())
         if cache_exists:
             logger.info(
@@ -447,76 +621,60 @@ class RetrieveRerankPipeline:
         self._chunks = chunks
         return self._chunks
 
-    def _build_execution_graph(
-        self, query: str, output_top_k: int
-    ) -> Tuple[ExecutionGraph, str]:
-        graph = ExecutionGraph()
-        retrieve_nodes: List[str] = []
-        for idx, stage in enumerate(self.retrieve_plan):
-            node_id = f"retrieve_{idx}"
-            params = dict(stage.params)
-            params.setdefault("query", query)
-            params.setdefault("top_k", stage.top_k or RETRIEVAL_TOP_K)
-            params.setdefault("return_content", True)
-            graph.add_node(
-                ExecutionNode(
-                    node_id=node_id,
-                    operator=self._operator_for_stage(stage),
-                    params=params,
-                    deps=[],
-                )
-            )
-            retrieve_nodes.append(node_id)
 
-        if len(retrieve_nodes) == 1:
-            aggregate_node_id = retrieve_nodes[0]
-        else:
-            aggregate_node_id = "hybrid_0"
-            weights = [stage.weight for stage in self.retrieve_plan]
-            graph.add_node(
-                ExecutionNode(
-                    node_id=aggregate_node_id,
-                    operator=PhysicalOperator.HYBRID_RETRIEVE.value,
-                    params={
-                        "weights": weights,
-                        "top_k": RETRIEVAL_TOP_K,
-                    },
-                    deps=retrieve_nodes,
-                )
-            )
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-        # If rerank is disabled, return the retrieval results directly
-        if not self.enable_rerank:
-            return graph, aggregate_node_id
 
-        rerank_node_id = "rerank_0"
-        rerank_params = {"query": query, "top_k": output_top_k, "return_content": True}
-        if self.rerank_candidate_top_k is not None:
-            rerank_params["candidate_top_k"] = self.rerank_candidate_top_k
-        if self.rerank_window_size is not None:
-            rerank_params["window_size"] = self.rerank_window_size
-        if self.rerank_window_step is not None:
-            rerank_params["window_step"] = self.rerank_window_step
+def _to_queried_nodes(results: Sequence[object]) -> List[QueriedNode]:
+    """Normalize retrieval results to QueriedNode."""
+    converted: List[QueriedNode] = []
+    for rank, item in enumerate(results):
+        if isinstance(item, QueriedNode):
+            converted.append(item)
+            continue
+        if isinstance(item, NodeInfo):
+            data = _dump_model(item)
+            score = data.get("score") or 0.0
+            if not score:
+                score = 1.0 / (rank + 1)
+            data["score"] = score
+            converted.append(QueriedNode(**data))
+            continue
+        if isinstance(item, dict):
+            data = dict(item)
+            score = data.get("score") or 0.0
+            if not score:
+                score = 1.0 / (rank + 1)
+            data["score"] = score
+            data.setdefault("node_name", data.get("name", ""))
+            data.setdefault("content", data.get("content"))
+            converted.append(QueriedNode(**data))
+            continue
+        raise TypeError(f"Unsupported result type: {type(item)}")
+    return converted
 
-        rerank_operator = (
-            PhysicalOperator.EMBEDDING_RERANK.value
-            if self.rerank_strategy == "embedding"
-            else PhysicalOperator.LLM_RERANK.value
-        )
-        graph.add_node(
-            ExecutionNode(
-                node_id=rerank_node_id,
-                operator=rerank_operator,
-                params=rerank_params,
-                deps=[aggregate_node_id],
-            )
-        )
 
-        return graph, rerank_node_id
+def _with_score(
+    item: QueriedNode, score: float, content_override: Optional[str] = None
+) -> QueriedNode:
+    """Create a copy of a QueriedNode with an updated score."""
+    update = {"score": score}
+    if content_override is not None:
+        update["content"] = content_override
+    if hasattr(item, "model_copy"):
+        return item.model_copy(update=update)
+    if hasattr(item, "copy"):
+        return item.copy(update=update)
+    data = _dump_model(item)
+    data.update(update)
+    return QueriedNode(**data)
 
-    def _operator_for_stage(self, stage: RetrieveStageConfig) -> str:
-        if stage.engine == "dense":
-            return PhysicalOperator.FAISS_RETRIEVE.value
-        if stage.engine == "sparse":
-            return PhysicalOperator.BM25_TOPK.value
-        raise ValueError(f"Unsupported engine {stage.engine!r}.")
+
+def _dump_model(model: object) -> Dict[str, object]:
+    if hasattr(model, "model_dump"):
+        return dict(model.model_dump())
+    if hasattr(model, "dict"):
+        return dict(model.dict())
+    raise TypeError(f"Object {model} does not support model dumping.")

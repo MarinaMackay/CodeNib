@@ -1,0 +1,19 @@
+skill_id: query_transform
+skill_type: transform
+operator: query.transform
+cost: medium
+
+defaults:
+  joiner: " "
+
+inputs:
+  - name: query
+    type: str
+    required: true
+    description: User query to expand via keyword extraction
+
+outputs:
+  type: Dict[str, object]
+
+index_requirements: []
+resources: []

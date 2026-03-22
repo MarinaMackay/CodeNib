@@ -5,10 +5,9 @@ This module extracts key terms from problem statements using llama_index.
 
 from typing import List
 
-from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
-from ..llm.llm_config import LLMConfig, create_llm
+from ..llm.litellm_chat import LiteLLMChat, human_message
 from ..log_utils import get_logger
 
 logger = get_logger(__name__)
@@ -26,24 +25,14 @@ class KeywordExtractor:
 
     def __init__(
         self,
-        llm_config: LLMConfig,
-        **kwargs,
+        llm: LiteLLMChat,
     ):
         """Initialize the keyword extractor.
 
         Args:
-            llm_config: LLM configuration containing model, provider, and other settings.
-            **kwargs: Additional keyword arguments forwarded to the LLM factory.
+            llm: A configured LiteLLMChat instance.
         """
-        self.llm_config = llm_config
-
-        # Build the LLM instance using the configuration
-        self.llm = create_llm(
-            config=llm_config,
-            **kwargs,
-        )
-
-        # Convert the LLM to a structured output LLM using LangChain style
+        self.llm = llm
         self.structured_llm = self.llm.with_structured_output(KeywordExtraction)
 
     def extract_keywords(self, problem_statement: str) -> KeywordExtraction:
@@ -58,25 +47,33 @@ class KeywordExtractor:
         """
         # Create prompt with detailed instructions
         prompt = (
-            "You are a keyword extraction specialist. Your task is to extract important keywords "
-            "from problem statements. Focus on identifying technical terms, function names, "
-            "class names, modules, file paths, and concepts that would be useful for searching in a codebase. "
+            "You are a keyword extraction specialist. "
+            "Your task is to extract important keywords "
+            "from problem statements. Focus on identifying "
+            "technical terms, function names, class names, "
+            "modules, file paths, and concepts that would be "
+            "useful for searching in a codebase. "
             "\n\n"
             "Guidelines for extraction:\n"
-            "1. Extract file paths and file names (e.g., 'django/db/models/expressions.py'-> and 'expressions.py')\n"
-            "2. Extract function and method names (e.g., 'separability_matrix', 'run_validators')\n"
+            "1. Extract file paths and file names "
+            "(e.g., 'django/db/models/expressions.py'"
+            "-> and 'expressions.py')\n"
+            "2. Extract function and method names "
+            "(e.g., 'separability_matrix', 'run_validators')\n"
             "3. Extract class names and module names\n"
             "4. Prefer precise terms over general ones\n"
-            "5. Remove common stopwords and general programming terms\n"
+            "5. Remove common stopwords and general "
+            "programming terms\n"
             "\n\n"
-            "Please extract the key technical terms and concepts from "
-            "the following problem statement:\n\n"
-            f"{problem_statement}\n\n"
-            "Return only the essential terms that would be most useful for searching in a codebase."
+            "Please extract the key technical terms and "
+            "concepts from the following problem statement:"
+            f"\n\n{problem_statement}\n\n"
+            "Return only the essential terms that would be "
+            "most useful for searching in a codebase."
         )
 
         # Use structured LLM to get output directly as a KeywordExtraction object
-        input_msg = HumanMessage(content=prompt)
+        input_msg = human_message(prompt)
         result = self.structured_llm.invoke([input_msg])
         logger.debug(f"Extracted keywords: {result}")
         return result
@@ -84,22 +81,17 @@ class KeywordExtractor:
 
 def extract_keywords_from_statement(
     problem_statement: str,
-    llm_config: LLMConfig,
-    **kwargs,
+    llm: LiteLLMChat,
 ) -> KeywordExtraction:
     """
     Extract keywords from a problem statement.
 
     Args:
-        problem_statement (str): The problem statement to extract keywords from
-        llm_config (LLMConfig): LLM configuration containing model, provider, and other settings.
-        **kwargs: Additional arguments forwarded to the LLM factory
+        problem_statement: The problem statement to extract keywords from.
+        llm: A configured LiteLLMChat instance.
 
     Returns:
         KeywordExtraction: Structured output with extracted keywords
     """
-    extractor = KeywordExtractor(
-        llm_config=llm_config,
-        **kwargs,
-    )
+    extractor = KeywordExtractor(llm=llm)
     return extractor.extract_keywords(problem_statement)

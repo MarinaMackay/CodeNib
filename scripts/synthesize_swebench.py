@@ -134,8 +134,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allowed-tools",
         type=str,
-        default="",
-        help="Comma-separated list of allowed tools (optional).",
+        default="Read,Grep,Glob,Bash",
+        help="Comma-separated list of allowed tools.",
     )
     parser.add_argument(
         "--synthesis-limit",

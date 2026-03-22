@@ -2,13 +2,11 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from langchain_core.messages import HumanMessage
-from langchain_core.prompts import PromptTemplate
 from pydantic import BaseModel, Field
 
 from ..graph.code_graph import CodeGraph
-from ..graph.transverse_graph import traverse_tree_structure
-from ..llm.llm_config import LLMConfig, LLMProvider, create_llm
+from ..graph.traverse_graph import traverse_tree_structure
+from ..llm.litellm_chat import LiteLLMChat, human_message
 from ..log_utils import get_logger
 from ..ls_router import LSIndexer
 from ..types import NODE_TYPE_FILE, ROOT_NODE, QueriedNode, is_symbol_node
@@ -77,10 +75,9 @@ class AgentlessPipeline:
     Args:
         repo_path (str): Path to the repository to analyze.
         repo_commit (str): Git commit hash for version identification.
-        llm_model (str, optional): Name of the LLM to use.
+        llm_model (str, optional): Full litellm model identifier
+            (e.g., ``"gpt-4o"``, ``"vertex_ai/gemini-2.5-flash"``).
             (default: :obj:`"gpt-4o"`)
-        llm_provider (str, optional): LLM provider (e.g., "openai", "anthropic").
-            (default: :obj:`"openai"`)
         llm_temperature (float, optional): Temperature for LLM sampling.
             (default: :obj:`0.0`)
         llm_max_tokens (int, optional): Maximum tokens for LLM responses.
@@ -106,7 +103,6 @@ class AgentlessPipeline:
         repo_commit: str,
         # LLM configs
         llm_model: str = "gpt-4o",
-        llm_provider: str = "openai",
         llm_temperature: float = 0.0,
         llm_max_tokens: int = 2048,
         # Localization configs
@@ -157,26 +153,19 @@ class AgentlessPipeline:
         if not self.code_graph:
             raise ValueError("Failed to build code graph")
 
-        # Initialize LLM
-        llm_config = LLMConfig(
-            model_name=llm_model,
-            provider=LLMProvider(llm_provider),
+        # Initialize LLM — model string should be a full litellm identifier
+        # (e.g., "gpt-4o", "vertex_ai/gemini-2.5-flash").
+        self.llm = LiteLLMChat(
+            model=llm_model,
             max_tokens=llm_max_tokens,
             temperature=llm_temperature,
         )
-        self.llm = create_llm(config=llm_config)
 
-        # Load prompt templates from files using LangChain
+        # Load prompt templates from files
         prompt_dir = Path(__file__).parent / "prompts"
-        self.stage1_prompt = PromptTemplate.from_file(
-            str(prompt_dir / "agentless_stage1.txt")
-        ).template
-        self.stage2_prompt = PromptTemplate.from_file(
-            str(prompt_dir / "agentless_stage2.txt")
-        ).template
-        self.stage3_prompt = PromptTemplate.from_file(
-            str(prompt_dir / "agentless_stage3.txt")
-        ).template
+        self.stage1_prompt = (prompt_dir / "agentless_stage1.txt").read_text()
+        self.stage2_prompt = (prompt_dir / "agentless_stage2.txt").read_text()
+        self.stage3_prompt = (prompt_dir / "agentless_stage3.txt").read_text()
 
         # Create structured LLMs for each stage
         self.structured_llm_stage1 = self.llm.with_structured_output(Stage1Result)
@@ -186,7 +175,7 @@ class AgentlessPipeline:
         logger.info(
             f"AgentlessPipeline initialized: "
             f"repo={repo_name}@{commit_identifier}, "
-            f"llm={llm_provider}:{llm_model}, "
+            f"llm={llm_model}, "
             f"top_n_files={top_n_files}, "
             f"cache_dir={cache_dir}"
         )
@@ -235,7 +224,7 @@ class AgentlessPipeline:
 
         # Query LLM with structured output
         try:
-            input_msg = HumanMessage(content=prompt)
+            input_msg = human_message(prompt)
             result = self.structured_llm_stage1.invoke([input_msg])
             candidate_files = result.files
             logger.debug(f"[Stage 1] EXTRACTED CANDIDATE FILES: {candidate_files}")
@@ -292,7 +281,7 @@ class AgentlessPipeline:
 
         # Query LLM with structured output
         try:
-            input_msg = HumanMessage(content=prompt)
+            input_msg = human_message(prompt)
             result = self.structured_llm_stage2.invoke([input_msg])
             candidate_nodes = result.nodes
             logger.debug(f"[Stage 2] EXTRACTED CANDIDATE NODES: {candidate_nodes}")
@@ -335,10 +324,9 @@ class AgentlessPipeline:
                 ) from exc
 
             if not node_data_list:
-                raise ValueError(
-                    f"Error getting code for {symbol_node_id}: {exc}"
-                ) from exc
+                raise ValueError(f"No code data returned for {symbol_node_id}")
 
+            code_content = node_data_list[0].get("code", "")
             code_segments.append(
                 f"### {symbol_node_id} ###\n```\n{code_content}\n```\n"
             )
@@ -353,7 +341,7 @@ class AgentlessPipeline:
 
         # Query LLM with structured output
         try:
-            input_msg = HumanMessage(content=prompt)
+            input_msg = human_message(prompt)
             result = self.structured_llm_stage3.invoke([input_msg])
             shortlisted_node_ids = result.refined_nodes
             logger.debug(f"[Stage 3] EXTRACTED NODES: {shortlisted_node_ids}")

@@ -50,7 +50,6 @@ from codeminer.eval.retrieval_eval import (
     evaluate_predictions,
     extract_predictions,
 )
-from codeminer.llm.llm_config import LLMProvider
 from codeminer.log_utils import get_logger
 from codeminer.model import RetrieveRerankPipeline, build_retrieve_plan
 from codeminer.model.retrieve_rerank_pipeline import RETRIEVAL_TOP_K
@@ -140,15 +139,12 @@ def parse_args():
     parser.add_argument(
         "--rerank-model",
         type=str,
-        default="Qwen/Qwen2.5-Coder-7B",
-        help="Rerank model name (ignored if --retrieval-only is set)",
-    )
-    parser.add_argument(
-        "--rerank-provider",
-        type=str,
-        default="vllm_openai",
-        choices=[pv.value for pv in LLMProvider],
-        help="Rerank provider (ignored if --retrieval-only is set)",
+        default="openai/Qwen/Qwen2.5-Coder-7B",
+        help=(
+            "Full litellm model identifier for reranking "
+            "(e.g. 'openai/Qwen/Qwen2.5-Coder-7B'). "
+            "Ignored if --retrieval-only is set."
+        ),
     )
     parser.add_argument(
         "--rerank-window-size",
@@ -499,7 +495,6 @@ def run_pipeline(args):
                         embedding_dimension=args.embedding_dimension,
                         embedding_model_kwargs=embedding_model_kwargs,
                         rerank_model=args.rerank_model,
-                        rerank_provider=LLMProvider(args.rerank_provider),
                         rerank_strategy=args.rerank_strategy,
                         rerank_embedding_model=args.rerank_embedding_model,
                         rerank_embedding_provider=args.rerank_embedding_provider,
