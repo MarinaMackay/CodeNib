@@ -12,12 +12,16 @@ Besides `scip-python`, multilingual indexing requires extra tooling:
   - `npm`
   - `yarn` for repos using Yarn workspaces (optional but commonly needed)
   - `pnpm` for pnpm workspaces (optional)
-- C/C++ (`scip-clang`):
-  - `scip-clang`
+- C/C++ (`clangd`):
+  - `clangd` (`apt install clangd`)
   - `cmake` for CMake-based projects
   - `bear` for Make/Autotools projects (e.g., repositories without CMake compile DB)
+  - Requires `compile_commands.json` (auto-generated from CMake or `bear -- make` if missing)
 - Rust (`rust-analyzer`):
-  - stable toolchain with `rust-analyzer` component
+  - nightly toolchain with `rust-analyzer` component (auto-set via `RUSTUP_TOOLCHAIN=nightly`)
+- Go (`scip-go`):
+  - `go install github.com/sourcegraph/scip-go/cmd/scip-go@latest`
+  - Project must contain `go.mod`
 
 Example installs:
 ```bash
@@ -120,6 +124,39 @@ result = indexer.run_pipeline(
 )
 ```
 
+#### Language-Specific Options
+
+**Rust:**
+```python
+graph = indexer.run_pipeline(
+    config_path="/path/to/config.json",       # cargo customization
+    exclude_vendored_libraries=True,          # exclude vendored deps
+)
+```
+Requires `Cargo.toml`.
+
+**TypeScript / JavaScript:**
+```python
+graph = indexer.run_pipeline(
+    yarn_workspaces=True,       # or pnpm_workspaces / npm_workspaces
+)
+```
+Auto-detects workspace type, installs dependencies, and patches tsconfig to enable `allowJs: true` for JS files. If no `tsconfig.json`/`jsconfig.json` exists, `--infer-tsconfig` is enabled automatically.
+
+**Go:**
+```python
+graph = indexer.run_pipeline()  # no language-specific options
+```
+Requires `go.mod`.
+
+**C/C++:**
+```python
+graph = indexer.run_pipeline(
+    compdb_path="/path/to/compile_commands.json",  # optional, auto-discovered
+)
+```
+Uses clangd background indexing (`.idx` files). Auto-generates `compile_commands.json` from CMake or `bear -- make` if missing.
+
 #### Advanced Features
 
 **Cache Management:**
@@ -147,8 +184,21 @@ indexer = LSIndexer(
 )
 ```
 
+### LSGraphDecoder
 
-#### FAQ
+Build a graph directly from an existing decoded index:
+
+```python
+from codeminer.ls_router import LSGraphDecoder
+
+decoder = LSGraphDecoder("index.decoded", project_root="/path/to/repo", language="rust")
+graph = decoder.decode()
+
+# C/C++: pass the .idx directory
+decoder = LSGraphDecoder(".cache/clangd/index/", project_root="/path/to/repo", language="cpp")
+```
+
+### FAQ
 If the following error occurs:
 ```
 FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaScript heap out of memory
@@ -157,4 +207,13 @@ FATAL ERROR: Ineffective mark-compacts near heap limit Allocation failed - JavaS
 Please increase the memory space for node.js
 ``` bash
 export NODE_OPTIONS="--max-old-space-size=16384"
+```
+
+If `compile_commands.json` is missing for C/C++ projects:
+```bash
+# CMake
+cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# Make
+bear -- make
 ```
