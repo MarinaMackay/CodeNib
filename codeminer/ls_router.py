@@ -39,6 +39,8 @@ LANGUAGE_ALIASES = {
     "js": "ts",
     "python": "python",
     "py": "python",
+    "go": "go",
+    "golang": "go",
 }
 
 
@@ -131,6 +133,15 @@ class LSIndexer:
                 exclude_patterns=exclude_patterns,
                 profiler=profiler,
             )
+        elif self.language == "go":
+            from .scip_interface.scip_indexer_go import SCIPGoIndexer
+
+            return SCIPGoIndexer(
+                project_root=project_root,
+                output_dir=output_dir,
+                exclude_patterns=exclude_patterns,
+                profiler=profiler,
+            )
         else:
             raise ValueError(f"No indexer for language: {self.language}")
 
@@ -166,6 +177,40 @@ class LSIndexer:
 
     def clear_cache(self, level: str = "all") -> bool:
         return self._delegate.clear_cache(level=level)
+
+    def graph_patch(
+        self,
+        graph: "CodeGraph",
+        base_commit: str,
+        target_commit: str = "HEAD",
+    ) -> dict:
+        """Incrementally update graph using LSP graph-patching.
+
+        Args:
+            graph: Existing CodeGraph to update in place.
+            base_commit: Git commit hash the graph was built from.
+            target_commit: Git commit hash to patch to (default HEAD).
+
+        Returns:
+            Statistics dict from the patcher.
+        """
+        from .incremental.graph_patcher import GraphPatcher
+
+        patcher = GraphPatcher(
+            project_root=str(self.project_root),
+            code_graph=graph,
+            language=self.language,
+            profiler=self.profiler,
+        )
+        from .incremental.graph_patcher import LANGUAGE_EXTENSIONS
+
+        changed = patcher.detect_changed_files(
+            str(self.project_root),
+            base_commit,
+            target_commit,
+            extensions=LANGUAGE_EXTENSIONS.get(self.language),
+        )
+        return patcher.patch_files(changed)
 
 
 # ── LSGraphDecoder ─────────────────────────────────────────────────────────

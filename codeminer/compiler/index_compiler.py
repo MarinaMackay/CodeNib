@@ -59,7 +59,7 @@ class IndexCompiler:
     a manifest.
 
     The manifest (``repo_manifest.json``) is the linking protocol that
-    Phase 2 (``SkillCompiler`` + ``ResourceResolver``) reads to know
+    Phase 2 (``AgentRunner`` + ``ResourceGuard``) reads to know
     what indexes are available at query time.
     """
 

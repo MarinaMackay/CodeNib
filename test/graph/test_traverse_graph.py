@@ -3,6 +3,8 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from codeminer.graph.traverse_graph import (
     RepoDependencySearcher,
     traverse_tree_structure,
@@ -18,6 +20,8 @@ from codeminer.types import (
     NODE_TYPE_METHOD,
     NODE_TYPE_SYMBOL,
 )
+
+pytestmark = pytest.mark.integration
 
 HTTPIE_REPO_URL = "https://github.com/httpie/cli.git"
 HTTPIE_REPO_PATH = Path("/tmp/httpie-cli")

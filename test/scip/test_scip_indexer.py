@@ -6,6 +6,8 @@ import pytest
 
 from codeminer.ls_router import LSIndexer
 
+pytestmark = pytest.mark.integration
+
 HTTPIE_REPO_URL = "https://github.com/httpie/cli.git"
 HTTPIE_REPO_PATH = Path("/tmp/httpie-cli")
 
@@ -118,7 +120,8 @@ def test_python_repo_indexing(httpie_cli_repo, test_output_dir, tmp_path_factory
             print(f"  Symbol node {i+1}: {node}")
     else:
         pytest.skip(
-            "Failed to run indexing pipeline for test_python_repo, possibly due to missing dependencies"
+            "Failed to run indexing pipeline for test_python_repo,"
+            " possibly due to missing dependencies"
         )
 
 
@@ -180,7 +183,8 @@ def test_samplemod_repo_indexing(samplemod_repo, test_output_dir, tmp_path_facto
             print(f"  Symbol node {i+1}: {node}")
     else:
         pytest.skip(
-            "Failed to run indexing pipeline for samplemod_repo, possibly due to missing dependencies"
+            "Failed to run indexing pipeline for samplemod_repo,"
+            " possibly due to missing dependencies"
         )
 
 

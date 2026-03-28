@@ -20,7 +20,6 @@ from pathlib import Path
 
 from codeminer.dataset.locbench import LocbenchDataset
 from codeminer.dataset.swebench import SwebenchDataset
-from codeminer.llm.llm_config import LLMProvider
 from codeminer.log_utils import get_logger
 from codeminer.model import AgentlessPipeline
 
@@ -79,13 +78,8 @@ def parse_args():
         default="gpt-4o",
         help="LLM model name for localization",
     )
-    parser.add_argument(
-        "--llm-provider",
-        type=str,
-        default="openai",
-        choices=[e.value for e in LLMProvider],
-        help="LLM provider",
-    )
+    # --llm-model now accepts a full litellm identifier
+    # (e.g. "gpt-4o", "vertex_ai/gemini-2.5-flash")
     parser.add_argument(
         "--llm-temperature",
         type=float,
@@ -162,7 +156,6 @@ def run_pipeline(args):
             repo_path=repo_path,
             repo_commit=repo_commit,
             llm_model=args.llm_model,
-            llm_provider=args.llm_provider,
             llm_temperature=args.llm_temperature,
             llm_max_tokens=args.llm_max_tokens,
             top_n_files=args.top_n_files,
@@ -192,7 +185,6 @@ def main():
 
     logger.info(f"Dataset type: {args.dataset}")
     logger.info(f"LLM model: {args.llm_model}")
-    logger.info(f"LLM provider: {args.llm_provider}")
     logger.info(f"Top-N files: {args.top_n_files}")
 
     run_pipeline(args)

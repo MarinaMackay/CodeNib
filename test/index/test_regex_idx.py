@@ -5,8 +5,12 @@ Test RegexNodeIndex functionality using the httpie CLI repository.
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from codeminer import RegexNodeIndex
 from codeminer.ls_router import LSIndexer
+
+pytestmark = pytest.mark.integration
 
 HTTPIE_REPO_URL = "https://github.com/httpie/cli.git"
 HTTPIE_REPO_PATH = Path("/tmp/httpie-cli")

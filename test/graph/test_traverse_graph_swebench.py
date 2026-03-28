@@ -3,6 +3,8 @@ from pathlib import Path
 import pytest
 
 from codeminer.dataset.swebench import SwebenchDataset
+
+pytestmark = pytest.mark.integration
 from codeminer.graph.traverse_graph import traverse_tree_structure
 from codeminer.ls_router import LSIndexer
 from codeminer.types import (

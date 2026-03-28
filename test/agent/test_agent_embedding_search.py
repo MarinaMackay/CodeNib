@@ -1,0 +1,132 @@
+"""
+Agent integration tests for embedding_search skill.
+
+TestEmbeddingSearchE2E: real FAISS index over httpie/cli + Vertex AI agent routing.
+Marked @pytest.mark.slow, run with: pytest -v -m slow
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from codeminer.agent.runner import AgentRunner
+from codeminer.agent.skills.loader import SkillLoader
+from codeminer.agent.skills.registry import SkillRegistry
+
+EMBEDDING_INDEX_PATH = "/tmp/embedding_e2e_index"
+
+
+@pytest.mark.slow
+class TestEmbeddingSearchE2E:
+    """
+    Full round-trip: real FAISS index + Vertex AI agent routing.
+
+    Index is cached at /tmp/embedding_e2e_index (reused across runs).
+    """
+
+    @pytest.fixture(scope="class", autouse=True)
+    def reset_for_class(self):
+        SkillRegistry.reset()
+        yield
+        SkillRegistry.reset()
+
+    @pytest.fixture(scope="class")
+    def real_embedding_search(self, httpie_cli_repo):
+        """Load embedding_search skill with real FAISS index over httpie/cli."""
+        import codeminer.agent.skills as pkg
+        from codeminer.index.embedding import (
+            CodeVectorStore,
+            build_hierarchical_vector_store,
+        )
+        from codeminer.ops.retrieve import RetrieveContext
+
+        repo_path = str(httpie_cli_repo)
+        l0 = Path(EMBEDDING_INDEX_PATH) / "l0"
+        l2 = Path(EMBEDDING_INDEX_PATH) / "l2"
+
+        if l0.exists() and l2.exists():
+            print(f"Loading existing index from {EMBEDDING_INDEX_PATH}")
+            vs = CodeVectorStore(
+                embedding_model="nomic-ai/CodeRankEmbed",
+                embedding_provider="huggingface",
+                dimension=768,
+                store_path=EMBEDDING_INDEX_PATH,
+                model_kwargs={"trust_remote_code": True},
+                encode_kwargs={
+                    "batch_size": 8,
+                    "normalize_embeddings": True,
+                },
+            )
+            vs.load(EMBEDDING_INDEX_PATH)
+        else:
+            print(f"Building new index at {EMBEDDING_INDEX_PATH}")
+            Path(EMBEDDING_INDEX_PATH).mkdir(parents=True, exist_ok=True)
+            vs = build_hierarchical_vector_store(
+                repo_path=repo_path,
+                index_path=EMBEDDING_INDEX_PATH,
+                languages=["python"],
+                embedding_model="nomic-ai/CodeRankEmbed",
+                embedding_provider="huggingface",
+                embedding_dimension=768,
+                embedding_kwargs={
+                    "model_kwargs": {"trust_remote_code": True},
+                    "encode_kwargs": {
+                        "batch_size": 8,
+                        "normalize_embeddings": True,
+                    },
+                },
+            )
+
+        ctx = RetrieveContext(vector_store=vs, default_level="l2")
+        loader = SkillLoader()
+
+        skill_dir = str(Path(pkg.__file__).parent / "embedding_search")
+        meta = loader.load_skill(skill_dir, contexts={"retrieve": ctx})
+        assert meta is not None
+        SkillRegistry().register(meta)
+
+        return meta
+
+    def test_embedding_search_returns_results(self, real_embedding_search):
+        """embedding_search must return results for a semantic query."""
+        results = real_embedding_search.executor_fn(
+            query="function that sends an HTTP request with authentication",
+            top_k=5,
+            return_content=True,
+        )
+        assert isinstance(results, list)
+        assert len(results) > 0
+
+    @pytest.mark.parametrize(
+        "vertex_model",
+        [
+            "vertex_ai/gemini-2.5-flash",
+            "vertex_ai/gemini-2.0-flash",
+            "vertex_ai/claude-sonnet-4@20250514",
+        ],
+    )
+    def test_vertex_agent_selects_embedding_search(
+        self, real_embedding_search, vertex_model
+    ):
+        """Vertex AI agent must select embedding_search for a semantic query."""
+        try:
+            runner = AgentRunner(
+                model=vertex_model,
+                registry=SkillRegistry(),
+                max_turns=3,
+            )
+            result = runner.run(
+                "function that sends an HTTP request with authentication",
+            )
+        except Exception as exc:
+            pytest.skip(f"Vertex agent unavailable for {vertex_model}: {exc}")
+
+        assert result.total_turns >= 1
+        assert len(result.tool_calls) >= 1
+
+        skill_ids = [tc.skill_id for tc in result.tool_calls]
+        assert (
+            "embedding_search" in skill_ids
+        ), f"Expected embedding_search for {vertex_model}, got: {skill_ids}"

@@ -154,7 +154,7 @@ class TestVectorIndexBuilder:
 
 
 class TestSymbolGraphBuilder:
-    @patch("codeminer.scip_interface.scip_indexer.SCIPIndexer")
+    @patch("codeminer.scip_interface.SCIPPythonIndexer")
     def test_build_returns_status(self, MockSCIP, tmp_path):
         mock_graph = MagicMock()
         mock_graph.graph.vs = list(range(50))  # 50 nodes
@@ -175,7 +175,7 @@ class TestSymbolGraphBuilder:
         assert status.metadata["node_count"] == 50
         assert status.metadata["language"] == "python"
 
-    @patch("codeminer.scip_interface.scip_indexer.SCIPIndexer")
+    @patch("codeminer.scip_interface.SCIPPythonIndexer")
     def test_build_handles_none_graph(self, MockSCIP, tmp_path):
         mock_indexer = MagicMock()
         mock_indexer.run_pipeline.return_value = None

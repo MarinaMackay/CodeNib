@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import datasets
+import pyarrow as pa
 
 from codeminer.log_utils import get_logger
 
@@ -98,7 +99,47 @@ def main() -> None:
     if not rows:
         raise ValueError("No instances found in input file.")
 
+    # Build the Arrow table directly so we control struct field order for
+    # gt_code_blocks (Arrow/Parquet sorts struct fields alphabetically by
+    # default when inferring from Python dicts).
+    _CODE_BLOCK_FIELDS = [
+        "change_type",
+        "start_line",
+        "end_line",
+        "file_path",
+        "symbol",
+        "symbol_type",
+    ]
+
+    def _reorder_code_blocks(blocks: list) -> list:
+        """Return code_block dicts with keys in the canonical order."""
+        return [{k: b[k] for k in _CODE_BLOCK_FIELDS} for b in blocks]
+
+    for row in rows:
+        if row.get("gt_code_blocks"):
+            row["gt_code_blocks"] = _reorder_code_blocks(row["gt_code_blocks"])
+
+    # Let HF infer schema, then rebuild the gt_code_blocks column with
+    # an explicit struct type to lock in the field order.
     ds = datasets.Dataset.from_list(rows)
+    table = ds.data
+    code_block_type = pa.struct(
+        [
+            ("change_type", pa.string()),
+            ("start_line", pa.int64()),
+            ("end_line", pa.int64()),
+            ("file_path", pa.string()),
+            ("symbol", pa.string()),
+            ("symbol_type", pa.string()),
+        ]
+    )
+    idx = table.schema.get_field_index("gt_code_blocks")
+    old_col = table.column(idx)
+    new_col = old_col.cast(pa.list_(code_block_type))
+    table = table.set_column(
+        idx, pa.field("gt_code_blocks", pa.list_(code_block_type)), new_col
+    )
+    ds = datasets.Dataset(table)
 
     # Save Parquet (default) — HF Hub native format
     output_dir = Path(args.output_dir).expanduser()

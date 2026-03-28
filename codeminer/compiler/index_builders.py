@@ -7,7 +7,8 @@ when ``ResourcePlan`` indicates they are missing or stale.
 Concrete builders wrap existing index infrastructure:
   - ``BM25IndexBuilder``   → ``BM25CodeIndexer``
   - ``VectorIndexBuilder`` → ``build_hierarchical_vector_store``
-  - ``SymbolGraphBuilder`` → ``SCIPIndexer``
+  - ``SymbolGraphBuilder`` → ``SCIPPythonIndexer``
+  / ``SCIPRustIndexer`` / ``SCIPTypeScriptIndexer``
 """
 
 from __future__ import annotations
@@ -167,13 +168,27 @@ class SymbolGraphBuilder:
         repo_path: str = kwargs["repo_path"]
         output_dir: str = kwargs["output_dir"]
 
-        from ..scip_interface.scip_indexer import SCIPIndexer
+        from ..scip_interface import (
+            SCIPPythonIndexer,
+            SCIPRustIndexer,
+            SCIPTypeScriptIndexer,
+        )
+
+        _INDEXER_MAP = {
+            "python": SCIPPythonIndexer,
+            "rust": SCIPRustIndexer,
+            "typescript": SCIPTypeScriptIndexer,
+            "javascript": SCIPTypeScriptIndexer,
+        }
+
+        indexer_cls = _INDEXER_MAP.get(self.language)
+        if indexer_cls is None:
+            raise ValueError(f"Unsupported language for symbol graph: {self.language}")
 
         os.makedirs(output_dir, exist_ok=True)
-        indexer = SCIPIndexer(
+        indexer = indexer_cls(
             project_root=repo_path,
             output_dir=output_dir,
-            language=self.language,
         )
         graph = indexer.run_pipeline(
             output_file=os.path.join(output_dir, "graph.pkl"),
