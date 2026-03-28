@@ -392,15 +392,17 @@ class SCIPRustGraphDecoder:
             Unified symbol name in SCIP format (crate/module/Type#method or crate/module/function)
         """
         # Extract the actual symbol part (after version or URL)
-        parts = symbol.split(" ")
-        if len(parts) < 4:
+        # Format: "rust-analyzer cargo <crate_name> <version> <symbol_path>"
+        # Split into at most 5 parts so that symbol_path (which may contain
+        # spaces in generics like `<B, E>`) stays intact.
+        parts = symbol.split(" ", 4)
+        if len(parts) < 5:
             return None
 
         # Extract crate name for scoping
-        # Format: "rust-analyzer cargo <crate_name> <version> <symbol_path>"
         crate_prefix = parts[2] if parts[1] == "cargo" else None
 
-        symbol_part = parts[-1].rstrip(".")
+        symbol_part = parts[4].rstrip(".")
 
         # Clean up trailing markers
         unified = symbol_part.rstrip("#/()")
@@ -429,8 +431,7 @@ class SCIPRustGraphDecoder:
                 # Distinguish field vs method using original SCIP symbol:
                 # method ends with "()." (e.g. "impl#[Type]method().")
                 # field ends with "."  (e.g. "Type#field.")
-                original_part = original_symbol.split(" ")[-1] if original_symbol else ""
-                if original_part.endswith("()."):
+                if original_symbol and original_symbol.endswith("()."):
                     return NODE_TYPE_METHOD
                 else:
                     return NODE_TYPE_FIELD
