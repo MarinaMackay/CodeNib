@@ -77,7 +77,27 @@ class SCIPPythonGraphDecoder:
         for document in document_blocks:
             self._process_document(document)
 
+        self._fix_unified_names()
         return self.code_graph
+
+    def _fix_unified_names(self):
+        """Replace module-derived file paths in unified_name with actual file paths.
+
+        During decode, unified_name is built from SCIP's module path
+        (e.g. ``sklearn.cluster.k_means_`` → ``sklearn/cluster/k_means_.py``).
+        This can produce incorrect paths for ``__init__.py`` packages.
+        The vertex ``file`` attribute (from SCIP document ``relative_path``)
+        is always correct, so we use it to fix the file path portion.
+        """
+        for v in self.code_graph.graph.vs:
+            name = v["name"]
+            file_path = v.attributes().get("file", "")
+            node_type = v.attributes().get("type", "")
+            if node_type in ("file", "directory"):
+                v["unified_name"] = name
+            elif file_path and ":" in name:
+                symbol_part = name.split(":", 1)[1]
+                v["unified_name"] = f"{file_path}:{symbol_part}"
 
     def _process_document(self, document_text):
         """
@@ -293,8 +313,8 @@ class SCIPPythonGraphDecoder:
         symbol_type = self._classify_symbol_type(unified_symbol, cleaned_symbol)
 
         # Handle __init__ symbols - convert to file reference
-        if "/__init__" in unified_symbol:
-            module_match = re.search(r"(.+)/(?:__init__)", unified_symbol)
+        if "/__init__" in cleaned_symbol:
+            module_match = re.search(r"(.+)/(?:__init__)", cleaned_symbol)
             if module_match:
                 module_path = module_match.group(1)
                 file_path = module_path.replace(".", "/") + ".py"
