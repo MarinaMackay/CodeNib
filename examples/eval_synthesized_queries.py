@@ -7,13 +7,22 @@ EmbeddingRetrievePipeline, AgentRunner) and evaluation utilities without
 duplicating any logic.  The only new code is the glue that loads the
 synthesized JSON format and feeds it through the standard eval functions.
 
+Input format — a directory of per-instance JSON files, each containing a list
+of query entries::
+
+    queries_dir/
+        astral-sh__ruff-15309.json
+        astral-sh__ruff-15330.json
+
+Or a single JSON file containing a flat list of query entries.
+
 Usage:
-    # BM25
+    # BM25 — folder of per-instance JSONs
     python examples/eval_synthesized_queries.py \
         --pipeline bm25 \
-        --queries-file filtered_behavioral_queries.json
+        --queries-dir synthesized_queries/
 
-    # Embedding
+    # Embedding — single file
     python examples/eval_synthesized_queries.py \
         --pipeline embedding \
         --queries-file filtered_behavioral_queries.json
@@ -21,23 +30,25 @@ Usage:
     # Agent
     python examples/eval_synthesized_queries.py \
         --pipeline agent \
-        --queries-file filtered_behavioral_queries.json \
+        --queries-dir synthesized_queries/ \
         --model vertex_ai/gemini-2.5-flash --agent-mode hybrid
 
     # Single instance
     python examples/eval_synthesized_queries.py \
         --pipeline bm25 \
-        --queries-file filtered_behavioral_queries.json \
-        --filter-instance "astropy__astropy-6938"
+        --queries-dir synthesized_queries/ \
+        --filter-instance "astral-sh__ruff-15309"
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,7 +56,6 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.eval.retrieval_eval import (
     aggregate_metrics,
     average_metrics,
@@ -59,6 +69,150 @@ from codeminer.types import QueriedNode
 
 logger = get_logger(__name__)
 
+# ---------------------------------------------------------------------------
+# Language detection
+# ---------------------------------------------------------------------------
+
+_EXT_TO_LANGUAGE = {
+    ".py": "python",
+    ".rs": "rust",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".java": "java",
+    ".go": "go",
+    ".cpp": "cpp",
+    ".c": "c",
+    ".h": "cpp",
+    ".hpp": "cpp",
+}
+
+
+_LANGUAGE_GROUP_MAP = {
+    "rust": "rust",
+    "javascript": "javascript",
+    "typescript": "typescript",
+    "python": "python",
+    "c++": "cpp",
+    "c": "c",
+    "java": "java",
+    "go": "go",
+}
+
+
+def _infer_language(entries: List[Dict[str, Any]]) -> str:
+    """Infer the primary language from language_group or gt_files extensions."""
+    # Prefer explicit language_group from the synthesized record.
+    for entry in entries:
+        lg = (entry.get("language_group") or "").lower()
+        for key, lang in _LANGUAGE_GROUP_MAP.items():
+            if key in lg:
+                return lang
+
+    # Fallback: infer from file extensions in gt_files.
+    counts: Counter[str] = Counter()
+    for entry in entries:
+        for f in entry.get("gt_files") or []:
+            ext = os.path.splitext(f)[1].lower()
+            lang = _EXT_TO_LANGUAGE.get(ext)
+            if lang:
+                counts[lang] += 1
+    if not counts:
+        return "python"
+    return max(counts, key=counts.get)
+
+
+# ---------------------------------------------------------------------------
+# Lightweight repo checkout (no HF dataset dependency)
+# ---------------------------------------------------------------------------
+
+
+def _checkout_repo(repo_name: str, base_commit: str, repo_cache_dir: str) -> str:
+    """Clone (if needed) and checkout ``base_commit``. Returns repo path."""
+    repo_dir_name = repo_name.replace("/", "_")
+    repo_path = os.path.join(
+        os.path.abspath(os.path.expanduser(repo_cache_dir)), repo_dir_name
+    )
+    os.makedirs(os.path.dirname(repo_path), exist_ok=True)
+
+    if not os.path.exists(repo_path):
+        logger.info("Cloning %s → %s", repo_name, repo_path)
+        subprocess.run(
+            ["git", "clone", f"https://github.com/{repo_name}.git", repo_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    original_dir = os.getcwd()
+    os.chdir(repo_path)
+    try:
+        subprocess.run(
+            ["git", "fetch", "--all"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["git", "reset", "--hard"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["git", "clean", "-fd"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            subprocess.run(
+                ["git", "checkout", "-f", base_commit],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.CalledProcessError:
+            # Handle shallow clones / missing commits
+            shallow = subprocess.run(
+                ["git", "rev-parse", "--is-shallow-repository"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            if shallow == "true":
+                subprocess.run(
+                    ["git", "fetch", "--unshallow"],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            subprocess.run(
+                ["git", "fetch", "origin", base_commit],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            subprocess.run(
+                ["git", "fetch", "--all", "--tags"],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            subprocess.run(
+                ["git", "checkout", "-f", base_commit],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        logger.info("Checked out %s @ %s", repo_name, base_commit[:12])
+    finally:
+        os.chdir(original_dir)
+
+    return repo_path
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -71,7 +225,16 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--pipeline", required=True, choices=["bm25", "embedding", "agent"])
-    p.add_argument("--queries-file", required=True, help="Synthesized queries JSON.")
+
+    input_group = p.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "--queries-file", help="Single JSON file with a list of query entries."
+    )
+    input_group.add_argument(
+        "--queries-dir",
+        help="Directory of per-instance JSON files (each a list of entries).",
+    )
+
     p.add_argument("--topk", type=int, default=50)
     p.add_argument("--filter-instance", type=str, default=".*")
     p.add_argument("--metrics-k", type=int, nargs="+", default=[1, 3, 5, 10, 15, 20])
@@ -95,6 +258,33 @@ def parse_args() -> argparse.Namespace:
 
 
 # ---------------------------------------------------------------------------
+# Query loading
+# ---------------------------------------------------------------------------
+
+
+def _load_queries(args: argparse.Namespace) -> List[Dict[str, Any]]:
+    """Load query entries from either a single file or a directory."""
+    if args.queries_file:
+        path = Path(args.queries_file).expanduser().resolve()
+        with open(path, encoding="utf-8") as f:
+            entries = json.load(f)
+        logger.info("Loaded %d queries from %s", len(entries), path)
+        return entries
+
+    queries_dir = Path(args.queries_dir).expanduser().resolve()
+    entries: List[Dict[str, Any]] = []
+    for json_file in sorted(queries_dir.glob("*.json")):
+        with open(json_file, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            entries.extend(data)
+        elif isinstance(data, dict):
+            entries.append(data)
+    logger.info("Loaded %d queries from %s", len(entries), queries_dir)
+    return entries
+
+
+# ---------------------------------------------------------------------------
 # Ground-truth adapter
 # ---------------------------------------------------------------------------
 
@@ -115,7 +305,9 @@ def collect_synthesized_targets(
 # ---------------------------------------------------------------------------
 
 
-def _make_bm25(repo_path: str, index_path: str, args: argparse.Namespace):
+def _make_bm25(
+    repo_path: str, index_path: str, args: argparse.Namespace, language: str
+):
     from codeminer.model.bm25_retrieve_pipeline import BM25RetrievePipeline
 
     pipe = BM25RetrievePipeline(
@@ -123,11 +315,14 @@ def _make_bm25(repo_path: str, index_path: str, args: argparse.Namespace):
         index_path=index_path,
         top_k=args.topk,
         project_name=Path(index_path).name,
+        language=language,
     )
     return pipe, pipe.query, pipe.close
 
 
-def _make_embedding(repo_path: str, index_path: str, args: argparse.Namespace):
+def _make_embedding(
+    repo_path: str, index_path: str, args: argparse.Namespace, language: str
+):
     from codeminer.model.embedding_retrieve_pipeline import EmbeddingRetrievePipeline
 
     pipe = EmbeddingRetrievePipeline(
@@ -136,12 +331,15 @@ def _make_embedding(repo_path: str, index_path: str, args: argparse.Namespace):
         embedding_model=args.embedding_model,
         embedding_provider=args.embedding_provider,
         embedding_dimension=args.embedding_dimension,
+        languages=[language],
         top_k=args.topk,
     )
     return pipe, pipe.query, pipe.close
 
 
-def _make_agent(repo_path: str, index_path: str, args: argparse.Namespace):
+def _make_agent(
+    repo_path: str, index_path: str, args: argparse.Namespace, language: str
+):
     import os
 
     from codeminer.agent.runner import AgentRunner
@@ -171,11 +369,11 @@ def _make_agent(repo_path: str, index_path: str, args: argparse.Namespace):
         idx_types.append("vector")
 
     breg = IndexBuilderRegistry()
-    breg.register("bm25", BM25IndexBuilder(languages=["python"]))
+    breg.register("bm25", BM25IndexBuilder(languages=[language]))
     breg.register(
         "vector",
         VectorIndexBuilder(
-            languages=["python"],
+            languages=[language],
             embedding_model=args.embedding_model,
             embedding_dimension=args.embedding_dimension,
         ),
@@ -184,7 +382,7 @@ def _make_agent(repo_path: str, index_path: str, args: argparse.Namespace):
         breg,
         IndexCompilerConfig(
             index_types=idx_types,
-            languages=["python"],
+            languages=[language],
         ),
     )
     compiler.compile_repo(repo_path, cache_dir=cache_dir)
@@ -229,7 +427,7 @@ def _make_agent(repo_path: str, index_path: str, args: argparse.Namespace):
         session_ctx=SessionContext(
             repo_path=repo_path,
             repo_size=manifest.file_count,
-            primary_language=manifest.languages[0] if manifest.languages else "python",
+            primary_language=manifest.languages[0] if manifest.languages else language,
         ),
     )
 
@@ -257,10 +455,7 @@ _PIPELINE_FACTORIES = {
 
 
 def run_eval(args: argparse.Namespace) -> None:
-    queries_path = Path(args.queries_file).expanduser().resolve()
-    with open(queries_path, encoding="utf-8") as f:
-        all_queries: List[Dict[str, Any]] = json.load(f)
-    logger.info("Loaded %d queries from %s", len(all_queries), queries_path)
+    all_queries = _load_queries(args)
 
     pat = re.compile(args.filter_instance)
     all_queries = [q for q in all_queries if pat.search(q.get("instance_id", ""))]
@@ -273,12 +468,6 @@ def run_eval(args: argparse.Namespace) -> None:
         groups[q["instance_id"]].append(q)
     logger.info("Grouped into %d instance(s)", len(groups))
 
-    dataset_obj = SwebenchDataset(
-        dataset="princeton-nlp/SWE-bench_Lite",
-        split="test",
-        filter_instance=".*",
-        repo_root=args.repo_cache_dir,
-    )
     factory = _PIPELINE_FACTORIES[args.pipeline]
     metrics_k = sorted(set(args.metrics_k))
     metric_max_k = max(metrics_k)
@@ -288,23 +477,25 @@ def run_eval(args: argparse.Namespace) -> None:
 
     for instance_id, queries in groups.items():
         rep = queries[0]
-        inst = {
-            "repo": rep["repo"],
-            "instance_id": rep["instance_id"],
-            "base_commit": rep["base_commit"],
-        }
+        language = _infer_language(queries)
 
         pipe, query_fn, close_fn = None, None, None
         try:
-            dataset_obj.process_instance(inst)
-            repo_path = dataset_obj.get_repo_path(inst)
+            repo_path = _checkout_repo(
+                rep["repo"], rep["base_commit"], args.repo_cache_dir
+            )
             index_path = str(
                 Path(args.index_cache_dir) / instance_id.replace("/", "__")
             )
 
             t0 = time.time()
-            pipe, query_fn, close_fn = factory(repo_path, index_path, args)
-            logger.info("[%s] Pipeline built in %.1fs", instance_id, time.time() - t0)
+            pipe, query_fn, close_fn = factory(repo_path, index_path, args, language)
+            logger.info(
+                "[%s] Pipeline built in %.1fs (lang=%s)",
+                instance_id,
+                time.time() - t0,
+                language,
+            )
 
             for entry in queries:
                 qid = entry.get("query_id", instance_id)

@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
@@ -54,8 +54,28 @@ def _parse_query_types(values: List[str]) -> List[QueryType]:
     return [QueryType(token) for token in tokens]
 
 
-def _to_compact_record(item: Dict[str, Any]) -> Dict[str, Any]:
+def _extract_ground_truth(instance: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract pre-computed ground truth from a codeminer-base-dataset instance.
+
+    Maps ``gt_*`` prefixed fields to the format expected by
+    ``ClaudeQuerySynthesizer.synthesize_query(ground_truth=...)``.
+    Returns ``None`` when no ground truth fields are present.
+    """
+    target_files = instance.get("gt_target_files") or []
+    symbols_modified = instance.get("gt_symbols_modified") or []
+    symbols_deleted = instance.get("gt_symbols_deleted") or []
+    if not target_files and not symbols_modified and not symbols_deleted:
+        return None
     return {
+        "target_files": list(target_files),
+        "symbols_modified": list(symbols_modified),
+        "symbols_deleted": list(symbols_deleted),
+        "symbols_added": [],
+    }
+
+
+def _to_compact_record(item: Dict[str, Any]) -> Dict[str, Any]:
+    record = {
         "repo": item.get("repo"),
         "instance_id": item.get("instance_id"),
         "base_commit": item.get("base_commit"),
@@ -66,6 +86,11 @@ def _to_compact_record(item: Dict[str, Any]) -> Dict[str, Any]:
         "gt_files": item.get("target_files") or [],
         "query_id": item.get("query_id"),
     }
+    if item.get("language_group"):
+        record["language_group"] = item["language_group"]
+    if "verification_passed" in item:
+        record["verification_passed"] = item["verification_passed"]
+    return record
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,7 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset",
         type=str,
         default="swebench_lite",
-        choices=["swebench_lite", "swebench_verified", "swebench_multilingual"],
+        choices=[
+            "swebench_lite",
+            "swebench_verified",
+            "swebench_multilingual",
+            "codeminer_base",
+        ],
         help="Dataset to use when loading directly (default: swebench_lite)",
     )
     parser.add_argument(
@@ -177,6 +207,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Number of queries to generate per instance.",
     )
+    parser.add_argument(
+        "--verification-mode",
+        type=str,
+        default="lenient",
+        choices=["strict", "lenient", "none"],
+        help=(
+            "Post-consensus verification mode: "
+            "strict (retry with alternate runs on failure), "
+            "lenient (warn but keep, default), "
+            "none (skip verification)."
+        ),
+    )
     return parser
 
 
@@ -215,6 +257,7 @@ def main() -> None:
             "swebench_lite": "princeton-nlp/SWE-bench_Lite",
             "swebench_verified": "princeton-nlp/SWE-bench_Verified",
             "swebench_multilingual": "SWE-bench/SWE-bench_Multilingual",
+            "codeminer_base": "fishmingyu/codeminer-base-dataset",
         }
         dataset_name = dataset_name_map[args.dataset]
         filter_pattern = (
@@ -230,7 +273,7 @@ def main() -> None:
 
         dataset_cls = (
             SwebenchMultilingualDataset
-            if args.dataset == "swebench_multilingual"
+            if args.dataset in ("swebench_multilingual", "codeminer_base")
             else SwebenchDataset
         )
         dataset_obj = dataset_cls(
@@ -306,15 +349,18 @@ def main() -> None:
             sampling_seed=args.sampling_seed,
             behavioral_consensus_runs=args.behavioral_consensus_runs,
             num_queries=args.num_queries,
+            verification_mode=args.verification_mode,
         )
         for inst_idx, instance in enumerate(expanded_inputs):
             run_id = run_ids[inst_idx] if inst_idx < len(run_ids) else 1
             for qi in range(args.num_queries):
                 try:
+                    gt = _extract_ground_truth(instance)
                     result = synthesizer.synthesize_query(
                         instance,
                         repo_root=args.repo_cache_dir,
                         cache_dir=str(cache_dir),
+                        ground_truth=gt,
                         query_index=qi,
                     )
                 except Exception as exc:
@@ -332,6 +378,8 @@ def main() -> None:
                         "base_commit": instance.get("base_commit"),
                         "error": str(exc),
                     }
+
+                result["language_group"] = instance.get("language_group")
 
                 if args.repeat_per_instance > 1:
                     result["run_id"] = run_id
