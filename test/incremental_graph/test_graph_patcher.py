@@ -33,6 +33,14 @@ from codeminer.ls_router import LSIndexer
 from codeminer.incremental_graph.lsp_client import LSPClient
 from codeminer.incremental_graph.graph_patcher import GraphPatcher
 
+def test_ls_indexer_graph_patch_import():
+    """Smoke test: LSIndexer.graph_patch lazy imports resolve correctly."""
+    assert hasattr(LSIndexer, "graph_patch")
+    from codeminer.incremental_graph.graph_patcher import LANGUAGE_EXTENSIONS
+
+    assert isinstance(LANGUAGE_EXTENSIONS, dict)
+
+
 SIMPLE_REPOS = Path(__file__).resolve().parent.parent / "scip" / "simple_repos"
 REPO_CACHE_DIRS = [
     Path.home() / ".codeminer" / "repos",

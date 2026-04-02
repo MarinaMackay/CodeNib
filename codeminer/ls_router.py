@@ -194,7 +194,7 @@ class LSIndexer:
         Returns:
             Statistics dict from the patcher.
         """
-        from .incremental.graph_patcher import GraphPatcher
+        from .incremental_graph.graph_patcher import GraphPatcher, LANGUAGE_EXTENSIONS
 
         patcher = GraphPatcher(
             project_root=str(self.project_root),
@@ -202,7 +202,6 @@ class LSIndexer:
             language=self.language,
             profiler=self.profiler,
         )
-        from .incremental.graph_patcher import LANGUAGE_EXTENSIONS
 
         changed = patcher.detect_changed_files(
             str(self.project_root),
