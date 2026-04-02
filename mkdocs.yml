@@ -24,6 +24,7 @@ theme:
     - navigation.instant
     - navigation.sections
     - navigation.expand
+    - navigation.indexes
     - navigation.top
     - search.suggest
     - search.highlight
@@ -58,7 +59,9 @@ nav:
       - Upload to HuggingFace: upload_dataset_to_huggingface.md
   - Components:
       - GT Locator: gt_locator.md
-      - Incremental Graph: incremental_graph.md
+      - Incremental Graph:
+          - incremental_graph/index.md
+          - Interactive Demo: incremental_graph/interactive.md
       - Regex Index: regex_index.md
       - SCIP Index: scip_index.md
       - Graph Cache: graph_cache_usage.md
