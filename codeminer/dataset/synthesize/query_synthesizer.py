@@ -28,6 +28,7 @@ from claude_agent_sdk import ClaudeAgentOptions, query
 from pydantic import BaseModel, Field, ValidationError
 
 from codeminer.dataset.swebench import SwebenchDataset
+from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.dataset.utils import (
     CodeLocation,
     GroundTruth,
@@ -174,6 +175,8 @@ class ClaudeQuerySynthesizer:
         max_block_chars_in_prompt: int = 1800,
         sampling_seed: Optional[int] = None,
         behavioral_consensus_runs: int = 3,
+        num_queries: int = 1,
+        verification_mode: str = "lenient",
     ) -> None:
         self.model = model
         self.max_turns = max_turns
@@ -190,6 +193,12 @@ class ClaudeQuerySynthesizer:
         self.max_block_chars_in_prompt = max_block_chars_in_prompt
         self.sampling_seed = sampling_seed
         self.behavioral_consensus_runs = max(1, behavioral_consensus_runs)
+        self.num_queries = max(1, num_queries)
+        if verification_mode not in ("strict", "lenient", "none"):
+            raise ValueError(
+                f"verification_mode must be strict, lenient, or none; got {verification_mode!r}"
+            )
+        self.verification_mode = verification_mode
 
         # Parse query type (difficulty_level is a deprecated alias).
         if difficulty_level is not None:
@@ -214,6 +223,7 @@ class ClaudeQuerySynthesizer:
         repo_root: Optional[str] = None,
         cache_dir: Optional[str] = None,
         ground_truth: Optional[Dict[str, Any]] = None,
+        query_index: int = 0,
     ) -> Dict[str, Any]:
         """
         Synthesize a query for a single instance.
@@ -232,7 +242,7 @@ class ClaudeQuerySynthesizer:
         )
         snapshot = self._snapshot_repo(repo_path)
         behavioral_context = self._prepare_behavioral_context(
-            instance, repo_path, cache_dir=cache_dir
+            instance, repo_path, cache_dir=cache_dir, query_index=query_index
         )
         if self.query_type == QueryType.BEHAVIORAL and behavioral_context is not None:
             result = self._generate_behavioral_question_with_consensus(
@@ -265,7 +275,7 @@ class ClaudeQuerySynthesizer:
             target_symbol_nodes = self._build_symbol_nodes_from_ground_truth(gt)
 
         instance_id = instance.get("instance_id", "unknown")
-        query_id = f"{instance_id}_{self.query_type.value}"
+        query_id = f"{instance_id}_{self.query_type.value}_q{query_index + 1}"
 
         return {
             "query_id": query_id,
@@ -292,6 +302,8 @@ class ClaudeQuerySynthesizer:
             "discovery_rationale": discovered.rationale,
             "core_block_id": result.get("core_block_id"),
             "selected_block_ids": result.get("selected_block_ids"),
+            "verification_passed": result.get("verification_passed"),
+            "verification_block_id": result.get("verification_block_id"),
         }
 
     async def synthesize_query_async(
@@ -301,6 +313,7 @@ class ClaudeQuerySynthesizer:
         repo_root: Optional[str] = None,
         cache_dir: Optional[str] = None,
         ground_truth: Optional[Dict[str, Any]] = None,
+        query_index: int = 0,
     ) -> Dict[str, Any]:
         """
         Synthesize a query for a single instance (async version).
@@ -319,7 +332,7 @@ class ClaudeQuerySynthesizer:
         )
         snapshot = self._snapshot_repo(repo_path)
         behavioral_context = self._prepare_behavioral_context(
-            instance, repo_path, cache_dir=cache_dir
+            instance, repo_path, cache_dir=cache_dir, query_index=query_index
         )
         if self.query_type == QueryType.BEHAVIORAL and behavioral_context is not None:
             result = await self._generate_behavioral_question_with_consensus_async(
@@ -352,7 +365,7 @@ class ClaudeQuerySynthesizer:
             target_symbol_nodes = self._build_symbol_nodes_from_ground_truth(gt)
 
         instance_id = instance.get("instance_id", "unknown")
-        query_id = f"{instance_id}_{self.query_type.value}"
+        query_id = f"{instance_id}_{self.query_type.value}_q{query_index + 1}"
 
         return {
             "query_id": query_id,
@@ -379,6 +392,8 @@ class ClaudeQuerySynthesizer:
             "discovery_rationale": discovered.rationale,
             "core_block_id": result.get("core_block_id"),
             "selected_block_ids": result.get("selected_block_ids"),
+            "verification_passed": result.get("verification_passed"),
+            "verification_block_id": result.get("verification_block_id"),
         }
 
     def synthesize_queries(
@@ -390,28 +405,33 @@ class ClaudeQuerySynthesizer:
     ) -> List[Dict[str, Any]]:
         results = []
         for instance in instances:
-            try:
-                results.append(
-                    self.synthesize_query(
-                        instance, repo_root=repo_root, cache_dir=cache_dir
+            for qi in range(self.num_queries):
+                try:
+                    results.append(
+                        self.synthesize_query(
+                            instance,
+                            repo_root=repo_root,
+                            cache_dir=cache_dir,
+                            query_index=qi,
+                        )
                     )
-                )
-            except Exception as exc:
-                instance_id = instance.get("instance_id", "unknown")
-                logger.error(
-                    "Failed to synthesize query for %s: %s",
-                    instance_id,
-                    exc,
-                    exc_info=True,
-                )
-                results.append(
-                    {
-                        "instance_id": instance_id,
-                        "repo": instance.get("repo"),
-                        "base_commit": instance.get("base_commit"),
-                        "error": str(exc),
-                    }
-                )
+                except Exception as exc:
+                    instance_id = instance.get("instance_id", "unknown")
+                    logger.error(
+                        "Failed to synthesize query for %s (q%d): %s",
+                        instance_id,
+                        qi + 1,
+                        exc,
+                        exc_info=True,
+                    )
+                    results.append(
+                        {
+                            "instance_id": instance_id,
+                            "repo": instance.get("repo"),
+                            "base_commit": instance.get("base_commit"),
+                            "error": str(exc),
+                        }
+                    )
         return results
 
     async def synthesize_queries_async(
@@ -423,28 +443,33 @@ class ClaudeQuerySynthesizer:
     ) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         for instance in instances:
-            try:
-                results.append(
-                    await self.synthesize_query_async(
-                        instance, repo_root=repo_root, cache_dir=cache_dir
+            for qi in range(self.num_queries):
+                try:
+                    results.append(
+                        await self.synthesize_query_async(
+                            instance,
+                            repo_root=repo_root,
+                            cache_dir=cache_dir,
+                            query_index=qi,
+                        )
                     )
-                )
-            except Exception as exc:
-                instance_id = instance.get("instance_id", "unknown")
-                logger.error(
-                    "Failed to synthesize query for %s: %s",
-                    instance_id,
-                    exc,
-                    exc_info=True,
-                )
-                results.append(
-                    {
-                        "instance_id": instance_id,
-                        "repo": instance.get("repo"),
-                        "base_commit": instance.get("base_commit"),
-                        "error": str(exc),
-                    }
-                )
+                except Exception as exc:
+                    instance_id = instance.get("instance_id", "unknown")
+                    logger.error(
+                        "Failed to synthesize query for %s (q%d): %s",
+                        instance_id,
+                        qi + 1,
+                        exc,
+                        exc_info=True,
+                    )
+                    results.append(
+                        {
+                            "instance_id": instance_id,
+                            "repo": instance.get("repo"),
+                            "base_commit": instance.get("base_commit"),
+                            "error": str(exc),
+                        }
+                    )
         return results
 
     def _checkout_instance(
@@ -454,7 +479,12 @@ class ClaudeQuerySynthesizer:
         repo_root: Optional[str] = None,
         cache_dir: Optional[str] = None,
     ) -> str:
-        dataset = SwebenchDataset(root=cache_dir, repo_root=repo_root, log=False)
+        dataset_cls = (
+            SwebenchMultilingualDataset
+            if instance.get("language_group")
+            else SwebenchDataset
+        )
+        dataset = dataset_cls(root=cache_dir, repo_root=repo_root, log=False)
         dataset.process_instance(instance, repo_root=repo_root)
         return dataset.get_repo_path(instance, repo_root=repo_root)
 
@@ -492,6 +522,7 @@ class ClaudeQuerySynthesizer:
         repo_path: str,
         *,
         cache_dir: Optional[str] = None,
+        query_index: int = 0,
     ) -> Optional[BehavioralContext]:
         graph = self._load_or_build_code_graph(
             instance=instance,
@@ -505,7 +536,7 @@ class ClaudeQuerySynthesizer:
         if not candidates:
             return None
 
-        core_block = self._pick_core_block(candidates, graph)
+        core_block = self._pick_core_block(candidates, graph, query_index=query_index)
         neighborhood = self._collect_neighborhood_blocks(
             graph=graph,
             core_block=core_block,
@@ -629,7 +660,7 @@ class ClaudeQuerySynthesizer:
         return sorted(blocks, key=lambda blk: blk.char_count, reverse=True)
 
     def _pick_core_block(
-        self, blocks: List[SampledCodeBlock], code_graph
+        self, blocks: List[SampledCodeBlock], code_graph, *, query_index: int = 0
     ) -> SampledCodeBlock:
         graph = code_graph.get_graph()
         scored = sorted(
@@ -637,7 +668,7 @@ class ClaudeQuerySynthesizer:
             key=lambda blk: blk.char_count + 20 * graph.degree(blk.node_id),
             reverse=True,
         )
-        return scored[0]
+        return scored[min(query_index, len(scored) - 1)]
 
     def _collect_neighborhood_blocks(
         self,
@@ -740,7 +771,10 @@ class ClaudeQuerySynthesizer:
                     run_index=idx,
                 )
             )
-        return self._aggregate_behavioral_consensus(runs, behavioral_context)
+        result = self._aggregate_behavioral_consensus(runs, behavioral_context)
+        return self._apply_verification(
+            result, runs, behavioral_context, cwd=str(snapshot.root)
+        )
 
     async def _generate_behavioral_question_with_consensus_async(
         self,
@@ -759,7 +793,10 @@ class ClaudeQuerySynthesizer:
                     run_index=idx,
                 )
             )
-        return self._aggregate_behavioral_consensus(runs, behavioral_context)
+        result = self._aggregate_behavioral_consensus(runs, behavioral_context)
+        return await self._apply_verification_async(
+            result, runs, behavioral_context, cwd=str(snapshot.root)
+        )
 
     def _aggregate_behavioral_consensus(
         self,
@@ -818,6 +855,258 @@ class ClaudeQuerySynthesizer:
             "selected_block_ids": [blk.block_id for blk in selected_blocks],
         }
 
+    # Patterns that indicate chain-of-thought leaks or meta-language rather
+    # than genuine behavioral queries.
+    _BAD_QUERY_PATTERNS = re.compile(
+        r"(?i)"
+        r"(?:^let me |^I (?:will|need to|want to|should|can) |"
+        r"examine (?:the |this )?(?:core )?block|"
+        r"look (?:at|into) (?:the |this )?(?:core )?block|"
+        r"understand (?:the |its |this )?(?:full )?content|"
+        r"(?:core|context|sampled|candidate) block|"
+        r"blk_\d+|"
+        r"^(?:now|first|next),? (?:let|I)|"
+        r"read (?:the |this )?(?:source |code )?(?:more )?closely)"
+    )
+    _MIN_QUERY_LENGTH = 60
+
+    @classmethod
+    def _validate_query_quality(cls, question: str) -> Tuple[bool, str]:
+        """Check whether *question* is a valid behavioral query.
+
+        Returns ``(is_valid, reason)`` where *reason* explains the failure
+        when *is_valid* is ``False``.
+        """
+        if not question or not question.strip():
+            return False, "empty question"
+        q = question.strip()
+        if len(q) < cls._MIN_QUERY_LENGTH:
+            return False, f"too short ({len(q)} chars, need >= {cls._MIN_QUERY_LENGTH})"
+        m = cls._BAD_QUERY_PATTERNS.search(q)
+        if m:
+            return False, f"meta-language detected: {m.group()!r}"
+        return True, ""
+
+    def _pick_best_valid_question(
+        self,
+        result: Dict[str, Any],
+        runs: List[Dict[str, Any]],
+    ) -> bool:
+        """Try to replace *result*'s question with a valid one from *runs*.
+
+        Mutates *result* in place and returns ``True`` if a valid question was
+        found, ``False`` otherwise.
+        """
+        for run in runs:
+            alt_q = run.get("question", "")
+            if not alt_q or alt_q == result["question"]:
+                continue
+            ok, _ = self._validate_query_quality(alt_q)
+            if ok:
+                result["question"] = alt_q
+                result["focus"] = run.get("focus")
+                return True
+        return False
+
+    def _apply_verification(
+        self,
+        result: Dict[str, Any],
+        runs: List[Dict[str, Any]],
+        behavioral_context: BehavioralContext,
+        *,
+        cwd: str,
+    ) -> Dict[str, Any]:
+        """Run quality check + post-consensus verification (sync)."""
+        # ---- Quality gate: reject degenerate questions first ----
+        ok, reason = self._validate_query_quality(result["question"])
+        if not ok:
+            logger.warning(
+                "Query quality check failed (%s): %r", reason, result["question"]
+            )
+            if not self._pick_best_valid_question(result, runs):
+                result["verification_passed"] = False
+                result["verification_block_id"] = None
+                return result
+
+        if self.verification_mode == "none":
+            result["verification_passed"] = None
+            result["verification_block_id"] = None
+            return result
+
+        vr = self._verify_question_alignment(
+            result["question"], behavioral_context, cwd=cwd
+        )
+        if vr["passed"]:
+            result["verification_passed"] = True
+            result["verification_block_id"] = vr["block_id"]
+            return result
+
+        # Verification failed — try alternate runs in strict mode
+        if self.verification_mode == "strict":
+            ranked_runs = sorted(
+                runs,
+                key=lambda r: r.get("question", "") != result["question"],
+            )
+            for alt_run in ranked_runs:
+                alt_q = alt_run.get("question", "")
+                if not alt_q or alt_q == result["question"]:
+                    continue
+                alt_ok, _ = self._validate_query_quality(alt_q)
+                if not alt_ok:
+                    continue
+                alt_vr = self._verify_question_alignment(
+                    alt_q, behavioral_context, cwd=cwd
+                )
+                if alt_vr["passed"]:
+                    result["question"] = alt_q
+                    result["focus"] = alt_run.get("focus")
+                    result["verification_passed"] = True
+                    result["verification_block_id"] = alt_vr["block_id"]
+                    return result
+
+        # All attempts failed or lenient mode — keep best question, mark failed
+        result["verification_passed"] = False
+        result["verification_block_id"] = vr["block_id"]
+        return result
+
+    async def _apply_verification_async(
+        self,
+        result: Dict[str, Any],
+        runs: List[Dict[str, Any]],
+        behavioral_context: BehavioralContext,
+        *,
+        cwd: str,
+    ) -> Dict[str, Any]:
+        """Run quality check + post-consensus verification (async)."""
+        # ---- Quality gate: reject degenerate questions first ----
+        ok, reason = self._validate_query_quality(result["question"])
+        if not ok:
+            logger.warning(
+                "Query quality check failed (%s): %r", reason, result["question"]
+            )
+            if not self._pick_best_valid_question(result, runs):
+                result["verification_passed"] = False
+                result["verification_block_id"] = None
+                return result
+
+        if self.verification_mode == "none":
+            result["verification_passed"] = None
+            result["verification_block_id"] = None
+            return result
+
+        vr = await self._verify_question_alignment_async(
+            result["question"], behavioral_context, cwd=cwd
+        )
+        if vr["passed"]:
+            result["verification_passed"] = True
+            result["verification_block_id"] = vr["block_id"]
+            return result
+
+        # Verification failed — try alternate runs in strict mode
+        if self.verification_mode == "strict":
+            ranked_runs = sorted(
+                runs,
+                key=lambda r: r.get("question", "") != result["question"],
+            )
+            for alt_run in ranked_runs:
+                alt_q = alt_run.get("question", "")
+                if not alt_q or alt_q == result["question"]:
+                    continue
+                alt_ok, _ = self._validate_query_quality(alt_q)
+                if not alt_ok:
+                    continue
+                alt_vr = await self._verify_question_alignment_async(
+                    alt_q, behavioral_context, cwd=cwd
+                )
+                if alt_vr["passed"]:
+                    result["question"] = alt_q
+                    result["focus"] = alt_run.get("focus")
+                    result["verification_passed"] = True
+                    result["verification_block_id"] = alt_vr["block_id"]
+                    return result
+
+        # All attempts failed or lenient mode — keep best question, mark failed
+        result["verification_passed"] = False
+        result["verification_block_id"] = vr["block_id"]
+        return result
+
+    def _build_verification_prompt(
+        self,
+        question: str,
+        behavioral_context: BehavioralContext,
+    ) -> str:
+        """Build a blind verification prompt (no core label) to check alignment."""
+        all_blocks = [behavioral_context.core_block] + list(
+            behavioral_context.neighborhood_blocks
+        )
+        block_text = "\n\n".join(
+            self._format_prompt_block(block, is_core=False) for block in all_blocks
+        )
+        return (
+            "Given the following code-search question, identify which code block "
+            "the question is primarily about.\n\n"
+            f"Question: {question!r}\n\n"
+            f"Code blocks:\n{block_text}\n\n"
+            "Which block does this question primarily describe? "
+            "Return strict JSON with keys: block_id (string), confidence (high|medium|low)."
+        )
+
+    def _verify_question_alignment(
+        self,
+        question: str,
+        behavioral_context: BehavioralContext,
+        *,
+        cwd: str,
+    ) -> Dict[str, Any]:
+        """Verify that a generated question aligns with the core block (sync)."""
+        prompt = self._build_verification_prompt(question, behavioral_context)
+        payload = self._run_agent(prompt, cwd=cwd)
+        return self._parse_verification_result(payload, behavioral_context)
+
+    async def _verify_question_alignment_async(
+        self,
+        question: str,
+        behavioral_context: BehavioralContext,
+        *,
+        cwd: str,
+    ) -> Dict[str, Any]:
+        """Verify that a generated question aligns with the core block (async)."""
+        prompt = self._build_verification_prompt(question, behavioral_context)
+        payload = await self._run_agent_async(prompt, cwd=cwd)
+        return self._parse_verification_result(payload, behavioral_context)
+
+    def _parse_verification_result(
+        self,
+        payload: str,
+        behavioral_context: BehavioralContext,
+    ) -> Dict[str, Any]:
+        """Parse verification LLM response into block_id + confidence."""
+        blob = self._extract_json_blob(payload)
+        core_id = behavioral_context.core_block.block_id
+        try:
+            data = json.loads(blob)
+            block_id = data.get("block_id", "")
+            confidence = data.get("confidence", "low")
+        except (json.JSONDecodeError, AttributeError):
+            logger.warning("Verification returned non-JSON; assuming failed.")
+            return {"block_id": "", "confidence": "low", "passed": False}
+
+        passed = block_id == core_id
+        if not passed:
+            logger.warning(
+                "Verification mismatch: question maps to %s, expected %s (confidence=%s)",
+                block_id,
+                core_id,
+                confidence,
+            )
+        else:
+            logger.info(
+                "Verification passed: question maps to core block %s (confidence=%s)",
+                core_id,
+                confidence,
+            )
+        return {"block_id": block_id, "confidence": confidence, "passed": passed}
+
     def _build_behavioral_prompt(
         self,
         *,
@@ -835,37 +1124,60 @@ class ClaudeQuerySynthesizer:
             )
             seed = int(hashlib.md5(seed_src.encode("utf-8")).hexdigest()[:8], 16)
             random.Random(seed).shuffle(neighborhood)
-        all_blocks = [core] + neighborhood
 
-        block_text = "\n\n".join(
-            self._format_prompt_block(block) for block in all_blocks
-        )
-        return (
-            "You are generating a behavioral code-search query from sampled code blocks.\n"
-            "Goal: describe what the behavior does, "
-            "without exposing implementation identifiers.\n"
-            "Rules:\n"
-            "1) The question MUST NOT mention function names, "
-            "class names, signatures, or file paths.\n"
-            "2) Pick required blocks (IDs) that are necessary to satisfy the behavior.\n"
-            "3) Always include the core block ID in required_block_ids.\n"
-            "4) Return strict JSON only with keys: question, "
-            "focus, required_block_ids, rationale.\n\n"
+        core_block_text = self._format_prompt_block(core, is_core=True)
+
+        context_block_text = ""
+        if neighborhood:
+            context_block_text = "\n\n".join(
+                self._format_prompt_block(block) for block in neighborhood
+            )
+
+        parts = [
+            "You are generating a behavioral code-search query from sampled code blocks.\n",
+            "=== PRIMARY TARGET (CORE BLOCK) ===\n"
+            "Your question MUST describe the behavior of this block.\n\n"
+            f"{core_block_text}",
+        ]
+
+        if context_block_text:
+            parts.append(
+                "=== CONTEXT BLOCKS (for understanding only) ===\n"
+                "These help you understand the codebase but are NOT the primary focus.\n\n"
+                f"{context_block_text}"
+            )
+
+        parts.append(
             f"Repository summary:\n{snapshot.format_summary()}\n\n"
-            f"Source instance id: {instance.get('instance_id', 'unknown')}\n\n"
+            f"Source instance id: {instance.get('instance_id', 'unknown')}\n"
             f"Verification pass: {run_index + 1}\n\n"
-            f"Sampled blocks:\n{block_text}"
+            "RULES:\n"
+            f"1) The question MUST describe what the CORE BLOCK"
+            f" ({core.block_id}) does behaviorally.\n"
+            "2) The question MUST NOT mention function names, class names,"
+            " signatures, or file paths.\n"
+            "3) Pick required blocks (IDs) needed to answer the question. "
+            f"Always include {core.block_id}.\n"
+            "4) In your rationale, explain how your question relates to"
+            " the CORE BLOCK's behavior.\n"
+            "5) Return strict JSON only with keys:"
+            " question, focus, required_block_ids, rationale."
         )
 
-    def _format_prompt_block(self, block: SampledCodeBlock) -> str:
+        return "\n\n".join(parts)
+
+    def _format_prompt_block(
+        self, block: SampledCodeBlock, *, is_core: bool = False
+    ) -> str:
         content = block.content
         if len(content) > self.max_block_chars_in_prompt:
             content = (
                 content[: self.max_block_chars_in_prompt]
                 + "\n# ... truncated for synthesis context ..."
             )
+        core_tag = " **CORE**" if is_core else ""
         return (
-            f"[{block.block_id}] type={block.node_type} "
+            f"[{block.block_id}]{core_tag} type={block.node_type} "
             f"lines={block.start_line}-{block.end_line} "
             f"chars={block.char_count}\n"
             f"{content}"
