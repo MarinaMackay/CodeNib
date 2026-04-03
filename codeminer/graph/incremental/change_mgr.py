@@ -1,4 +1,5 @@
 """Change manager: git-based change detection for incremental updates."""
+
 from __future__ import annotations
 
 import re
@@ -6,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from ..log_utils import get_logger
+from ...log_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -43,8 +44,11 @@ def detect_changed_files(
     try:
         output = subprocess.check_output(
             [
-                "git", "diff", "--name-status",
-                _shorten_ref(base_commit), _shorten_ref(target_commit),
+                "git",
+                "diff",
+                "--name-status",
+                _shorten_ref(base_commit),
+                _shorten_ref(target_commit),
             ],
             cwd=project_root,
             text=True,
@@ -103,9 +107,13 @@ def get_changed_line_ranges(
     try:
         output = subprocess.check_output(
             [
-                "git", "diff", "-U0",
-                _shorten_ref(base_commit), _shorten_ref(target_commit),
-                "--", file_path,
+                "git",
+                "diff",
+                "-U0",
+                _shorten_ref(base_commit),
+                _shorten_ref(target_commit),
+                "--",
+                file_path,
             ],
             cwd=project_root,
             text=True,
@@ -116,9 +124,7 @@ def get_changed_line_ranges(
         return []
 
     ranges = []
-    for match in re.finditer(
-        r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", output
-    ):
+    for match in re.finditer(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", output):
         start = int(match.group(1)) - 1  # Convert to 0-indexed
         count = int(match.group(2)) if match.group(2) else 1
         if count == 0:

@@ -8,16 +8,17 @@ Tests the full decode pipeline for each LSP message format:
 
 Uses mock LSP responses (no actual LSP server needed).
 """
-from codeminer.graph.code_graph import CodeGraph
-from codeminer.incremental_graph.patcher_rust import PatcherRust
-from codeminer.incremental_graph.patcher_ts import PatcherTS
-from codeminer.incremental_graph.patcher_go import PatcherGo
-from codeminer.incremental_graph.patcher_python import PatcherPython
 
+from codeminer.graph.code_graph import CodeGraph
+from codeminer.graph.incremental.patcher_go import PatcherGo
+from codeminer.graph.incremental.patcher_python import PatcherPython
+from codeminer.graph.incremental.patcher_rust import PatcherRust
+from codeminer.graph.incremental.patcher_ts import PatcherTS
 
 # ═══════════════════════════════════════════════════════════════
 # Helpers: mock LSP responses
 # ═══════════════════════════════════════════════════════════════
+
 
 def _sym(name, kind, start, end, children=None):
     """Build a documentSymbol response dict."""
@@ -53,6 +54,7 @@ def _semantic_tokens_data(tokens_spec):
 # 1. documentSymbol decoding
 # ═══════════════════════════════════════════════════════════════
 
+
 class TestDocumentSymbol:
     """Test documentSymbol → rebuild_file_subgraph → graph vertices."""
 
@@ -60,8 +62,8 @@ class TestDocumentSymbol:
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
         symbols = [
-            _sym("add", 12, 0, 5),      # Function
-            _sym("multiply", 12, 7, 12), # Function
+            _sym("add", 12, 0, 5),  # Function
+            _sym("multiply", 12, 7, 12),  # Function
         ]
         created = p.rebuild_file_subgraph("src/math.rs", symbols)
 
@@ -74,10 +76,16 @@ class TestDocumentSymbol:
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
         symbols = [
-            _sym("Router", 23, 5, 50, children=[
-                _sym("handle", 6, 10, 30),
-                _sym("new", 6, 35, 45),
-            ]),
+            _sym(
+                "Router",
+                23,
+                5,
+                50,
+                children=[
+                    _sym("handle", 6, 10, 30),
+                    _sym("new", 6, 35, 45),
+                ],
+            ),
             _sym("run", 12, 55, 60),
         ]
         created = p.rebuild_file_subgraph("src/lib.rs", symbols)
@@ -102,9 +110,15 @@ class TestDocumentSymbol:
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
         symbols = [
-            _sym("impl Violation for EqWithoutHash", 19, 50, 80, children=[
-                _sym("message", 6, 55, 70),
-            ]),
+            _sym(
+                "impl Violation for EqWithoutHash",
+                19,
+                50,
+                80,
+                children=[
+                    _sym("message", 6, 55, 70),
+                ],
+            ),
         ]
         created = p.rebuild_file_subgraph("src/rules.rs", symbols)
 
@@ -115,10 +129,16 @@ class TestDocumentSymbol:
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
         symbols = [
-            _sym("tests", 2, 40, 80, children=[  # Module
-                _sym("test_add", 12, 42, 50),
-                _sym("test_mul", 12, 52, 60),
-            ]),
+            _sym(
+                "tests",
+                2,
+                40,
+                80,
+                children=[  # Module
+                    _sym("test_add", 12, 42, 50),
+                    _sym("test_mul", 12, 52, 60),
+                ],
+            ),
         ]
         created = p.rebuild_file_subgraph("src/math.rs", symbols)
 
@@ -139,10 +159,16 @@ class TestDocumentSymbol:
         g = CodeGraph(project_root="/tmp")
         p = PatcherTS("/tmp", g)
         symbols = [
-            _sym("Axios", 5, 0, 100, children=[
-                _sym("<constructor>", 9, 10, 30),
-                _sym("request", 6, 35, 80),
-            ]),
+            _sym(
+                "Axios",
+                5,
+                0,
+                100,
+                children=[
+                    _sym("<constructor>", 9, 10, 30),
+                    _sym("request", 6, 35, 80),
+                ],
+            ),
         ]
         created = p.rebuild_file_subgraph("index.ts", symbols)
 
@@ -154,10 +180,16 @@ class TestDocumentSymbol:
         g = CodeGraph(project_root="/tmp")
         p = PatcherPython("/tmp", g)
         symbols = [
-            _sym("KMeans", 5, 10, 200, children=[
-                _sym("fit", 6, 20, 80),
-                _sym("predict", 6, 90, 150),
-            ]),
+            _sym(
+                "KMeans",
+                5,
+                10,
+                200,
+                children=[
+                    _sym("fit", 6, 20, 80),
+                    _sym("predict", 6, 90, 150),
+                ],
+            ),
         ]
         created = p.rebuild_file_subgraph("cluster.py", symbols)
 
@@ -173,30 +205,43 @@ class TestDocumentSymbol:
 
         vname = "src/main.rs:main():0"
         assert vname in p.symbol_selection_ranges
-        assert p.symbol_selection_ranges[vname][0] == 0   # start line
-        assert p.symbol_selection_ranges[vname][1] == 4   # start char
+        assert p.symbol_selection_ranges[vname][0] == 0  # start line
+        assert p.symbol_selection_ranges[vname][1] == 4  # start char
 
 
 # ═══════════════════════════════════════════════════════════════
 # 2. semanticTokens decoding
 # ═══════════════════════════════════════════════════════════════
 
+
 class _MockClient:
     """Mock LSP client with semantic tokens legend."""
+
     semantic_tokens_legend = {
         "tokenTypes": [
-            "namespace", "type", "class", "function", "method",
-            "property", "variable", "parameter", "keyword",
+            "namespace",
+            "type",
+            "class",
+            "function",
+            "method",
+            "property",
+            "variable",
+            "parameter",
+            "keyword",
         ],
         "tokenModifiers": [
-            "declaration", "definition", "readonly",
+            "declaration",
+            "definition",
+            "readonly",
         ],
     }
+
     def _abs_path(self, p):
         return p
 
     def decode_semantic_tokens(self, response, file_path):
-        from codeminer.incremental_graph.lsp_client import LSPClient
+        from codeminer.graph.incremental.lsp_client import LSPClient
+
         return LSPClient.decode_semantic_tokens(self, response, file_path)
 
 
@@ -210,11 +255,13 @@ class TestSemanticTokensDecode:
         client = _MockClient()
         client._abs_path = lambda p: str(src)
 
-        response = _semantic_tokens_data([
-            (0, 0, 2, 8, 0),   # L0:0 "fn" keyword
-            (0, 3, 3, 3, 2),   # L0:3 "add" function, definition
-            (0, 4, 1, 7, 1),   # L0:7 "a" parameter, declaration
-        ])
+        response = _semantic_tokens_data(
+            [
+                (0, 0, 2, 8, 0),  # L0:0 "fn" keyword
+                (0, 3, 3, 3, 2),  # L0:3 "add" function, definition
+                (0, 4, 1, 7, 1),  # L0:7 "a" parameter, declaration
+            ]
+        )
 
         tokens = client.decode_semantic_tokens(response, str(src))
 
@@ -234,10 +281,12 @@ class TestSemanticTokensDecode:
         client = _MockClient()
         client._abs_path = lambda p: str(src)
 
-        response = _semantic_tokens_data([
-            (0, 4, 3, 0, 0),   # L0:4 "std" namespace
-            (1, 3, 4, 3, 2),   # L1:3 "main" function, definition
-        ])
+        response = _semantic_tokens_data(
+            [
+                (0, 4, 3, 0, 0),  # L0:4 "std" namespace
+                (1, 3, 4, 3, 2),  # L1:3 "main" function, definition
+            ]
+        )
 
         tokens = client.decode_semantic_tokens(response, str(src))
 
@@ -271,16 +320,26 @@ class TestSemanticTokensDecode:
 # 3. definition response → vertex matching
 # ═══════════════════════════════════════════════════════════════
 
+
 class TestDefinitionDecode:
 
     def test_match_exact_line(self):
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
-        p.rebuild_file_subgraph("src/lib.rs", [
-            _sym("Router", 23, 5, 50, children=[
-                _sym("handle", 6, 10, 30),
-            ]),
-        ])
+        p.rebuild_file_subgraph(
+            "src/lib.rs",
+            [
+                _sym(
+                    "Router",
+                    23,
+                    5,
+                    50,
+                    children=[
+                        _sym("handle", 6, 10, 30),
+                    ],
+                ),
+            ],
+        )
 
         result = p.match_location_to_vertex("src/lib.rs", 10)
         assert result == "src/lib.rs:Router.handle():10"
@@ -288,11 +347,20 @@ class TestDefinitionDecode:
     def test_match_within_scope(self):
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
-        p.rebuild_file_subgraph("src/lib.rs", [
-            _sym("Router", 23, 5, 50, children=[
-                _sym("handle", 6, 10, 30),
-            ]),
-        ])
+        p.rebuild_file_subgraph(
+            "src/lib.rs",
+            [
+                _sym(
+                    "Router",
+                    23,
+                    5,
+                    50,
+                    children=[
+                        _sym("handle", 6, 10, 30),
+                    ],
+                ),
+            ],
+        )
 
         result = p.match_location_to_vertex("src/lib.rs", 20)
         assert result == "src/lib.rs:Router.handle():10"
@@ -300,11 +368,20 @@ class TestDefinitionDecode:
     def test_match_class_scope(self):
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
-        p.rebuild_file_subgraph("src/lib.rs", [
-            _sym("Router", 23, 5, 50, children=[
-                _sym("handle", 6, 10, 30),
-            ]),
-        ])
+        p.rebuild_file_subgraph(
+            "src/lib.rs",
+            [
+                _sym(
+                    "Router",
+                    23,
+                    5,
+                    50,
+                    children=[
+                        _sym("handle", 6, 10, 30),
+                    ],
+                ),
+            ],
+        )
 
         result = p.match_location_to_scope("src/lib.rs", 40)
         assert result == "src/lib.rs:Router:5"
@@ -312,9 +389,12 @@ class TestDefinitionDecode:
     def test_fallback_to_file(self):
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
-        p.rebuild_file_subgraph("src/lib.rs", [
-            _sym("run", 12, 5, 10),
-        ])
+        p.rebuild_file_subgraph(
+            "src/lib.rs",
+            [
+                _sym("run", 12, 5, 10),
+            ],
+        )
 
         result = p.match_location_to_scope("src/lib.rs", 20)
         assert result == "src/lib.rs"
@@ -338,15 +418,19 @@ class TestDefinitionDecode:
 # 4. references response → scope matching
 # ═══════════════════════════════════════════════════════════════
 
+
 class TestReferencesDecode:
 
     def test_scope_inside_function(self):
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
-        p.rebuild_file_subgraph("src/main.rs", [
-            _sym("main", 12, 0, 20),
-            _sym("helper", 12, 25, 40),
-        ])
+        p.rebuild_file_subgraph(
+            "src/main.rs",
+            [
+                _sym("main", 12, 0, 20),
+                _sym("helper", 12, 25, 40),
+            ],
+        )
 
         assert p.match_location_to_scope("src/main.rs", 5) == "src/main.rs:main():0"
         assert p.match_location_to_scope("src/main.rs", 30) == "src/main.rs:helper():25"
@@ -354,22 +438,40 @@ class TestReferencesDecode:
     def test_scope_at_file_level(self):
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
-        p.rebuild_file_subgraph("src/main.rs", [
-            _sym("main", 12, 5, 20),
-        ])
+        p.rebuild_file_subgraph(
+            "src/main.rs",
+            [
+                _sym("main", 12, 5, 20),
+            ],
+        )
 
         assert p.match_location_to_scope("src/main.rs", 2) == "src/main.rs"
 
     def test_innermost_scope_wins(self):
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
-        p.rebuild_file_subgraph("src/lib.rs", [
-            _sym("Router", 23, 0, 100, children=[
-                _sym("handle", 6, 10, 50, children=[
-                    _sym("inner", 12, 20, 30),
-                ]),
-            ]),
-        ])
+        p.rebuild_file_subgraph(
+            "src/lib.rs",
+            [
+                _sym(
+                    "Router",
+                    23,
+                    0,
+                    100,
+                    children=[
+                        _sym(
+                            "handle",
+                            6,
+                            10,
+                            50,
+                            children=[
+                                _sym("inner", 12, 20, 30),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
 
         scope = p.match_location_to_scope("src/lib.rs", 25)
         assert scope == "src/lib.rs:Router.handle().inner():20"
@@ -379,16 +481,23 @@ class TestReferencesDecode:
 # 5. flatten_symbols (documentSymbol → classify-ready dict)
 # ═══════════════════════════════════════════════════════════════
 
+
 class TestFlattenSymbols:
 
     def test_filters_local_variables(self):
         g = CodeGraph(project_root="/tmp")
         p = PatcherRust("/tmp", g)
         symbols = [
-            _sym("add", 12, 0, 10, children=[
-                _sym("result", 13, 2, 2),       # Variable inside function
-            ]),
-            _sym("MAX_SIZE", 14, 12, 12),        # Constant at top level
+            _sym(
+                "add",
+                12,
+                0,
+                10,
+                children=[
+                    _sym("result", 13, 2, 2),  # Variable inside function
+                ],
+            ),
+            _sym("MAX_SIZE", 14, 12, 12),  # Constant at top level
         ]
         result = p.flatten_symbols("src/lib.rs", symbols)
 

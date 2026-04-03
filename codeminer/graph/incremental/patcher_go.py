@@ -1,9 +1,10 @@
 """Go-specific incremental patcher."""
+
 from __future__ import annotations
 
 import re
 
-from ..types import NODE_TYPE_FUNCTION, NODE_TYPE_METHOD
+from ...types import NODE_TYPE_FUNCTION, NODE_TYPE_METHOD
 from .patcher_base import PatcherBase
 
 
@@ -18,7 +19,11 @@ class PatcherGo(PatcherBase):
 
     def _get_crossfile_token_types(self):
         return {
-            "type", "function", "method", "namespace", "interface",
+            "type",
+            "function",
+            "method",
+            "namespace",
+            "interface",
             "property",
         }
 

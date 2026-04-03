@@ -51,9 +51,7 @@ def _normalize_language(language: Optional[str]) -> str:
     key = language.lower()
     if key not in LANGUAGE_ALIASES:
         supported = ", ".join(sorted(set(LANGUAGE_ALIASES.keys())))
-        raise ValueError(
-            f"Unsupported language: '{language}'. Supported: {supported}"
-        )
+        raise ValueError(f"Unsupported language: {language!r}. Supported: {supported}")
     return LANGUAGE_ALIASES[key]
 
 
@@ -194,7 +192,7 @@ class LSIndexer:
         Returns:
             Statistics dict from the patcher.
         """
-        from .incremental.graph_patcher import GraphPatcher
+        from .graph.incremental.graph_patcher import LANGUAGE_EXTENSIONS, GraphPatcher
 
         patcher = GraphPatcher(
             project_root=str(self.project_root),
@@ -202,7 +200,6 @@ class LSIndexer:
             language=self.language,
             profiler=self.profiler,
         )
-        from .incremental.graph_patcher import LANGUAGE_EXTENSIONS
 
         changed = patcher.detect_changed_files(
             str(self.project_root),
