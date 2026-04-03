@@ -6,6 +6,7 @@ Supports the subset of LSP needed for incremental graph updates:
   - textDocument/definition
   - textDocument/semanticTokens/full
 """
+
 from __future__ import annotations
 
 import json
@@ -18,17 +19,31 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from ..log_utils import get_logger
+from ...log_utils import get_logger
 
 logger = get_logger(__name__)
 
 # LSP SymbolKind integer → human-readable name
 SYMBOL_KIND_NAMES = {
-    1: "File", 2: "Module", 3: "Namespace", 4: "Package",
-    5: "Class", 6: "Method", 7: "Property", 8: "Field",
-    9: "Constructor", 10: "Enum", 11: "Interface", 12: "Function",
-    13: "Variable", 14: "Constant", 22: "Enum", 23: "Struct",
-    24: "Event", 25: "Operator", 26: "TypeParameter",
+    1: "File",
+    2: "Module",
+    3: "Namespace",
+    4: "Package",
+    5: "Class",
+    6: "Method",
+    7: "Property",
+    8: "Field",
+    9: "Constructor",
+    10: "Enum",
+    11: "Interface",
+    12: "Function",
+    13: "Variable",
+    14: "Constant",
+    22: "Enum",
+    23: "Struct",
+    24: "Event",
+    25: "Operator",
+    26: "TypeParameter",
 }
 
 # Default LSP server commands per language
@@ -50,11 +65,11 @@ LSP_COMMANDS_ALT = {
 
 # Common locations to search for LSP binaries not on PATH
 _EXTRA_BIN_DIRS = [
-    lambda: Path(sys.executable).parent,       # conda/venv bin
-    lambda: Path.home() / "go" / "bin",        # Go binaries
-    lambda: Path.home() / ".cargo" / "bin",    # Rust binaries
+    lambda: Path(sys.executable).parent,  # conda/venv bin
+    lambda: Path.home() / "go" / "bin",  # Go binaries
+    lambda: Path.home() / ".cargo" / "bin",  # Rust binaries
     lambda: Path.home() / ".npm-global" / "bin",  # npm global
-    lambda: Path.home() / ".local" / "bin",    # pip --user
+    lambda: Path.home() / ".local" / "bin",  # pip --user
 ]
 
 
@@ -76,6 +91,7 @@ def resolve_lsp_binary(binary: str) -> Optional[str]:
             logger.debug(f"Failed to check {binary} at {candidate}: {exc}")
             continue
     return None
+
 
 # File extension → LSP languageId
 _EXT_TO_LANG_ID = {
@@ -138,7 +154,6 @@ class LSPClient:
         # Track the last error from _request so callers can decide whether
         # to retry (transient errors like -32801) or not (permanent errors).
         self._last_error: Optional[dict] = None
-
 
     # ── Lifecycle ─────────────────────────────────────────────
 
@@ -210,15 +225,12 @@ class LSPClient:
 
         # Extract semantic tokens legend from server capabilities
         if result:
-            sem_provider = (
-                result.get("capabilities", {})
-                .get("semanticTokensProvider", {})
+            sem_provider = result.get("capabilities", {}).get(
+                "semanticTokensProvider", {}
             )
             if isinstance(sem_provider, dict):
                 self.semantic_tokens_legend = sem_provider.get("legend")
-                self.supports_semantic_tokens_range = bool(
-                    sem_provider.get("range")
-                )
+                self.supports_semantic_tokens_range = bool(sem_provider.get("range"))
 
         # Wait for server readiness (unless skipped for warm-up)
         if not skip_probe:
@@ -264,14 +276,17 @@ class LSPClient:
             logger.warning(f"Cannot open {abs_path}: file not found")
             return
 
-        self._notify("textDocument/didOpen", {
-            "textDocument": {
-                "uri": uri,
-                "languageId": self._detect_language_id(abs_path),
-                "version": 1,
-                "text": text,
+        self._notify(
+            "textDocument/didOpen",
+            {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": self._detect_language_id(abs_path),
+                    "version": 1,
+                    "text": text,
+                },
             },
-        })
+        )
         self._opened_files.add(uri)
 
     def close_document(self, file_path: str):
@@ -280,9 +295,12 @@ class LSPClient:
         uri = Path(abs_path).as_uri()
         if uri not in self._opened_files:
             return
-        self._notify("textDocument/didClose", {
-            "textDocument": {"uri": uri},
-        })
+        self._notify(
+            "textDocument/didClose",
+            {
+                "textDocument": {"uri": uri},
+            },
+        )
         self._opened_files.discard(uri)
 
     def wait_for_analysis(
@@ -304,10 +322,14 @@ class LSPClient:
         while time.time() - start < max_wait:
             t0 = time.time()
             try:
-                self._request("textDocument/hover", {
-                    "textDocument": {"uri": uri},
-                    "position": {"line": 0, "character": 0},
-                }, timeout=5)
+                self._request(
+                    "textDocument/hover",
+                    {
+                        "textDocument": {"uri": uri},
+                        "position": {"line": 0, "character": 0},
+                    },
+                    timeout=5,
+                )
             except Exception as exc:
                 logger.debug(f"Analysis probe failed: {exc}")
             elapsed = time.time() - t0
@@ -330,12 +352,13 @@ class LSPClient:
         abs_path = self._abs_path(file_path)
         uri = Path(abs_path).as_uri()
 
-
-
         for attempt in range(retries + 1):
-            result = self._request("textDocument/documentSymbol", {
-                "textDocument": {"uri": uri},
-            })
+            result = self._request(
+                "textDocument/documentSymbol",
+                {
+                    "textDocument": {"uri": uri},
+                },
+            )
             if result is not None:
                 return result
             if attempt < retries:
@@ -392,15 +415,18 @@ class LSPClient:
                 )
                 return []
             if attempt < retries:
-                reason = self._last_error.get("message", "unknown") if self._last_error else "null result"
+                reason = (
+                    self._last_error.get("message", "unknown")
+                    if self._last_error
+                    else "null result"
+                )
                 logger.debug(
                     f"references failed for {file_path}:{line} ({reason}), "
                     f"retrying ({attempt + 1}/{retries})"
                 )
                 time.sleep(3)
         logger.warning(
-            f"references failed for {file_path}:{line} "
-            f"after {retries} retries"
+            f"references failed for {file_path}:{line} " f"after {retries} retries"
         )
         return []
 
@@ -453,7 +479,11 @@ class LSPClient:
                 )
                 return []
             if attempt < retries:
-                reason = self._last_error.get("message", "unknown") if self._last_error else "null result"
+                reason = (
+                    self._last_error.get("message", "unknown")
+                    if self._last_error
+                    else "null result"
+                )
                 logger.debug(
                     f"definition failed for {file_path}:{line}:{character} ({reason}), "
                     f"retrying ({attempt + 1}/{retries})"
@@ -465,7 +495,9 @@ class LSPClient:
         )
         return []
 
-    def semantic_tokens_full(self, file_path: str, timeout: float = 60) -> Optional[dict]:
+    def semantic_tokens_full(
+        self, file_path: str, timeout: float = 60
+    ) -> Optional[dict]:
         """Get semantic tokens for the entire file.
 
         Returns raw response with ``data`` field (delta-encoded integers).
@@ -475,9 +507,13 @@ class LSPClient:
         self.open_document(file_path)
         abs_path = self._abs_path(file_path)
         uri = Path(abs_path).as_uri()
-        result = self._request("textDocument/semanticTokens/full", {
-            "textDocument": {"uri": uri},
-        }, timeout=timeout)
+        result = self._request(
+            "textDocument/semanticTokens/full",
+            {
+                "textDocument": {"uri": uri},
+            },
+            timeout=timeout,
+        )
         if result is not None:
             n_tokens = len(result.get("data", [])) // 5
             logger.debug(f"semanticTokens for {file_path}: {n_tokens} tokens")
@@ -498,13 +534,17 @@ class LSPClient:
         self.open_document(file_path)
         abs_path = self._abs_path(file_path)
         uri = Path(abs_path).as_uri()
-        result = self._request("textDocument/semanticTokens/range", {
-            "textDocument": {"uri": uri},
-            "range": {
-                "start": {"line": start_line, "character": 0},
-                "end": {"line": end_line + 1, "character": 0},
+        result = self._request(
+            "textDocument/semanticTokens/range",
+            {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": start_line, "character": 0},
+                    "end": {"line": end_line + 1, "character": 0},
+                },
             },
-        }, timeout=timeout)
+            timeout=timeout,
+        )
         if result is not None:
             n_tokens = len(result.get("data", [])) // 5
             logger.debug(
@@ -557,7 +597,11 @@ class LSPClient:
                 current_char += delta_char
 
             # Decode type
-            type_name = token_types[type_idx] if type_idx < len(token_types) else f"type_{type_idx}"
+            type_name = (
+                token_types[type_idx]
+                if type_idx < len(token_types)
+                else f"type_{type_idx}"
+            )
 
             # Decode modifiers (bitmask)
             mods = []
@@ -569,16 +613,18 @@ class LSPClient:
             text = ""
             if current_line < len(lines):
                 line_text = lines[current_line]
-                text = line_text[current_char:current_char + length]
+                text = line_text[current_char : current_char + length]
 
-            tokens.append({
-                "line": current_line,
-                "character": current_char,
-                "length": length,
-                "token_type": type_name,
-                "modifiers": mods,
-                "text": text,
-            })
+            tokens.append(
+                {
+                    "line": current_line,
+                    "character": current_char,
+                    "length": length,
+                    "token_type": type_name,
+                    "modifiers": mods,
+                    "text": text,
+                }
+            )
 
         return tokens
 
@@ -624,34 +670,47 @@ class LSPClient:
             logger.debug(f"Probing server readiness with {probe_file}")
             self.open_document(str(probe_file))
             # documentSymbol verifies basic server readiness (syntax analysis)
-            self._request("textDocument/documentSymbol", {
-                "textDocument": {"uri": probe_file.as_uri()},
-            }, timeout=60)
+            self._request(
+                "textDocument/documentSymbol",
+                {
+                    "textDocument": {"uri": probe_file.as_uri()},
+                },
+                timeout=60,
+            )
             # Poll references to wait for cross-file semantic analysis.
             # Servers like rust-analyzer need extra time for project loading;
             # references returns [] until the project is fully indexed.
-    
 
-            symbols = self._request("textDocument/documentSymbol", {
-                "textDocument": {"uri": probe_file.as_uri()},
-            }, timeout=10) or []
+            symbols = (
+                self._request(
+                    "textDocument/documentSymbol",
+                    {
+                        "textDocument": {"uri": probe_file.as_uri()},
+                    },
+                    timeout=10,
+                )
+                or []
+            )
             if symbols:
                 # Use the first symbol's position to probe references
                 first_sym = symbols[0]
                 sel = first_sym.get("selectionRange", first_sym.get("range", {}))
                 probe_pos = sel.get("start", {"line": 0, "character": 0})
                 for _ in range(15):
-                    result = self._request("textDocument/references", {
-                        "textDocument": {"uri": probe_file.as_uri()},
-                        "position": probe_pos,
-                        "context": {"includeDeclaration": True},
-                    }, timeout=10)
+                    result = self._request(
+                        "textDocument/references",
+                        {
+                            "textDocument": {"uri": probe_file.as_uri()},
+                            "position": probe_pos,
+                            "context": {"includeDeclaration": True},
+                        },
+                        timeout=10,
+                    )
                     if result:
                         break
                     time.sleep(1)
         else:
             # No source files found, just wait briefly
-    
 
             time.sleep(2)
 
@@ -662,7 +721,7 @@ class LSPClient:
         try:
             self.process.stdin.write(header + content)
             self.process.stdin.flush()
-        except (BrokenPipeError, OSError) as e:
+        except OSError as e:
             logger.error(f"LSP server pipe broken: {e}")
             raise
 
@@ -677,7 +736,11 @@ class LSPClient:
             if not ready:
                 continue
 
-            chunk = self.process.stdout.read1(65536) if hasattr(self.process.stdout, 'read1') else self.process.stdout.read(1)
+            chunk = (
+                self.process.stdout.read1(65536)
+                if hasattr(self.process.stdout, "read1")
+                else self.process.stdout.read(1)
+            )
             if not chunk:
                 return None
             buf += chunk
@@ -699,7 +762,7 @@ class LSPClient:
 
                 if content_length is None:
                     # Malformed header, skip
-                    buf = buf[header_end + 4:]
+                    buf = buf[header_end + 4 :]
                     continue
 
                 body_start = header_end + 4
@@ -721,19 +784,23 @@ class LSPClient:
                     server_method = message["method"]
                     if server_method == "window/workDoneProgress/create":
                         # Acknowledge progress token creation
-                        self._send({
-                            "jsonrpc": "2.0",
-                            "id": message["id"],
-                            "result": None,
-                        })
+                        self._send(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": message["id"],
+                                "result": None,
+                            }
+                        )
                         continue
                     elif server_method == "client/registerCapability":
                         # Acknowledge dynamic capability registration
-                        self._send({
-                            "jsonrpc": "2.0",
-                            "id": message["id"],
-                            "result": None,
-                        })
+                        self._send(
+                            {
+                                "jsonrpc": "2.0",
+                                "id": message["id"],
+                                "result": None,
+                            }
+                        )
                         continue
 
                 # Skip server notifications that we don't need
@@ -768,12 +835,14 @@ class LSPClient:
         msg_id = self._next_id
         self._next_id += 1
         self._pending_ids.add(msg_id)
-        self._send({
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "method": method,
-            "params": params,
-        })
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "method": method,
+                "params": params,
+            }
+        )
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -831,12 +900,14 @@ class LSPClient:
     #   -32801 ContentModified: server VFS changed, will resolve after apply
     #   -32802 ServerCancelled: server cancelled (spec says retrigger)
     # All other codes are permanent (bad request, not supported, etc.).
-    _RETRYABLE_ERROR_CODES = frozenset({
-        -1,      # Timeout (internal)
-        -2,      # Null result (server may still be analyzing)
-        -32801,  # ContentModified
-        -32802,  # ServerCancelled
-    })
+    _RETRYABLE_ERROR_CODES = frozenset(
+        {
+            -1,  # Timeout (internal)
+            -2,  # Null result (server may still be analyzing)
+            -32801,  # ContentModified
+            -32802,  # ServerCancelled
+        }
+    )
 
     def _is_retryable_error(self) -> bool:
         """Check if the last _request error is transient (worth retrying).

@@ -1,9 +1,10 @@
 """Rust-specific incremental patcher."""
+
 from __future__ import annotations
 
 import re
 
-from ..types import NODE_TYPE_FUNCTION, NODE_TYPE_METHOD
+from ...types import NODE_TYPE_FUNCTION, NODE_TYPE_METHOD
 from .patcher_base import PatcherBase
 
 
@@ -18,8 +19,15 @@ class PatcherRust(PatcherBase):
 
     def _get_crossfile_token_types(self):
         return {
-            "type", "struct", "enum", "function", "method",
-            "namespace", "macro", "interface", "property",
+            "type",
+            "struct",
+            "enum",
+            "function",
+            "method",
+            "namespace",
+            "macro",
+            "interface",
+            "property",
         }
 
     # ── Unified name construction ──────────────────────────
@@ -46,13 +54,13 @@ class PatcherRust(PatcherBase):
                 elif ch == ">":
                     depth -= 1
                     if depth == 0:
-                        text = text[i + 1:].strip()
+                        text = text[i + 1 :].strip()
                         break
 
         for_idx = _find_toplevel_for(text)
         if for_idx >= 0:
             trait_part = text[:for_idx].strip()
-            type_part = text[for_idx + 4:].strip()
+            type_part = text[for_idx + 4 :].strip()
             trait_part = re.sub(r"<['\\a-z_,\s]+>", "", trait_part)
             if trait_part:
                 return f"{type_part}<{trait_part}>"
@@ -65,9 +73,7 @@ class PatcherRust(PatcherBase):
         node_type = self._classify_symbol_type(kind)
 
         if parent_unified_part and parent_unified_part.startswith("impl"):
-            parent_unified_part = self._normalize_impl_name(
-                parent_unified_part
-            )
+            parent_unified_part = self._normalize_impl_name(parent_unified_part)
 
         if name.startswith("impl"):
             name = self._normalize_impl_name(name)
@@ -101,7 +107,7 @@ def _find_toplevel_for(text: str) -> int:
             depth += 1
         elif ch == ">":
             depth -= 1
-        elif depth == 0 and text[i:i + 5] == " for ":
+        elif depth == 0 and text[i : i + 5] == " for ":
             return i + 1
         i += 1
     return -1

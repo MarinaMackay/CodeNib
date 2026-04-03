@@ -15,10 +15,11 @@ Requirements:
     - Network access for cloning SWE-bench repos (first run only)
 
 Usage:
-    pytest test/incremental_graph/test_graph_patcher.py -v
-    pytest test/incremental_graph/test_graph_patcher.py -k simple -v
-    pytest test/incremental_graph/test_graph_patcher.py -k swebench -v
+    pytest test/graph/incremental/test_graph_patcher.py -v
+    pytest test/graph/incremental/test_graph_patcher.py -k simple -v
+    pytest test/graph/incremental/test_graph_patcher.py -k swebench -v
 """
+
 from __future__ import annotations
 
 import os
@@ -29,14 +30,15 @@ from pathlib import Path
 import pytest
 
 from codeminer.graph.code_graph import CodeGraph
+from codeminer.graph.incremental.graph_patcher import GraphPatcher
+from codeminer.graph.incremental.lsp_client import LSPClient
 from codeminer.ls_router import LSIndexer
-from codeminer.incremental_graph.lsp_client import LSPClient
-from codeminer.incremental_graph.graph_patcher import GraphPatcher
+
 
 def test_ls_indexer_graph_patch_import():
     """Smoke test: LSIndexer.graph_patch lazy imports resolve correctly."""
     assert hasattr(LSIndexer, "graph_patch")
-    from codeminer.incremental_graph.graph_patcher import LANGUAGE_EXTENSIONS
+    from codeminer.graph.incremental.graph_patcher import LANGUAGE_EXTENSIONS
 
     assert isinstance(LANGUAGE_EXTENSIONS, dict)
 
@@ -72,7 +74,7 @@ def _skip_if_no_scip(language: str):
     """Skip if SCIP indexer for this language is not available."""
     tool = _SCIP_TOOLS.get(language)
     if tool and not shutil.which(tool):
-        pytest.skip(f"SCIP tool '{tool}' not installed")
+        pytest.skip(f"SCIP tool {tool!r} not installed")
 
 
 def _skip_if_no_lsp(language: str):
@@ -82,8 +84,10 @@ def _skip_if_no_lsp(language: str):
 
 def _git(*args, cwd):
     return subprocess.check_output(
-        ["git"] + list(args), cwd=str(cwd),
-        text=True, stderr=subprocess.DEVNULL,
+        ["git"] + list(args),
+        cwd=str(cwd),
+        text=True,
+        stderr=subprocess.DEVNULL,
     ).strip()
 
 
@@ -181,9 +185,15 @@ def _ensure_swebench_repo(repo_name: str, base_commit: str) -> Path:
         cache_dir.mkdir(parents=True, exist_ok=True)
         repo_dir = cache_dir / dirname
         subprocess.run(
-            ["git", "clone", "--quiet",
-             f"https://github.com/{repo_name}.git", str(repo_dir)],
-            check=True, capture_output=True,
+            [
+                "git",
+                "clone",
+                "--quiet",
+                f"https://github.com/{repo_name}.git",
+                str(repo_dir),
+            ],
+            check=True,
+            capture_output=True,
         )
     # Checkout base commit (use short hash to avoid issues with partial clones)
     short = base_commit[:12]
@@ -229,8 +239,12 @@ class TestSimpleRust:
         assert "src/math_utils.rs:add()" in unames
         assert "src/math_utils.rs:is_prime()" in unames
         assert "src/shapes.rs:Rectangle" in unames
-        assert _has_ref_edge(g, "src/main.rs:test_math_utils()", "src/math_utils.rs:add()")
-        assert _has_ref_edge(g, "src/main.rs:test_math_utils()", "src/math_utils.rs:is_prime()")
+        assert _has_ref_edge(
+            g, "src/main.rs:test_math_utils()", "src/math_utils.rs:add()"
+        )
+        assert _has_ref_edge(
+            g, "src/main.rs:test_math_utils()", "src/math_utils.rs:is_prime()"
+        )
         assert _has_ref_edge(g, "src/main.rs:test_shapes()", "src/shapes.rs:Rectangle")
 
         base = _git("rev-parse", "HEAD", cwd=rust_repo)
@@ -277,7 +291,10 @@ class TestSimpleRust:
 
         patcher = GraphPatcher(str(rust_repo), g, "rust")
         changed = GraphPatcher.detect_changed_files(
-            str(rust_repo), base, "HEAD", extensions={".rs"},
+            str(rust_repo),
+            base,
+            "HEAD",
+            extensions={".rs"},
         )
         patcher.patch_files(changed, earlier_commit=base, later_commit="HEAD")
 
@@ -291,18 +308,22 @@ class TestSimpleRust:
         assert edges_add > 0, "modify: add() edges survive"
         # remove: vertex gone
         assert "src/math_utils.rs:is_prime()" not in unames, "remove: is_prime gone"
-        assert _count_ref_edges_involving(g, "src/math_utils.rs:is_prime()") == 0, \
-            "remove: is_prime edges gone"
+        assert (
+            _count_ref_edges_involving(g, "src/math_utils.rs:is_prime()") == 0
+        ), "remove: is_prime edges gone"
         # shift: multiply survives with edge
         assert "src/math_utils.rs:multiply()" in unames, "shift: multiply survives"
-        assert _has_ref_edge(g, "src/main.rs:test_math_utils()", "src/math_utils.rs:multiply()"), \
-            "shift: multiply edge survives"
+        assert _has_ref_edge(
+            g, "src/main.rs:test_math_utils()", "src/math_utils.rs:multiply()"
+        ), "shift: multiply edge survives"
         # cross-file: main→subtract
-        assert _has_ref_edge(g, "src/main.rs:main()", "src/math_utils.rs:subtract()"), \
-            "cross-file: main→subtract"
+        assert _has_ref_edge(
+            g, "src/main.rs:main()", "src/math_utils.rs:subtract()"
+        ), "cross-file: main→subtract"
         # shapes edges unchanged
-        assert _has_ref_edge(g, "src/main.rs:test_shapes()", "src/shapes.rs:Rectangle"), \
-            "unchanged: shapes edge survives"
+        assert _has_ref_edge(
+            g, "src/main.rs:test_shapes()", "src/shapes.rs:Rectangle"
+        ), "unchanged: shapes edge survives"
 
 
 class TestSimpleTypeScript:
@@ -323,7 +344,10 @@ class TestSimpleTypeScript:
     def test_graph_patch(self, ts_repo, tmp_path):
         """One commit: add + remove + modify + cross-file."""
         g = _build_graph_with_scip(
-            ts_repo, "ts", tmp_path / "scip_out", infer_tsconfig=True,
+            ts_repo,
+            "ts",
+            tmp_path / "scip_out",
+            infer_tsconfig=True,
         )
 
         unames = _get_unified_names(g)
@@ -353,7 +377,11 @@ class TestSimpleTypeScript:
         content = content.replace("return a + b;", "const r = a + b;\n    return r;")
 
         # 3. Add divide
-        content += "\nexport function divide(a: number, b: number): number {\n    return a / b;\n}\n"
+        content += (
+            "\nexport function divide("
+            "a: number, b: number): number {\n"
+            "    return a / b;\n}\n"
+        )
         math_file.write_text(content)
 
         # 4. Cross-file call
@@ -370,7 +398,10 @@ class TestSimpleTypeScript:
 
         patcher = GraphPatcher(str(ts_repo), g, "ts")
         changed = GraphPatcher.detect_changed_files(
-            str(ts_repo), base, "HEAD", extensions={".ts", ".tsx", ".js", ".jsx"},
+            str(ts_repo),
+            base,
+            "HEAD",
+            extensions={".ts", ".tsx", ".js", ".jsx"},
         )
         patcher.patch_files(changed, earlier_commit=base, later_commit="HEAD")
 
@@ -378,8 +409,12 @@ class TestSimpleTypeScript:
         assert "src/math.ts:divide()" in unames, "add: divide vertex"
         assert "src/math.ts:subtract()" not in unames, "remove: subtract gone"
         assert "src/math.ts:add()" in unames, "modify: add survives"
-        assert _has_ref_edge(g, "src/main.ts:wrapper()", "src/math.ts:add()"), "modify: edge survives"
-        assert _has_ref_edge(g, "src/main.ts", "src/math.ts:divide()"), "cross-file: main→divide"
+        assert _has_ref_edge(
+            g, "src/main.ts:wrapper()", "src/math.ts:add()"
+        ), "modify: edge survives"
+        assert _has_ref_edge(
+            g, "src/main.ts", "src/math.ts:divide()"
+        ), "cross-file: main→divide"
 
 
 class TestSimpleCpp:
@@ -395,9 +430,16 @@ class TestSimpleCpp:
         dst = tmp_path / "cpp_simple"
         shutil.copytree(src, dst)
         subprocess.run(
-            ["cmake", "-S", str(dst), "-B", str(dst / "build"),
-             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
-            check=True, capture_output=True,
+            [
+                "cmake",
+                "-S",
+                str(dst),
+                "-B",
+                str(dst / "build"),
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            ],
+            check=True,
+            capture_output=True,
         )
         compdb = dst / "build" / "compile_commands.json"
         link = dst / "compile_commands.json"
@@ -413,8 +455,12 @@ class TestSimpleCpp:
         unames = _get_unified_names(g)
         assert "src/math_utils.cpp:MathUtils.add()" in unames
         assert "src/math_utils.cpp:MathUtils.isPrime()" in unames
-        assert _has_ref_edge(g, "src/main.cpp:testMathUtils()", "src/math_utils.cpp:MathUtils.add()")
-        assert _has_ref_edge(g, "src/main.cpp:testShapes()", "include/shape.h:Rectangle")
+        assert _has_ref_edge(
+            g, "src/main.cpp:testMathUtils()", "src/math_utils.cpp:MathUtils.add()"
+        )
+        assert _has_ref_edge(
+            g, "src/main.cpp:testShapes()", "include/shape.h:Rectangle"
+        )
 
         base = _git("rev-parse", "HEAD", cwd=cpp_repo)
         math_file = cpp_repo / "src" / "math_utils.cpp"
@@ -465,20 +511,28 @@ class TestSimpleCpp:
 
         patcher = GraphPatcher(str(cpp_repo), g, "cpp")
         changed = GraphPatcher.detect_changed_files(
-            str(cpp_repo), base, "HEAD",
+            str(cpp_repo),
+            base,
+            "HEAD",
             extensions={".cpp", ".cc", ".c", ".h", ".hpp"},
         )
         stats = patcher.patch_files(changed, earlier_commit=base, later_commit="HEAD")
         assert stats["vertices_created"] > 0
 
         unames = _get_unified_names(g)
-        assert "src/math_utils.cpp:MathUtils.subtract()" in unames, "add: subtract vertex"
-        assert "src/math_utils.cpp:MathUtils.isPrime()" not in unames, "remove: isPrime gone"
+        assert (
+            "src/math_utils.cpp:MathUtils.subtract()" in unames
+        ), "add: subtract vertex"
+        assert (
+            "src/math_utils.cpp:MathUtils.isPrime()" not in unames
+        ), "remove: isPrime gone"
         assert "src/math_utils.cpp:MathUtils.add()" in unames, "modify: add survives"
-        assert _has_ref_edge(g, "src/main.cpp:main()", "src/math_utils.cpp:MathUtils.subtract()"), \
-            "cross-file: main→subtract"
-        assert _has_ref_edge(g, "src/main.cpp:testShapes()", "include/shape.h:Rectangle"), \
-            "unchanged: shapes survives"
+        assert _has_ref_edge(
+            g, "src/main.cpp:main()", "src/math_utils.cpp:MathUtils.subtract()"
+        ), "cross-file: main→subtract"
+        assert _has_ref_edge(
+            g, "src/main.cpp:testShapes()", "include/shape.h:Rectangle"
+        ), "unchanged: shapes survives"
 
 
 class TestSimpleGo:
@@ -530,27 +584,29 @@ class TestSimpleGo:
         # 2. Modify Add body
         content = content.replace(
             "result := a + b",
-            "result := a + b\n\tfmt.Println(\"Adding:\", a, b)",
+            'result := a + b\n\tfmt.Println("Adding:", a, b)',
         )
         if '"fmt"' not in content:
             content = content.replace("package main", 'package main\n\nimport "fmt"')
 
         # 3. Add Multiply
-        content += """
-// Multiply multiplies two integers.
-func (c *Calculator) Multiply(a, b int) int {
-	result := a * b
-	c.History = append(c.History, result)
-	return result
-}
-"""
+        content += (
+            "\n// Multiply multiplies two integers.\n"
+            "func (c *Calculator) Multiply(a, b int) int {\n"
+            "    result := a * b\n"
+            "    c.History = append(c.History, result)\n"
+            "    return result\n"
+            "}\n"
+        )
         calc_file.write_text(content)
 
         # 4. Cross-file call
         main_content = main_file.read_text()
         main_content = main_content.replace(
             'fmt.Println("Result:", result)',
-            'fmt.Println("Result:", result)\n\tprod := calc.Multiply(3, 7)\n\tfmt.Println("Product:", prod)',
+            'fmt.Println("Result:", result)\n'
+            "\tprod := calc.Multiply(3, 7)\n"
+            '\tfmt.Println("Product:", prod)',
         )
         main_file.write_text(main_content)
 
@@ -559,13 +615,18 @@ func (c *Calculator) Multiply(a, b int) int {
 
         patcher = GraphPatcher(str(go_repo), g, "go")
         changed = GraphPatcher.detect_changed_files(
-            str(go_repo), base, "HEAD", extensions={".go"},
+            str(go_repo),
+            base,
+            "HEAD",
+            extensions={".go"},
         )
         patcher.patch_files(changed, earlier_commit=base, later_commit="HEAD")
 
         unames = _get_unified_names(g)
         assert "calculator.go:Calculator.Multiply()" in unames, "add: Multiply vertex"
-        assert "calculator.go:Calculator.LastResult()" not in unames, "remove: LastResult gone"
+        assert (
+            "calculator.go:Calculator.LastResult()" not in unames
+        ), "remove: LastResult gone"
         assert "calculator.go:Calculator.Add()" in unames, "modify: Add survives"
         assert "greet.go:Greet()" in unames, "unchanged: Greet survives"
 
@@ -605,8 +666,14 @@ class TestSWEBenchCpp:
             pytest.skip(f"Cannot clone repo: {e}")
             return None  # unreachable; satisfies linter
         subprocess.run(
-            ["cmake", "-S", str(repo), "-B", str(repo / "build"),
-             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
+            [
+                "cmake",
+                "-S",
+                str(repo),
+                "-B",
+                str(repo / "build"),
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            ],
             capture_output=True,
         )
         return repo
@@ -615,17 +682,25 @@ class TestSWEBenchCpp:
         earlier = _get_earlier_commit(repo_dir, self.LATER, self.N_BACK)
 
         _git("checkout", "-f", earlier, cwd=repo_dir)
-        g = _build_graph_with_scip(repo_dir, "cpp", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"))
+        g = _build_graph_with_scip(
+            repo_dir,
+            "cpp",
+            Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"),
+        )
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(
-            str(repo_dir), earlier, self.LATER,
+            str(repo_dir),
+            earlier,
+            self.LATER,
             extensions={".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"},
         )
         assert len(changed["modified"]) > 0
 
         patcher = GraphPatcher(str(repo_dir), g, "cpp")
-        stats = patcher.patch_files(changed, earlier_commit=earlier, later_commit=self.LATER[:12])
+        stats = patcher.patch_files(
+            changed, earlier_commit=earlier, later_commit=self.LATER[:12]
+        )
         assert stats["files_modified"] >= 1
         assert stats["vertices_created"] > 0
 
@@ -643,30 +718,34 @@ class TestSWEBenchCpp:
         assert "include/fmt/format.h:fmt.detail.vformat_to()" in unames_after
 
         # .idx incremental should have produced refs
-        assert stats.get("refs_outgoing", 0) > 0, \
-            f"Expected C++ .idx refs, got {stats}"
+        assert stats.get("refs_outgoing", 0) > 0, f"Expected C++ .idx refs, got {stats}"
 
         # ── Strict cross-file edge assertions (format.h → core.h) ──
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "include/fmt/format.h:fmt.detail.for_each_codepoint()",
-            "include/fmt/core.h:fmt.string_view"), \
-            "for_each_codepoint() → string_view"
-        assert _has_ref_edge(g,
+            "include/fmt/core.h:fmt.string_view",
+        ), "for_each_codepoint() → string_view"
+        assert _has_ref_edge(
+            g,
             "include/fmt/format.h:fmt.detail.compute_width()",
-            "include/fmt/core.h:fmt.string_view"), \
-            "compute_width() → string_view"
-        assert _has_ref_edge(g,
+            "include/fmt/core.h:fmt.string_view",
+        ), "compute_width() → string_view"
+        assert _has_ref_edge(
+            g,
             "include/fmt/format.h:fmt.detail.write_bytes()",
-            "include/fmt/core.h:fmt.string_view"), \
-            "write_bytes() → string_view"
-        assert _has_ref_edge(g,
+            "include/fmt/core.h:fmt.string_view",
+        ), "write_bytes() → string_view"
+        assert _has_ref_edge(
+            g,
             "include/fmt/format.h:fmt.vformat()",
-            "include/fmt/core.h:fmt.string_view"), \
-            "vformat() → string_view"
-        assert _has_ref_edge(g,
+            "include/fmt/core.h:fmt.string_view",
+        ), "vformat() → string_view"
+        assert _has_ref_edge(
+            g,
             "include/fmt/format.h:fmt.system_error()",
-            "include/fmt/core.h:fmt.string_view"), \
-            "system_error() → string_view"
+            "include/fmt/core.h:fmt.string_view",
+        ), "system_error() → string_view"
 
 
 class TestSWEBenchGo:
@@ -697,16 +776,25 @@ class TestSWEBenchGo:
         patcher = GraphPatcher(str(repo_dir), None, "go")
         patcher.start_lsp()
 
-        g = _build_graph_with_scip(repo_dir, "go", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"))
+        g = _build_graph_with_scip(
+            repo_dir,
+            "go",
+            Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"),
+        )
         patcher.code_graph = g
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(
-            str(repo_dir), earlier, self.LATER, extensions={".go"},
+            str(repo_dir),
+            earlier,
+            self.LATER,
+            extensions={".go"},
         )
         assert len(changed["modified"]) >= 1
 
-        stats = patcher.patch_files(changed, earlier_commit=earlier, later_commit=self.LATER[:12])
+        stats = patcher.patch_files(
+            changed, earlier_commit=earlier, later_commit=self.LATER[:12]
+        )
         assert stats["files_modified"] >= 1
         assert stats["vertices_created"] > 0
 
@@ -718,65 +806,84 @@ class TestSWEBenchGo:
 
         # ── Strict vertex assertions (5+) ──
         assert "modules/caddyhttp/reverseproxy/reverseproxy.go:Handler" in unames_after
-        assert "modules/caddyhttp/reverseproxy/reverseproxy.go:Handler.ServeHTTP()" in unames_after
-        assert "modules/caddyhttp/reverseproxy/reverseproxy.go:Handler.Provision()" in unames_after
-        assert "modules/caddyhttp/reverseproxy/reverseproxy.go:Handler.VerboseLogs" in unames_after, \
-            "VerboseLogs field (added in this range) should exist"
-        assert "modules/caddyhttp/reverseproxy/selectionpolicies.go:LeastConnSelection" in unames_after
+        assert (
+            "modules/caddyhttp/reverseproxy/reverseproxy.go:Handler.ServeHTTP()"
+            in unames_after
+        )
+        assert (
+            "modules/caddyhttp/reverseproxy/reverseproxy.go:Handler.Provision()"
+            in unames_after
+        )
+        assert (
+            "modules/caddyhttp/reverseproxy/reverseproxy.go:Handler.VerboseLogs"
+            in unames_after
+        ), "VerboseLogs field (added in this range) should exist"
+        assert (
+            "modules/caddyhttp/reverseproxy/selectionpolicies.go:LeastConnSelection"
+            in unames_after
+        )
 
         # Check that LSP discovered at least some reference edges
         total_refs = stats.get("refs_incoming", 0) + stats.get("refs_outgoing", 0)
-        assert total_refs > 0, \
-            f"Expected reference edges for Go, got {total_refs}"
+        assert total_refs > 0, f"Expected reference edges for Go, got {total_refs}"
 
         # ── Strict cross-file edge assertions (10+) ──
         # Go SCIP edge source is file vertex (name), target has unified_name
         # connpolicy.go → values.go
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "modules/caddytls/connpolicy.go",
-            "modules/caddytls/values.go:CipherSuiteID()"), \
-            "connpolicy.go → CipherSuiteID()"
-        assert _has_ref_edge(g,
+            "modules/caddytls/values.go:CipherSuiteID()",
+        ), "connpolicy.go → CipherSuiteID()"
+        assert _has_ref_edge(
+            g,
             "modules/caddytls/connpolicy.go",
-            "modules/caddytls/values.go:SupportedCurves"), \
-            "connpolicy.go → SupportedCurves"
-        assert _has_ref_edge(g,
+            "modules/caddytls/values.go:SupportedCurves",
+        ), "connpolicy.go → SupportedCurves"
+        assert _has_ref_edge(
+            g,
             "modules/caddytls/connpolicy.go",
-            "modules/caddytls/values.go:SupportedProtocols"), \
-            "connpolicy.go → SupportedProtocols"
-        assert _has_ref_edge(g,
+            "modules/caddytls/values.go:SupportedProtocols",
+        ), "connpolicy.go → SupportedProtocols"
+        assert _has_ref_edge(
+            g,
             "modules/caddytls/connpolicy.go",
-            "modules/caddytls/values.go:getOptimalDefaultCipherSuites()"), \
-            "connpolicy.go → getOptimalDefaultCipherSuites()"
+            "modules/caddytls/values.go:getOptimalDefaultCipherSuites()",
+        ), "connpolicy.go → getOptimalDefaultCipherSuites()"
         # builtins.go → values.go (unmodified file referencing values.go)
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "caddyconfig/httpcaddyfile/builtins.go",
-            "modules/caddytls/values.go:SupportedProtocols"), \
-            "builtins.go → SupportedProtocols"
-        assert _has_ref_edge(g,
+            "modules/caddytls/values.go:SupportedProtocols",
+        ), "builtins.go → SupportedProtocols"
+        assert _has_ref_edge(
+            g,
             "caddyconfig/httpcaddyfile/builtins.go",
-            "modules/caddytls/values.go:SupportedCurves"), \
-            "builtins.go → SupportedCurves"
-        assert _has_ref_edge(g,
+            "modules/caddytls/values.go:SupportedCurves",
+        ), "builtins.go → SupportedCurves"
+        assert _has_ref_edge(
+            g,
             "caddyconfig/httpcaddyfile/builtins.go",
-            "modules/caddytls/values.go:CipherSuiteNameSupported()"), \
-            "builtins.go → CipherSuiteNameSupported()"
+            "modules/caddytls/values.go:CipherSuiteNameSupported()",
+        ), "builtins.go → CipherSuiteNameSupported()"
         # automation.go → values.go
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "modules/caddytls/automation.go",
-            "modules/caddytls/values.go:supportedCertKeyTypes"), \
-            "automation.go → supportedCertKeyTypes"
+            "modules/caddytls/values.go:supportedCertKeyTypes",
+        ), "automation.go → supportedCertKeyTypes"
         # replacer.go → values.go
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "modules/caddyhttp/replacer.go",
-            "modules/caddytls/values.go:ProtocolName()"), \
-            "replacer.go → ProtocolName()"
+            "modules/caddytls/values.go:ProtocolName()",
+        ), "replacer.go → ProtocolName()"
         # fastcgi → values.go
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "modules/caddyhttp/reverseproxy/fastcgi/fastcgi.go",
-            "modules/caddytls/values.go:SupportedCipherSuites()"), \
-            "fastcgi.go → SupportedCipherSuites()"
-
+            "modules/caddytls/values.go:SupportedCipherSuites()",
+        ), "fastcgi.go → SupportedCipherSuites()"
 
 
 class TestSWEBenchRust:
@@ -805,16 +912,25 @@ class TestSWEBenchRust:
         patcher = GraphPatcher(str(repo_dir), None, "rust")
         patcher.start_lsp()
 
-        g = _build_graph_with_scip(repo_dir, "rust", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"))
+        g = _build_graph_with_scip(
+            repo_dir,
+            "rust",
+            Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"),
+        )
         patcher.code_graph = g
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(
-            str(repo_dir), earlier, self.LATER, extensions={".rs"},
+            str(repo_dir),
+            earlier,
+            self.LATER,
+            extensions={".rs"},
         )
         assert len(changed["modified"]) >= 1
 
-        stats = patcher.patch_files(changed, earlier_commit=earlier, later_commit=self.LATER[:12])
+        stats = patcher.patch_files(
+            changed, earlier_commit=earlier, later_commit=self.LATER[:12]
+        )
         assert stats["files_modified"] >= 1
         assert stats["vertices_created"] > 0
 
@@ -826,8 +942,7 @@ class TestSWEBenchRust:
 
         # Edges should be preserved or rediscovered
         total_refs = stats.get("refs_incoming", 0) + stats.get("refs_outgoing", 0)
-        assert total_refs > 0, \
-            f"Expected reference edges for Rust, got {total_refs}"
+        assert total_refs > 0, f"Expected reference edges for Rust, got {total_refs}"
         # Overall edges
 
         # ── Strict vertex assertions ──
@@ -840,48 +955,57 @@ class TestSWEBenchRust:
 
         # ── Strict cross-file edge assertions (10+) ──
         # object_without_hash_method() uses Checker, Diagnostic, StmtClassDef
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}object_without_hash_method()",
-            "crates/ruff_linter/src/checkers/ast/mod.rs:Checker"), \
-            "object_without_hash_method() → Checker"
-        assert _has_ref_edge(g,
+            "crates/ruff_linter/src/checkers/ast/mod.rs:Checker",
+        ), "object_without_hash_method() → Checker"
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}object_without_hash_method()",
-            "crates/ruff_diagnostics/src/diagnostic.rs:Diagnostic"), \
-            "object_without_hash_method() → Diagnostic"
-        assert _has_ref_edge(g,
+            "crates/ruff_diagnostics/src/diagnostic.rs:Diagnostic",
+        ), "object_without_hash_method() → Diagnostic"
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}object_without_hash_method()",
-            "crates/ruff_diagnostics/src/diagnostic.rs:Diagnostic.new()"), \
-            "object_without_hash_method() → Diagnostic.new()"
-        assert _has_ref_edge(g,
+            "crates/ruff_diagnostics/src/diagnostic.rs:Diagnostic.new()",
+        ), "object_without_hash_method() → Diagnostic.new()"
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}object_without_hash_method()",
-            "crates/ruff_python_ast/src/nodes.rs:StmtClassDef"), \
-            "object_without_hash_method() → StmtClassDef"
-        assert _has_ref_edge(g,
+            "crates/ruff_python_ast/src/nodes.rs:StmtClassDef",
+        ), "object_without_hash_method() → StmtClassDef"
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}object_without_hash_method()",
-            "crates/ruff_python_ast/src/nodes.rs:StmtClassDef.name"), \
-            "object_without_hash_method() → StmtClassDef.name"
-        assert _has_ref_edge(g,
+            "crates/ruff_python_ast/src/nodes.rs:StmtClassDef.name",
+        ), "object_without_hash_method() → StmtClassDef.name"
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}object_without_hash_method()",
-            "crates/ruff_linter/src/checkers/ast/mod.rs:Checker.diagnostics"), \
-            "object_without_hash_method() → Checker.diagnostics"
+            "crates/ruff_linter/src/checkers/ast/mod.rs:Checker.diagnostics",
+        ), "object_without_hash_method() → Checker.diagnostics"
         # EqHash.from_class() uses any_member_declaration, ClassMemberKind
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}EqHash.from_class()",
-            "crates/ruff_python_semantic/src/analyze/class.rs:any_member_declaration()"), \
-            "EqHash.from_class() → any_member_declaration()"
-        assert _has_ref_edge(g,
+            "crates/ruff_python_semantic/src/analyze/class.rs:any_member_declaration()",
+        ), "EqHash.from_class() → any_member_declaration()"
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}EqHash.from_class()",
-            "crates/ruff_python_ast/src/nodes.rs:StmtClassDef"), \
-            "EqHash.from_class() → StmtClassDef"
-        assert _has_ref_edge(g,
+            "crates/ruff_python_ast/src/nodes.rs:StmtClassDef",
+        ), "EqHash.from_class() → StmtClassDef"
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}EqHash.from_class()",
-            "crates/ruff_python_semantic/src/analyze/class.rs:ClassMemberDeclaration.kind()"), \
-            "EqHash.from_class() → ClassMemberDeclaration.kind()"
-        assert _has_ref_edge(g,
+            "crates/ruff_python_semantic/src/analyze/class.rs:ClassMemberDeclaration.kind()",
+        ), "EqHash.from_class() → ClassMemberDeclaration.kind()"
+        assert _has_ref_edge(
+            g,
             f"{eq_prefix}object_without_hash_method()",
-            "crates/ruff_python_ast/src/nodes.rs:Identifier<Ranged>.range()"), \
-            "object_without_hash_method() → Identifier.range()"
-
+            "crates/ruff_python_ast/src/nodes.rs:Identifier<Ranged>.range()",
+        ), "object_without_hash_method() → Identifier.range()"
 
 
 class TestSWEBenchPython:
@@ -910,16 +1034,25 @@ class TestSWEBenchPython:
         patcher = GraphPatcher(str(repo_dir), None, "python")
         patcher.start_lsp()
 
-        g = _build_graph_with_scip(repo_dir, "python", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"))
+        g = _build_graph_with_scip(
+            repo_dir,
+            "python",
+            Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"),
+        )
         patcher.code_graph = g
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(
-            str(repo_dir), earlier, self.LATER, extensions={".py"},
+            str(repo_dir),
+            earlier,
+            self.LATER,
+            extensions={".py"},
         )
         assert len(changed["modified"]) >= 1
 
-        stats = patcher.patch_files(changed, earlier_commit=earlier, later_commit=self.LATER[:12])
+        stats = patcher.patch_files(
+            changed, earlier_commit=earlier, later_commit=self.LATER[:12]
+        )
         assert stats["files_modified"] >= 1
         assert stats["vertices_created"] > 0
 
@@ -931,8 +1064,7 @@ class TestSWEBenchPython:
 
         # Edges should be preserved or rediscovered
         total_refs = stats.get("refs_incoming", 0) + stats.get("refs_outgoing", 0)
-        assert total_refs > 0, \
-            f"Expected reference edges for Python, got {total_refs}"
+        assert total_refs > 0, f"Expected reference edges for Python, got {total_refs}"
         # Overall edges
 
         # ── Strict vertex assertions (5+) ──
@@ -946,63 +1078,72 @@ class TestSWEBenchPython:
         assert "sklearn/naive_bayes.py:MultinomialNB" in unames_after
 
         # _check_fit_data was renamed to _check_test_data
-        assert "sklearn/cluster/k_means_.py:KMeans._check_fit_data()" not in unames_after, \
-            "_check_fit_data should be removed after patch"
-        assert "sklearn/cluster/k_means_.py:KMeans._check_test_data()" in unames_after, \
-            "_check_test_data (renamed) should exist after patch"
+        assert (
+            "sklearn/cluster/k_means_.py:KMeans._check_fit_data()" not in unames_after
+        ), "_check_fit_data should be removed after patch"
+        assert (
+            "sklearn/cluster/k_means_.py:KMeans._check_test_data()" in unames_after
+        ), "_check_test_data (renamed) should exist after patch"
 
         # ── Strict cross-file edge assertions (10+) ──
         # k_means_.py → utils
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "sklearn/cluster/k_means_.py:k_means()",
-            "sklearn/utils/validation.py:check_array()"), \
-            "k_means() → check_array()"
-        assert _has_ref_edge(g,
+            "sklearn/utils/validation.py:check_array()",
+        ), "k_means() → check_array()"
+        assert _has_ref_edge(
+            g,
             "sklearn/cluster/k_means_.py:k_means()",
-            "sklearn/utils/validation.py:check_random_state()"), \
-            "k_means() → check_random_state()"
-        assert _has_ref_edge(g,
+            "sklearn/utils/validation.py:check_random_state()",
+        ), "k_means() → check_random_state()"
+        assert _has_ref_edge(
+            g,
             "sklearn/cluster/k_means_.py:k_means()",
-            "sklearn/utils/extmath.py:row_norms()"), \
-            "k_means() → row_norms()"
-        assert _has_ref_edge(g,
+            "sklearn/utils/extmath.py:row_norms()",
+        ), "k_means() → row_norms()"
+        assert _has_ref_edge(
+            g,
             "sklearn/cluster/k_means_.py:KMeans.fit()",
-            "sklearn/utils/validation.py:check_random_state()"), \
-            "KMeans.fit() → check_random_state()"
-        assert _has_ref_edge(g,
+            "sklearn/utils/validation.py:check_random_state()",
+        ), "KMeans.fit() → check_random_state()"
+        assert _has_ref_edge(
+            g,
             "sklearn/cluster/k_means_.py:KMeans.transform()",
-            "sklearn/utils/validation.py:check_is_fitted()"), \
-            "KMeans.transform() → check_is_fitted()"
+            "sklearn/utils/validation.py:check_is_fitted()",
+        ), "KMeans.transform() → check_is_fitted()"
         # k_means_.py → metrics
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "sklearn/cluster/k_means_.py:KMeans._transform()",
-            "sklearn/metrics/pairwise.py:euclidean_distances()"), \
-            "KMeans._transform() → euclidean_distances()"
+            "sklearn/metrics/pairwise.py:euclidean_distances()",
+        ), "KMeans._transform() → euclidean_distances()"
         # k_means_.py inheritance → base
-        assert _has_ref_edge(g,
-            "sklearn/cluster/k_means_.py:KMeans",
-            "sklearn/base.py:BaseEstimator"), \
-            "KMeans → BaseEstimator (inheritance)"
+        assert _has_ref_edge(
+            g, "sklearn/cluster/k_means_.py:KMeans", "sklearn/base.py:BaseEstimator"
+        ), "KMeans → BaseEstimator (inheritance)"
         # naive_bayes.py → utils
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "sklearn/naive_bayes.py:GaussianNB.fit()",
-            "sklearn/utils/validation.py:check_X_y()"), \
-            "GaussianNB.fit() → check_X_y()"
-        assert _has_ref_edge(g,
+            "sklearn/utils/validation.py:check_X_y()",
+        ), "GaussianNB.fit() → check_X_y()"
+        assert _has_ref_edge(
+            g,
             "sklearn/naive_bayes.py:BaseDiscreteNB.fit()",
-            "sklearn/utils/validation.py:check_X_y()"), \
-            "BaseDiscreteNB.fit() → check_X_y()"
-        assert _has_ref_edge(g,
-            "sklearn/naive_bayes.py:BaseNB",
-            "sklearn/base.py:BaseEstimator"), \
-            "BaseNB → BaseEstimator (inheritance)"
+            "sklearn/utils/validation.py:check_X_y()",
+        ), "BaseDiscreteNB.fit() → check_X_y()"
+        assert _has_ref_edge(
+            g, "sklearn/naive_bayes.py:BaseNB", "sklearn/base.py:BaseEstimator"
+        ), "BaseNB → BaseEstimator (inheritance)"
 
         # _check_fit_data was deleted — its edges should be gone
         check_fit_edges = _count_ref_edges_involving(
-            g, "sklearn/cluster/k_means_.py:KMeans._check_fit_data()")
-        assert check_fit_edges == 0, \
-            f"_check_fit_data edges should be gone, got {check_fit_edges}"
-
+            g, "sklearn/cluster/k_means_.py:KMeans._check_fit_data()"
+        )
+        assert (
+            check_fit_edges == 0
+        ), f"_check_fit_data edges should be gone, got {check_fit_edges}"
 
 
 class TestSWEBenchTypeScript:
@@ -1032,18 +1173,25 @@ class TestSWEBenchTypeScript:
         patcher.start_lsp()
 
         g = _build_graph_with_scip(
-            repo_dir, "ts", Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"), infer_tsconfig=True,
+            repo_dir,
+            "ts",
+            Path.home() / ".codeminer" / "scip_cache" / self.REPO.replace("/", "_"),
+            infer_tsconfig=True,
         )
         patcher.code_graph = g
 
         _git("checkout", "-f", self.LATER[:12], cwd=repo_dir)
         changed = GraphPatcher.detect_changed_files(
-            str(repo_dir), earlier, self.LATER,
+            str(repo_dir),
+            earlier,
+            self.LATER,
             extensions={".ts", ".tsx", ".js", ".jsx"},
         )
         assert len(changed["modified"]) >= 1
 
-        stats = patcher.patch_files(changed, earlier_commit=earlier, later_commit=self.LATER[:12])
+        stats = patcher.patch_files(
+            changed, earlier_commit=earlier, later_commit=self.LATER[:12]
+        )
         assert stats["files_modified"] >= 1
         assert stats["vertices_created"] > 0
 
@@ -1057,8 +1205,7 @@ class TestSWEBenchTypeScript:
 
         # Edges should be preserved or rediscovered
         total_refs = stats.get("refs_incoming", 0) + stats.get("refs_outgoing", 0)
-        assert total_refs > 0, \
-            f"Expected reference edges for TS, got {total_refs}"
+        assert total_refs > 0, f"Expected reference edges for TS, got {total_refs}"
         # Overall edges
 
         # ── Strict vertex assertions (5+) ──
@@ -1072,46 +1219,41 @@ class TestSWEBenchTypeScript:
         # ── Strict cross-file edge assertions (10+) ──
         # portals.js imports { createElement, render } from 'preact'
         # SCIP resolves 'preact' to the .d.ts declarations with preact/ prefix
-        assert _has_ref_edge(g,
-            "compat/src/portals.js:Portal()",
-            "src/index.d.ts:preact/render()"), \
-            "Portal() → preact/render()"
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g, "compat/src/portals.js:Portal()", "src/index.d.ts:preact/render()"
+        ), "Portal() → preact/render()"
+        assert _has_ref_edge(
+            g,
             "compat/src/portals.js:createPortal()",
-            "src/index.d.ts:preact/createElement()"), \
-            "createPortal() → preact/createElement()"
+            "src/index.d.ts:preact/createElement()",
+        ), "createPortal() → preact/createElement()"
 
         # children.js: import { diff, unmount, applyRef } from './index'
-        assert _has_ref_edge(g,
-            "src/diff/children.js:diffChildren()",
-            "src/diff/index.js:diff()"), \
-            "diffChildren → diff()"
-        assert _has_ref_edge(g,
-            "src/diff/children.js:diffChildren()",
-            "src/diff/index.js:unmount()"), \
-            "diffChildren → unmount()"
+        assert _has_ref_edge(
+            g, "src/diff/children.js:diffChildren()", "src/diff/index.js:diff()"
+        ), "diffChildren → diff()"
+        assert _has_ref_edge(
+            g, "src/diff/children.js:diffChildren()", "src/diff/index.js:unmount()"
+        ), "diffChildren → unmount()"
 
         # children.js: import { getDomSibling } from '../component'
-        assert _has_ref_edge(g,
-            "src/diff/children.js:diffChildren()",
-            "src/component.js:getDomSibling()"), \
-            "diffChildren → getDomSibling()"
+        assert _has_ref_edge(
+            g, "src/diff/children.js:diffChildren()", "src/component.js:getDomSibling()"
+        ), "diffChildren → getDomSibling()"
 
         # children.js: import { createVNode, Fragment } from '../create-element'
-        assert _has_ref_edge(g,
+        assert _has_ref_edge(
+            g,
             "src/diff/children.js:diffChildren()",
-            "src/create-element.js:createVNode()"), \
-            "diffChildren → createVNode()"
+            "src/create-element.js:createVNode()",
+        ), "diffChildren → createVNode()"
 
         # children.js: import { removeNode } from '../util'
-        assert _has_ref_edge(g,
-            "src/diff/children.js:diffChildren()",
-            "src/util.js:removeNode()"), \
-            "diffChildren → removeNode()"
+        assert _has_ref_edge(
+            g, "src/diff/children.js:diffChildren()", "src/util.js:removeNode()"
+        ), "diffChildren → removeNode()"
 
         # children.js: import { EMPTY_OBJ, EMPTY_ARR } from '../constants'
-        assert _has_ref_edge(g,
-            "src/diff/children.js:diffChildren()",
-            "src/constants.js:EMPTY_OBJ"), \
-            "diffChildren → EMPTY_OBJ"
-
+        assert _has_ref_edge(
+            g, "src/diff/children.js:diffChildren()", "src/constants.js:EMPTY_OBJ"
+        ), "diffChildren → EMPTY_OBJ"

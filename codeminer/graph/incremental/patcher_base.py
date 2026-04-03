@@ -4,15 +4,16 @@ Handles the high-level patch flow (classify, remap, patch) while
 delegating subgraph operations to SubgraphMgr and language-specific
 behavior to patcher_lang subclasses.
 """
+
 from __future__ import annotations
 
 from abc import abstractmethod
 from typing import Optional
 
-from ..graph.code_graph import CodeGraph
-from ..log_utils import get_logger
-from ..profiler import Profiler
-from ..types import EDGE_TYPE_CONTAIN, EDGE_TYPE_REFERENCE
+from ...log_utils import get_logger
+from ...profiler import Profiler
+from ...types import EDGE_TYPE_CONTAIN, EDGE_TYPE_REFERENCE
+from ..code_graph import CodeGraph
 from . import change_mgr
 from .lsp_client import LSPClient
 from .subgraph_mgr import SubgraphMgr
@@ -42,21 +43,23 @@ class PatcherBase(SubgraphMgr):
 
     # Subclasses override: which LSP SymbolKinds to include in classification.
     # Default covers most languages. C++ overrides completely.
-    GRAPH_SYMBOL_KINDS = frozenset({
-        2,   # Module
-        5,   # Class
-        6,   # Method
-        8,   # Field
-        9,   # Constructor
-        10,  # Enum
-        11,  # Interface
-        12,  # Function
-        13,  # Variable
-        14,  # Constant
-        22,  # Enum (alt)
-        23,  # Struct
-        25,  # Operator
-    })
+    GRAPH_SYMBOL_KINDS = frozenset(
+        {
+            2,  # Module
+            5,  # Class
+            6,  # Method
+            8,  # Field
+            9,  # Constructor
+            10,  # Enum
+            11,  # Interface
+            12,  # Function
+            13,  # Variable
+            14,  # Constant
+            22,  # Enum (alt)
+            23,  # Struct
+            25,  # Operator
+        }
+    )
 
     def __init__(
         self,
@@ -126,7 +129,7 @@ class PatcherBase(SubgraphMgr):
         Language patchers call this from their flatten_symbols() method.
         """
         result = {}
-        for sym in (symbols or []):
+        for sym in symbols or []:
             name = sym.get("name", "")
             kind = sym.get("kind", 0)
 
@@ -143,9 +146,7 @@ class PatcherBase(SubgraphMgr):
                     uname = self._build_unified_name(
                         file_path, name, parent_uname, kind
                     )
-                    child_parent = (
-                        uname.split(":", 1)[1] if ":" in uname else name
-                    )
+                    child_parent = uname.split(":", 1)[1] if ":" in uname else name
                 for child in sym.get("children", []):
                     child_result = self._flatten_symbols_default(
                         file_path, [child], child_parent
@@ -158,9 +159,7 @@ class PatcherBase(SubgraphMgr):
             start = range_data.get("start", {}).get("line", 0)
             end = range_data.get("end", {}).get("line", start)
 
-            uname = self._build_unified_name(
-                file_path, name, parent_uname, kind
-            )
+            uname = self._build_unified_name(file_path, name, parent_uname, kind)
             entry = {
                 "kind": kind,
                 "start_line": start,
@@ -176,9 +175,7 @@ class PatcherBase(SubgraphMgr):
                 elif kind in (5, 10, 23) and existing["kind"] not in (5, 10, 23):
                     result[uname] = entry
                 else:
-                    if (end - start) > (
-                        existing["end_line"] - existing["start_line"]
-                    ):
+                    if (end - start) > (existing["end_line"] - existing["start_line"]):
                         result[uname] = entry
             else:
                 result[uname] = entry
@@ -189,9 +186,7 @@ class PatcherBase(SubgraphMgr):
             if kind == 2:
                 child_parent = parent_uname  # skip module
             else:
-                child_parent = (
-                    uname.split(":", 1)[1] if ":" in uname else name
-                )
+                child_parent = uname.split(":", 1)[1] if ":" in uname else name
             for child in sym.get("children", []):
                 child_result = self._flatten_symbols_default(
                     file_path, [child], child_parent
@@ -213,9 +208,7 @@ class PatcherBase(SubgraphMgr):
         if resolved:
             cmd = [resolved] + cmd[1:]
 
-        self.lsp_client = LSPClient(
-            cmd, str(self.project_root), self._language_id()
-        )
+        self.lsp_client = LSPClient(cmd, str(self.project_root), self._language_id())
         self.lsp_client.start(skip_probe=skip_probe)
 
     def stop_lsp(self):
@@ -256,12 +249,17 @@ class PatcherBase(SubgraphMgr):
         self.build_indexes()
 
         total_stats = {
-            "files_deleted": 0, "files_modified": 0,
-            "files_added": 0, "files_renamed": 0,
-            "vertices_deleted": 0, "vertices_created": 0,
+            "files_deleted": 0,
+            "files_modified": 0,
+            "files_added": 0,
+            "files_renamed": 0,
+            "vertices_deleted": 0,
+            "vertices_created": 0,
             "vertices_shifted": 0,
-            "refs_incoming": 0, "refs_outgoing": 0,
-            "refs_remapped": 0, "refs_unmatched": 0,
+            "refs_incoming": 0,
+            "refs_outgoing": 0,
+            "refs_remapped": 0,
+            "refs_unmatched": 0,
         }
 
         # Clear stale caches from previous patch_files calls
@@ -362,14 +360,19 @@ class PatcherBase(SubgraphMgr):
     # ═══════════════════════════════════════════════════════════
 
     def _rebuild_prepare_vertices(
-        self, file_path: str, is_new: bool = False,
+        self,
+        file_path: str,
+        is_new: bool = False,
         line_ranges: list[tuple[int, int]] | None = None,
     ) -> dict:
         """Round 1 for full rebuild: delete old + build new vertices + remap."""
         file_stats = {
-            "vertices_deleted": 0, "vertices_created": 0,
-            "refs_incoming": 0, "refs_outgoing": 0,
-            "refs_remapped": 0, "refs_unmatched": 0,
+            "vertices_deleted": 0,
+            "vertices_created": 0,
+            "refs_incoming": 0,
+            "refs_outgoing": 0,
+            "refs_remapped": 0,
+            "refs_unmatched": 0,
         }
 
         severed_in = []
@@ -378,9 +381,7 @@ class PatcherBase(SubgraphMgr):
         if not is_new:
             with self.profiler.section("delete_subgraph"):
                 result = self.delete_file_subgraph(file_path)
-                file_stats["vertices_deleted"] = len(
-                    result["deleted_vertex_names"]
-                )
+                file_stats["vertices_deleted"] = len(result["deleted_vertex_names"])
                 severed_in = result["severed_incoming_refs"]
                 severed_out = result["severed_outgoing_refs"]
 
@@ -392,7 +393,9 @@ class PatcherBase(SubgraphMgr):
 
         with self.profiler.section("remap_edges"):
             remapped = self._remap_severed_edges(
-                new_vertices, severed_in, severed_out,
+                new_vertices,
+                severed_in,
+                severed_out,
                 changed_line_ranges=line_ranges,
             )
             file_stats["refs_remapped"] = remapped
@@ -405,17 +408,23 @@ class PatcherBase(SubgraphMgr):
         }
 
     def _rebuild_connect_edges(
-        self, file_path: str, ctx: dict,
+        self,
+        file_path: str,
+        ctx: dict,
         line_ranges: list[tuple[int, int]] | None = None,
     ) -> dict:
         """Round 2 for full rebuild: connect edges via LSP."""
         edge_stats = {
-            "refs_incoming": 0, "refs_outgoing": 0, "refs_unmatched": 0,
+            "refs_incoming": 0,
+            "refs_outgoing": 0,
+            "refs_unmatched": 0,
         }
         new_vertices = ctx["new_vertices"]
 
         remapped_unames = self._get_remapped_unames(
-            new_vertices, ctx["severed_in"], ctx["severed_out"],
+            new_vertices,
+            ctx["severed_in"],
+            ctx["severed_out"],
         )
         new_only = [v for v in new_vertices if v not in remapped_unames]
 
@@ -426,7 +435,8 @@ class PatcherBase(SubgraphMgr):
 
         if line_ranges:
             outgoing_ranges = self._compute_outgoing_ranges(
-                new_vertices, line_ranges,
+                new_vertices,
+                line_ranges,
             )
         else:
             outgoing_ranges = []
@@ -439,7 +449,9 @@ class PatcherBase(SubgraphMgr):
 
         with self.profiler.section("lsp_outgoing_refs"):
             self.reconnect_outgoing(
-                file_path, new_vertices, ref_stats,
+                file_path,
+                new_vertices,
+                ref_stats,
                 line_ranges=outgoing_ranges,
             )
 
@@ -452,7 +464,6 @@ class PatcherBase(SubgraphMgr):
     # Single file: symbol-level incremental (modified)
     # ═══════════════════════════════════════════════════════════
 
-
     def _incremental_prepare_vertices(
         self, file_path: str, base_commit: str
     ) -> Optional[dict]:
@@ -462,9 +473,13 @@ class PatcherBase(SubgraphMgr):
         if no hunks were found (file unchanged at line level).
         """
         file_stats = {
-            "vertices_deleted": 0, "vertices_created": 0,
-            "vertices_shifted": 0, "refs_incoming": 0,
-            "refs_outgoing": 0, "refs_remapped": 0, "refs_unmatched": 0,
+            "vertices_deleted": 0,
+            "vertices_created": 0,
+            "vertices_shifted": 0,
+            "refs_incoming": 0,
+            "refs_outgoing": 0,
+            "refs_remapped": 0,
+            "refs_unmatched": 0,
         }
 
         with self.profiler.section("git_diff"):
@@ -488,9 +503,7 @@ class PatcherBase(SubgraphMgr):
             return ctx
 
         with self.profiler.section("classify_symbols"):
-            classified = self._classify_symbols(
-                old_symbols, new_symbols, hunks
-            )
+            classified = self._classify_symbols(old_symbols, new_symbols, hunks)
 
         # DELETED
         for uname in classified["deleted"]:
@@ -504,10 +517,14 @@ class PatcherBase(SubgraphMgr):
             new = new_symbols[uname]
             old_vname = old["vertex_name"]
             new_vname = f"{uname}:{new['start_line']}"
-            self.rename_vertex(old_vname, new_vname, {
-                "start_line": new["start_line"],
-                "end_line": new["end_line"],
-            })
+            self.rename_vertex(
+                old_vname,
+                new_vname,
+                {
+                    "start_line": new["start_line"],
+                    "end_line": new["end_line"],
+                },
+            )
             self._update_selection_range(old_vname, new_vname, new)
             file_stats["vertices_shifted"] += 1
 
@@ -521,16 +538,21 @@ class PatcherBase(SubgraphMgr):
             new_vname = f"{uname}:{new['start_line']}"
 
             if old_vname != new_vname:
-                self.rename_vertex(old_vname, new_vname, {
-                    "start_line": new["start_line"],
-                    "end_line": new["end_line"],
-                })
+                self.rename_vertex(
+                    old_vname,
+                    new_vname,
+                    {
+                        "start_line": new["start_line"],
+                        "end_line": new["end_line"],
+                    },
+                )
             else:
                 vid = self.code_graph.name_to_vertex.get(new_vname)
                 if vid is not None:
                     self.code_graph.graph.vs[vid]["end_line"] = new["end_line"]
                     self.code_graph.symbol_ranges[new_vname] = (
-                        new["start_line"], new["end_line"]
+                        new["start_line"],
+                        new["end_line"],
                     )
 
             self._update_selection_range(old_vname, new_vname, new)
@@ -553,26 +575,26 @@ class PatcherBase(SubgraphMgr):
             vname = f"{uname}:{new['start_line']}"
             node_type = self._classify_symbol_type(new["kind"])
 
-            self.code_graph._add_vertex(vname, {
-                "type": node_type,
-                "file": file_path,
-                "start_line": new["start_line"],
-                "end_line": new["end_line"],
-                "unified_name": uname,
-            })
-            self.code_graph.symbol_ranges[vname] = (
-                new["start_line"], new["end_line"]
+            self.code_graph._add_vertex(
+                vname,
+                {
+                    "type": node_type,
+                    "file": file_path,
+                    "start_line": new["start_line"],
+                    "end_line": new["end_line"],
+                    "unified_name": uname,
+                },
             )
+            self.code_graph.symbol_ranges[vname] = (new["start_line"], new["end_line"])
 
             parent_uname = new.get("parent_uname")
             parent_vname = (
                 self._find_vertex_by_unified_name(parent_uname, file_path)
-                if parent_uname else file_path
+                if parent_uname
+                else file_path
             )
             if parent_vname:
-                self.code_graph._add_edge(
-                    parent_vname, vname, EDGE_TYPE_CONTAIN
-                )
+                self.code_graph._add_edge(parent_vname, vname, EDGE_TYPE_CONTAIN)
 
             self._store_selection_range(vname, new)
             added_vnames.append(vname)
@@ -596,15 +618,15 @@ class PatcherBase(SubgraphMgr):
             "hunks": hunks,
         }
 
-    def _incremental_connect_edges(
-        self, file_path: str, ctx: dict
-    ) -> dict:
+    def _incremental_connect_edges(self, file_path: str, ctx: dict) -> dict:
         """Round 2: connect reference edges using LSP queries.
 
         Called after all files' vertices have been prepared.
         """
         edge_stats = {
-            "refs_incoming": 0, "refs_outgoing": 0, "refs_unmatched": 0,
+            "refs_incoming": 0,
+            "refs_outgoing": 0,
+            "refs_unmatched": 0,
         }
 
         if ctx.get("fallback_rebuild"):
@@ -621,18 +643,18 @@ class PatcherBase(SubgraphMgr):
             flat_vnames = []
             flat_ranges = []
             for vname, ranges in zip(
-                affected_vnames, affected_changed_ranges
+                affected_vnames, affected_changed_ranges, strict=False
             ):
                 for r in ranges:
                     flat_vnames.append(vname)
                     flat_ranges.append(r)
 
-            ref_stats = {
-                "incoming_added": 0, "outgoing_added": 0, "unmatched": 0
-            }
+            ref_stats = {"incoming_added": 0, "outgoing_added": 0, "unmatched": 0}
             with self.profiler.section("lsp_outgoing_refs"):
                 self.reconnect_outgoing(
-                    file_path, flat_vnames, ref_stats,
+                    file_path,
+                    flat_vnames,
+                    ref_stats,
                     line_ranges=flat_ranges,
                 )
             edge_stats["refs_outgoing"] = ref_stats["outgoing_added"]
@@ -652,19 +674,17 @@ class PatcherBase(SubgraphMgr):
                         el = v.attributes().get("end_line", sl)
                         added_ranges.append((sl, el))
 
-            ref_stats = {
-                "incoming_added": 0, "outgoing_added": 0, "unmatched": 0
-            }
+            ref_stats = {"incoming_added": 0, "outgoing_added": 0, "unmatched": 0}
             with self.profiler.section("lsp_incoming_refs"):
                 self.reconnect_incoming(file_path, added_vnames, ref_stats)
             with self.profiler.section("lsp_outgoing_refs"):
                 effective_ranges = (
-                    added_ranges
-                    if len(added_ranges) == len(added_vnames)
-                    else None
+                    added_ranges if len(added_ranges) == len(added_vnames) else None
                 )
                 self.reconnect_outgoing(
-                    file_path, added_vnames, ref_stats,
+                    file_path,
+                    added_vnames,
+                    ref_stats,
                     line_ranges=effective_ranges,
                 )
             edge_stats["refs_incoming"] = ref_stats["incoming_added"]
@@ -685,10 +705,7 @@ class PatcherBase(SubgraphMgr):
         """Classify each symbol as deleted/added/affected/shifted/unchanged."""
 
         def overlaps_any_hunk(start, end):
-            return any(
-                start <= h_end and end >= h_start
-                for h_start, h_end in hunks
-            )
+            return any(start <= h_end and end >= h_start for h_start, h_end in hunks)
 
         old_set = set(old_symbols.keys())
         new_set = set(new_symbols.keys())
@@ -717,8 +734,7 @@ class PatcherBase(SubgraphMgr):
         demote = []
         for uname in affected:
             children_in_affected = [
-                u for u in affected
-                if u != uname and u.startswith(uname + ".")
+                u for u in affected if u != uname and u.startswith(uname + ".")
             ]
             if children_in_affected and not overlaps_any_hunk(
                 new_symbols[uname]["start_line"],
@@ -754,9 +770,7 @@ class PatcherBase(SubgraphMgr):
         uname_to_new = {}
         for vname in new_vertices:
             if vname in self.code_graph.name_to_vertex:
-                v = self.code_graph.graph.vs[
-                    self.code_graph.name_to_vertex[vname]
-                ]
+                v = self.code_graph.graph.vs[self.code_graph.name_to_vertex[vname]]
                 uname = v.attributes().get("unified_name")
                 if uname:
                     uname_to_new[uname] = vname
@@ -772,8 +786,11 @@ class PatcherBase(SubgraphMgr):
                     if sym_start <= cl_end and cl_start <= sym_end:
                         vid = self.code_graph.name_to_vertex.get(vname)
                         if vid is not None:
-                            uname = self.code_graph.graph.vs[vid].attributes(
-                            ).get("unified_name")
+                            uname = (
+                                self.code_graph.graph.vs[vid]
+                                .attributes()
+                                .get("unified_name")
+                            )
                             if uname:
                                 changed_unames.add(uname)
                         break
@@ -787,9 +804,7 @@ class PatcherBase(SubgraphMgr):
                 continue
             new_target = uname_to_new.get(tgt_uname)
             if new_target and src_name in self.code_graph.name_to_vertex:
-                self.code_graph._add_edge(
-                    src_name, new_target, EDGE_TYPE_REFERENCE
-                )
+                self.code_graph._add_edge(src_name, new_target, EDGE_TYPE_REFERENCE)
                 remapped += 1
 
         # Outgoing: skip if source body changed
@@ -802,9 +817,7 @@ class PatcherBase(SubgraphMgr):
                 new_src = uname_to_new.get(src_uname)
             else:
                 new_src = (
-                    src_name
-                    if src_name in self.code_graph.name_to_vertex
-                    else None
+                    src_name if src_name in self.code_graph.name_to_vertex else None
                 )
 
             if tgt_name in self.code_graph.name_to_vertex:
@@ -815,9 +828,7 @@ class PatcherBase(SubgraphMgr):
                 resolved_tgt = None
 
             if new_src and resolved_tgt:
-                self.code_graph._add_edge(
-                    new_src, resolved_tgt, EDGE_TYPE_REFERENCE
-                )
+                self.code_graph._add_edge(new_src, resolved_tgt, EDGE_TYPE_REFERENCE)
                 remapped += 1
 
         return remapped
@@ -859,9 +870,7 @@ class PatcherBase(SubgraphMgr):
                 merged.append((start, end))
         return merged
 
-    def _find_vertex_by_unified_name(
-        self, uname: str, file_path: str
-    ) -> Optional[str]:
+    def _find_vertex_by_unified_name(self, uname: str, file_path: str) -> Optional[str]:
         """Find a vertex name by unified_name, preferring same file."""
         idx = getattr(self.code_graph, "unified_name_to_vertex", {})
         vids = idx.get(uname, [])
@@ -894,8 +903,10 @@ class PatcherBase(SubgraphMgr):
                 for vname in new_vertices:
                     vid = self.code_graph.name_to_vertex.get(vname)
                     if vid is not None:
-                        u = self.code_graph.graph.vs[vid].attributes().get(
-                            "unified_name"
+                        u = (
+                            self.code_graph.graph.vs[vid]
+                            .attributes()
+                            .get("unified_name")
                         )
                         if u == tgt_uname:
                             remapped_unames.add(vname)
@@ -905,16 +916,16 @@ class PatcherBase(SubgraphMgr):
                 for vname in new_vertices:
                     vid = self.code_graph.name_to_vertex.get(vname)
                     if vid is not None:
-                        u = self.code_graph.graph.vs[vid].attributes().get(
-                            "unified_name"
+                        u = (
+                            self.code_graph.graph.vs[vid]
+                            .attributes()
+                            .get("unified_name")
                         )
                         if u == src_uname:
                             remapped_unames.add(vname)
         return remapped_unames
 
-    def _update_selection_range(
-        self, old_vname: str, new_vname: str, new_meta: dict
-    ):
+    def _update_selection_range(self, old_vname: str, new_vname: str, new_meta: dict):
         """Update symbol_selection_ranges for a shifted/affected symbol."""
         sel = new_meta["sel_range"]
         sel_start = sel.get("start", {})
@@ -944,8 +955,13 @@ class PatcherBase(SubgraphMgr):
     def _merge_stats(total: dict, file_stats: dict):
         """Merge file-level stats into total stats."""
         for key in (
-            "vertices_deleted", "vertices_created", "vertices_shifted",
-            "refs_incoming", "refs_outgoing", "refs_remapped", "refs_unmatched",
+            "vertices_deleted",
+            "vertices_created",
+            "vertices_shifted",
+            "refs_incoming",
+            "refs_outgoing",
+            "refs_remapped",
+            "refs_unmatched",
         ):
             if key in file_stats:
                 total[key] = total.get(key, 0) + file_stats[key]

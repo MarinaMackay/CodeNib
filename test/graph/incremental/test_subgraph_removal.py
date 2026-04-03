@@ -1,6 +1,7 @@
 """Tests for SubgraphMgr subgraph deletion and index building."""
+
 from codeminer.graph.code_graph import CodeGraph
-from codeminer.incremental_graph.patcher_rust import PatcherRust
+from codeminer.graph.incremental.patcher_rust import PatcherRust
 from codeminer.types import (
     EDGE_TYPE_CONTAIN,
     EDGE_TYPE_REFERENCE,
@@ -35,31 +36,56 @@ def _build_two_file_graph():
     g.add_file_node("src/main.rs")
     g._add_edge(ROOT_NODE, "src/main.rs", EDGE_TYPE_CONTAIN)
 
-    g.add_symbol_node("main_fn", line=0, scope_start_line=0, scope_end_line=10,
-                       symbol_type=NODE_TYPE_FUNCTION)
+    g.add_symbol_node(
+        "main_fn",
+        line=0,
+        scope_start_line=0,
+        scope_end_line=10,
+        symbol_type=NODE_TYPE_FUNCTION,
+    )
     g.graph.vs[g.name_to_vertex["main_fn"]]["file"] = "src/main.rs"
     g._add_edge("src/main.rs", "main_fn", EDGE_TYPE_CONTAIN)
 
-    g.add_symbol_node("Config", line=12, scope_start_line=12, scope_end_line=20,
-                       symbol_type=NODE_TYPE_CLASS)
+    g.add_symbol_node(
+        "Config",
+        line=12,
+        scope_start_line=12,
+        scope_end_line=20,
+        symbol_type=NODE_TYPE_CLASS,
+    )
     g.graph.vs[g.name_to_vertex["Config"]]["file"] = "src/main.rs"
     g._add_edge("src/main.rs", "Config", EDGE_TYPE_CONTAIN)
 
     g.add_file_node("src/lib.rs")
     g._add_edge(ROOT_NODE, "src/lib.rs", EDGE_TYPE_CONTAIN)
 
-    g.add_symbol_node("run_fn", line=0, scope_start_line=0, scope_end_line=5,
-                       symbol_type=NODE_TYPE_FUNCTION)
+    g.add_symbol_node(
+        "run_fn",
+        line=0,
+        scope_start_line=0,
+        scope_end_line=5,
+        symbol_type=NODE_TYPE_FUNCTION,
+    )
     g.graph.vs[g.name_to_vertex["run_fn"]]["file"] = "src/lib.rs"
     g._add_edge("src/lib.rs", "run_fn", EDGE_TYPE_CONTAIN)
 
-    g.add_symbol_node("Router", line=7, scope_start_line=7, scope_end_line=30,
-                       symbol_type=NODE_TYPE_CLASS)
+    g.add_symbol_node(
+        "Router",
+        line=7,
+        scope_start_line=7,
+        scope_end_line=30,
+        symbol_type=NODE_TYPE_CLASS,
+    )
     g.graph.vs[g.name_to_vertex["Router"]]["file"] = "src/lib.rs"
     g._add_edge("src/lib.rs", "Router", EDGE_TYPE_CONTAIN)
 
-    g.add_symbol_node("handle_fn", line=8, scope_start_line=8, scope_end_line=25,
-                       symbol_type=NODE_TYPE_METHOD)
+    g.add_symbol_node(
+        "handle_fn",
+        line=8,
+        scope_start_line=8,
+        scope_end_line=25,
+        symbol_type=NODE_TYPE_METHOD,
+    )
     g.graph.vs[g.name_to_vertex["handle_fn"]]["file"] = "src/lib.rs"
     g._add_edge("Router", "handle_fn", EDGE_TYPE_CONTAIN)
 
@@ -115,8 +141,12 @@ class TestBuildIndexes:
 
     def test_build_unified_name_index_one_to_many(self):
         g = CodeGraph()
-        g._add_vertex("scip_key_1", {"type": NODE_TYPE_FUNCTION, "unified_name": "f.rs:new()"})
-        g._add_vertex("scip_key_2", {"type": NODE_TYPE_FUNCTION, "unified_name": "f.rs:new()"})
+        g._add_vertex(
+            "scip_key_1", {"type": NODE_TYPE_FUNCTION, "unified_name": "f.rs:new()"}
+        )
+        g._add_vertex(
+            "scip_key_2", {"type": NODE_TYPE_FUNCTION, "unified_name": "f.rs:new()"}
+        )
         mgr = _make_mgr(g)
         mgr.build_indexes()
 
@@ -132,7 +162,11 @@ class TestDeleteFileSubgraph:
         initial_vcount = g.graph.vcount()
         result = mgr.delete_file_subgraph("src/main.rs")
 
-        assert set(result["deleted_vertex_names"]) == {"src/main.rs", "main_fn", "Config"}
+        assert set(result["deleted_vertex_names"]) == {
+            "src/main.rs",
+            "main_fn",
+            "Config",
+        }
         assert g.graph.vcount() == initial_vcount - 3
 
     def test_delete_cleans_name_to_vertex(self):
@@ -236,7 +270,11 @@ class TestDeleteFileSubgraph:
         mgr = _make_mgr(g)
         result = mgr.delete_file_subgraph("src/main.rs")
 
-        assert set(result["deleted_vertex_names"]) == {"src/main.rs", "main_fn", "Config"}
+        assert set(result["deleted_vertex_names"]) == {
+            "src/main.rs",
+            "main_fn",
+            "Config",
+        }
 
     def test_name_to_vertex_consistency_after_delete(self):
         g = _build_two_file_graph()

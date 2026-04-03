@@ -3,12 +3,13 @@
 Dispatches to language-specific patchers (patcher_*.py).
 Maintains backward-compatible API.
 """
+
 from __future__ import annotations
 
 from typing import Optional
 
-from ..graph.code_graph import CodeGraph
-from ..log_utils import get_logger
+from ...log_utils import get_logger
+from ..code_graph import CodeGraph
 from . import change_mgr
 from .patcher_base import PatcherBase
 
@@ -77,9 +78,7 @@ class GraphPatcher:
     ):
         self.project_root = project_root
         self.language = language
-        self._impl: PatcherBase = _create_patcher(
-            language, project_root, code_graph
-        )
+        self._impl: PatcherBase = _create_patcher(language, project_root, code_graph)
 
     @property
     def code_graph(self) -> CodeGraph:
