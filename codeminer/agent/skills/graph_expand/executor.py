@@ -13,7 +13,7 @@ def create_executor(context: Any) -> Callable[..., List[Any]]:
         that carries the loaded ``CodeGraph``.
     """
     from ....graph.roi_subgraph import ROISubgraph
-    from ....ops.expand import _nodeinfo_to_queried
+    from ....ops.expand import nodeinfo_to_queried
 
     def execute(
         seed_nodes: List[Any],
@@ -68,6 +68,6 @@ def create_executor(context: Any) -> Callable[..., List[Any]]:
                 node_types=node_types,
             )
 
-        return _nodeinfo_to_queried(node_infos)[:top_k]
+        return nodeinfo_to_queried(node_infos)[:top_k]
 
     return execute

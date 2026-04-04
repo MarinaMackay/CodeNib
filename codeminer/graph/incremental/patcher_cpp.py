@@ -183,7 +183,7 @@ class PatcherCpp(PatcherBase):
             logger.warning("clangd incremental indexing failed")
             return stats
 
-        from ..ls_index.clangd_decode import ClangdGraphDecoder
+        from codeminer.ls_index.clangd_decode import ClangdGraphDecoder
 
         with self.profiler.section("cpp.parse_idx"):
             decoder = ClangdGraphDecoder(
@@ -243,7 +243,7 @@ class PatcherCpp(PatcherBase):
 
         if idx_dir is None:
             logger.info("No .idx cache, running full clangd index")
-            from ..ls_index.clangd_indexer import ClangdIndexer
+            from codeminer.ls_index.clangd_indexer import ClangdIndexer
 
             indexer = ClangdIndexer(project_root=str(self.project_root))
             success = indexer.generate_index(compdb_path=str(comp_db))
@@ -378,7 +378,7 @@ class PatcherCpp(PatcherBase):
         changed_files: list[str],
     ) -> tuple[int, int]:
         """Add symbols and edges from .idx data for changed files."""
-        from ..ls_index.clangd_decode import (
+        from codeminer.ls_index.clangd_decode import (
             KIND_MACRO,
             REF_KIND_DEFINITION,
             REF_KIND_REFERENCE,
