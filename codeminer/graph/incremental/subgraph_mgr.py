@@ -10,6 +10,7 @@ Uses composition — holds a reference to CodeGraph and LSPClient.
 Language-specific behavior is delegated via abstract methods that
 patcher_lang subclasses must implement.
 """
+
 from __future__ import annotations
 
 import time
@@ -17,9 +18,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
-from ..graph.code_graph import CodeGraph
-from ..log_utils import get_logger
-from ..types import (
+from ...log_utils import get_logger
+from ...types import (
     EDGE_TYPE_CONTAIN,
     EDGE_TYPE_REFERENCE,
     NODE_TYPE_CLASS,
@@ -29,35 +29,40 @@ from ..types import (
     NODE_TYPE_METHOD,
     NODE_TYPE_SYMBOL,
 )
+from ..code_graph import CodeGraph
 from .lsp_client import LSPClient, uri_to_relpath
 
 logger = get_logger(__name__)
 
 # LSP SymbolKind integer → NODE_TYPE_* default mapping
 LSP_KIND_TO_NODE_TYPE = {
-    2: NODE_TYPE_CLASS,       # Module
-    3: NODE_TYPE_CLASS,       # Namespace
-    5: NODE_TYPE_CLASS,       # Class
-    6: NODE_TYPE_METHOD,      # Method
-    7: NODE_TYPE_FIELD,       # Property
-    8: NODE_TYPE_FIELD,       # Field
-    9: NODE_TYPE_METHOD,      # Constructor
-    10: NODE_TYPE_CLASS,      # Enum
-    11: NODE_TYPE_CLASS,      # Interface
-    12: NODE_TYPE_FUNCTION,   # Function
-    13: NODE_TYPE_FIELD,      # Variable
-    14: NODE_TYPE_FIELD,      # Constant
-    22: NODE_TYPE_CLASS,      # Enum (alt)
-    23: NODE_TYPE_CLASS,      # Struct
-    25: NODE_TYPE_FUNCTION,   # Operator
+    2: NODE_TYPE_CLASS,  # Module
+    3: NODE_TYPE_CLASS,  # Namespace
+    5: NODE_TYPE_CLASS,  # Class
+    6: NODE_TYPE_METHOD,  # Method
+    7: NODE_TYPE_FIELD,  # Property
+    8: NODE_TYPE_FIELD,  # Field
+    9: NODE_TYPE_METHOD,  # Constructor
+    10: NODE_TYPE_CLASS,  # Enum
+    11: NODE_TYPE_CLASS,  # Interface
+    12: NODE_TYPE_FUNCTION,  # Function
+    13: NODE_TYPE_FIELD,  # Variable
+    14: NODE_TYPE_FIELD,  # Constant
+    22: NODE_TYPE_CLASS,  # Enum (alt)
+    23: NODE_TYPE_CLASS,  # Struct
+    25: NODE_TYPE_FUNCTION,  # Operator
 }
 
 # Symbol types worth querying for cross-file incoming references.
 # Variables, fields, and parameters are file-local — querying references
 # for them causes LSP servers to scan the entire workspace, which is slow.
-_INCOMING_REF_TYPES = frozenset({
-    NODE_TYPE_CLASS, NODE_TYPE_FUNCTION, NODE_TYPE_METHOD,
-})
+_INCOMING_REF_TYPES = frozenset(
+    {
+        NODE_TYPE_CLASS,
+        NODE_TYPE_FUNCTION,
+        NODE_TYPE_METHOD,
+    }
+)
 
 
 class SubgraphMgr(ABC):
@@ -158,8 +163,9 @@ class SubgraphMgr(ABC):
         if hasattr(g, "file_to_vertices") and file_path in g.file_to_vertices:
             vids = set(g.file_to_vertices[file_path])
         else:
-            from ..types import NODE_TYPE_FILE as NTF
             from ..graph.code_graph import is_symbol_node
+            from ..types import NODE_TYPE_FILE as NTF
+
             vids = set()
             for v in g.graph.vs:
                 attrs = v.attributes()
@@ -191,22 +197,28 @@ class SubgraphMgr(ABC):
                     key = (v["name"], tv["name"])
                     if key not in seen_outgoing:
                         seen_outgoing.add(key)
-                        severed_outgoing.append((
-                            v["name"], tv["name"],
-                            v_uname,
-                            tv.attributes().get("unified_name") or "",
-                        ))
+                        severed_outgoing.append(
+                            (
+                                v["name"],
+                                tv["name"],
+                                v_uname,
+                                tv.attributes().get("unified_name") or "",
+                            )
+                        )
             # Incoming reference edges from outside
             for eid in g.graph.incident(vid, mode="in"):
                 edge = g.graph.es[eid]
                 if edge["type"] == EDGE_TYPE_REFERENCE:
                     sv = g.graph.vs[edge.source]
                     if edge.source not in vids:
-                        severed_incoming.append((
-                            sv["name"], v["name"],
-                            sv.attributes().get("unified_name") or "",
-                            v_uname,
-                        ))
+                        severed_incoming.append(
+                            (
+                                sv["name"],
+                                v["name"],
+                                sv.attributes().get("unified_name") or "",
+                                v_uname,
+                            )
+                        )
 
         deleted_names = [g.graph.vs[vid]["name"] for vid in vids]
         g.graph.delete_vertices(sorted(vids))
@@ -246,21 +258,27 @@ class SubgraphMgr(ABC):
                 if edge["type"] == EDGE_TYPE_REFERENCE:
                     tv = g.graph.vs[edge.target]
                     if edge.target not in vids:
-                        severed_outgoing.append((
-                            v["name"], tv["name"],
-                            v_uname,
-                            tv.attributes().get("unified_name") or "",
-                        ))
+                        severed_outgoing.append(
+                            (
+                                v["name"],
+                                tv["name"],
+                                v_uname,
+                                tv.attributes().get("unified_name") or "",
+                            )
+                        )
             for eid in g.graph.incident(vid, mode="in"):
                 edge = g.graph.es[eid]
                 if edge["type"] == EDGE_TYPE_REFERENCE:
                     sv = g.graph.vs[edge.source]
                     if edge.source not in vids:
-                        severed_incoming.append((
-                            sv["name"], v["name"],
-                            sv.attributes().get("unified_name") or "",
-                            v_uname,
-                        ))
+                        severed_incoming.append(
+                            (
+                                sv["name"],
+                                v["name"],
+                                sv.attributes().get("unified_name") or "",
+                                v_uname,
+                            )
+                        )
 
         deleted_names = [g.graph.vs[vid]["name"] for vid in vids]
         g.graph.delete_vertices(sorted(vids))
@@ -281,16 +299,15 @@ class SubgraphMgr(ABC):
         if vid is None:
             return 0
         to_delete = [
-            eid for eid in g.graph.incident(vid, mode="out")
+            eid
+            for eid in g.graph.incident(vid, mode="out")
             if g.graph.es[eid]["type"] == EDGE_TYPE_REFERENCE
         ]
         if to_delete:
             g.graph.delete_edges(to_delete)
         return len(to_delete)
 
-    def rename_vertex(
-        self, old_name: str, new_name: str, new_attrs: dict = None
-    ):
+    def rename_vertex(self, old_name: str, new_name: str, new_attrs: dict = None):
         """Rename a vertex without deleting it. All edges preserved."""
         g = self.code_graph
         if old_name == new_name and not new_attrs:
@@ -324,9 +341,7 @@ class SubgraphMgr(ABC):
     # Subgraph construction (from LSP documentSymbol)
     # ═══════════════════════════════════════════════════════════
 
-    def rebuild_file_subgraph(
-        self, file_path: str, symbols: list[dict]
-    ) -> list[str]:
+    def rebuild_file_subgraph(self, file_path: str, symbols: list[dict]) -> list[str]:
         """Add file vertex + symbol vertices + containment edges.
 
         Returns list of created vertex names.
@@ -341,7 +356,8 @@ class SubgraphMgr(ABC):
             g._add_edge(parent_dir, file_path, EDGE_TYPE_CONTAIN)
 
         return self._process_symbol_tree(
-            symbols, file_path,
+            symbols,
+            file_path,
             parent_vertex_name=file_path,
             parent_unified_part="",
         )
@@ -373,13 +389,16 @@ class SubgraphMgr(ABC):
             vertex_name = f"{unified_name}:{start_line}"
             node_type = self._classify_symbol_type(kind)
 
-            g._add_vertex(vertex_name, {
-                "type": node_type,
-                "file": file_path,
-                "start_line": start_line,
-                "end_line": end_line,
-                "unified_name": unified_name,
-            })
+            g._add_vertex(
+                vertex_name,
+                {
+                    "type": node_type,
+                    "file": file_path,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "unified_name": unified_name,
+                },
+            )
             g.symbol_ranges[vertex_name] = (start_line, end_line)
 
             sel_start = sel_range.get("start", {})
@@ -404,11 +423,14 @@ class SubgraphMgr(ABC):
 
             children = sym.get("children", [])
             if children:
-                created.extend(self._process_symbol_tree(
-                    children, file_path,
-                    parent_vertex_name=vertex_name,
-                    parent_unified_part=child_parent_part,
-                ))
+                created.extend(
+                    self._process_symbol_tree(
+                        children,
+                        file_path,
+                        parent_vertex_name=vertex_name,
+                        parent_unified_part=child_parent_part,
+                    )
+                )
 
         return created
 
@@ -430,9 +452,7 @@ class SubgraphMgr(ABC):
         for vname in vertex_names:
             vid = self.code_graph.name_to_vertex.get(vname)
             if vid is not None:
-                node_type = self.code_graph.graph.vs[vid].attributes().get(
-                    "type", ""
-                )
+                node_type = self.code_graph.graph.vs[vid].attributes().get("type", "")
                 if node_type not in _INCOMING_REF_TYPES:
                     continue
 
@@ -445,17 +465,13 @@ class SubgraphMgr(ABC):
                 abs_file, sel_line, sel_char, include_declaration=False
             )
             for loc in refs:
-                ref_file = uri_to_relpath(
-                    loc.get("uri", ""), str(self.project_root)
-                )
+                ref_file = uri_to_relpath(loc.get("uri", ""), str(self.project_root))
                 if ref_file is None:
                     continue
                 ref_line = loc.get("range", {}).get("start", {}).get("line", 0)
                 ref_scope = self.match_location_to_scope(ref_file, ref_line)
                 if ref_scope:
-                    self.code_graph._add_edge(
-                        ref_scope, vname, EDGE_TYPE_REFERENCE
-                    )
+                    self.code_graph._add_edge(ref_scope, vname, EDGE_TYPE_REFERENCE)
                     stats["incoming_added"] += 1
                 else:
                     stats["unmatched"] += 1
@@ -473,7 +489,9 @@ class SubgraphMgr(ABC):
         abs_file = str(self.project_root / file_path)
 
         ref_tokens = self._get_semantic_tokens(
-            abs_file, file_path, line_ranges=line_ranges,
+            abs_file,
+            file_path,
+            line_ranges=line_ranges,
         )
         if not ref_tokens:
             return
@@ -481,7 +499,7 @@ class SubgraphMgr(ABC):
         # Map range → vertex for scope resolution
         range_to_vertex = {}
         if line_ranges and len(line_ranges) == len(vertex_names):
-            for vname, (start, end) in zip(vertex_names, line_ranges):
+            for vname, (start, end) in zip(vertex_names, line_ranges, strict=False):
                 range_to_vertex[(start, end)] = vname
 
         # Filter to line ranges if semanticTokens/range wasn't used
@@ -531,8 +549,7 @@ class SubgraphMgr(ABC):
                         resolved += 1
             if resolved:
                 logger.debug(
-                    f"Retry resolved {resolved}/{len(empty_keys)} "
-                    "empty definitions"
+                    f"Retry resolved {resolved}/{len(empty_keys)} " "empty definitions"
                 )
 
         # Build edges
@@ -548,9 +565,7 @@ class SubgraphMgr(ABC):
             if target_file is None:
                 continue
 
-            target_range = defn.get(
-                "targetSelectionRange", defn.get("range", {})
-            )
+            target_range = defn.get("targetSelectionRange", defn.get("range", {}))
             target_line = target_range.get("start", {}).get("line", 0)
 
             scope = None
@@ -560,20 +575,14 @@ class SubgraphMgr(ABC):
                         scope = vname
                         break
             if scope is None:
-                scope = self.match_location_to_scope(
-                    file_path, ref_token["line"]
-                )
+                scope = self.match_location_to_scope(file_path, ref_token["line"])
 
-            target_vertex = self.match_location_to_vertex(
-                target_file, target_line
-            )
+            target_vertex = self.match_location_to_vertex(target_file, target_line)
 
             if scope and target_vertex:
                 edge_key = (scope, target_vertex)
                 if edge_key not in added_edges:
-                    self.code_graph._add_edge(
-                        scope, target_vertex, EDGE_TYPE_REFERENCE
-                    )
+                    self.code_graph._add_edge(scope, target_vertex, EDGE_TYPE_REFERENCE)
                     stats["outgoing_added"] += 1
                     added_edges.add(edge_key)
             else:
@@ -603,7 +612,9 @@ class SubgraphMgr(ABC):
             min_line = min(s for s, _ in line_ranges)
             max_line = max(e for _, e in line_ranges)
             tokens_response = self.lsp_client.semantic_tokens_range(
-                abs_file, min_line, max_line,
+                abs_file,
+                min_line,
+                max_line,
             )
 
         # Fall back to full
@@ -614,9 +625,7 @@ class SubgraphMgr(ABC):
                 reason = "server does not support range"
             else:
                 reason = "range returned empty"
-            logger.debug(
-                f"Using semanticTokens/full for {file_path} ({reason})"
-            )
+            logger.debug(f"Using semanticTokens/full for {file_path} ({reason})")
             tokens_response = self.lsp_client.semantic_tokens_full(abs_file)
 
         # Retry once if still empty
@@ -639,15 +648,14 @@ class SubgraphMgr(ABC):
             self._semantic_tokens_cache[file_path] = None
             return None
 
-        tokens = self.lsp_client.decode_semantic_tokens(
-            tokens_response, abs_file
-        )
+        tokens = self.lsp_client.decode_semantic_tokens(tokens_response, abs_file)
         if not tokens:
             return None
 
         crossfile_types = self._get_crossfile_token_types()
         filtered = [
-            t for t in tokens
+            t
+            for t in tokens
             if "declaration" not in t["modifiers"]
             and "definition" not in t["modifiers"]
             and t["token_type"] in crossfile_types
@@ -659,9 +667,7 @@ class SubgraphMgr(ABC):
     # Location matching
     # ═══════════════════════════════════════════════════════════
 
-    def match_location_to_vertex(
-        self, file_path: str, line: int
-    ) -> Optional[str]:
+    def match_location_to_vertex(self, file_path: str, line: int) -> Optional[str]:
         """Match an LSP location to an existing graph vertex.
 
         Level 1: Exact (file, start_line) match.
@@ -676,9 +682,7 @@ class SubgraphMgr(ABC):
             return candidates[0]
         return self.match_location_to_scope(file_path, line)
 
-    def match_location_to_scope(
-        self, file_path: str, line: int
-    ) -> Optional[str]:
+    def match_location_to_scope(self, file_path: str, line: int) -> Optional[str]:
         """Find the innermost scope vertex containing (file, line)."""
         candidates = []
         for vname, (start, end) in self.code_graph.symbol_ranges.items():

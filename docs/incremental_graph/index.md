@@ -78,3 +78,7 @@ graph.save_graph("/cache/project/graph.pkl")
     "nodes_after": 47,
 }
 ```
+
+## Interactive Demo
+
+See the [Interactive Demo](incremental_interactive.md) for a step-by-step visual walkthrough of the symbol classification and graph rebuild process.

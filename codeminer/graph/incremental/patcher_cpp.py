@@ -2,6 +2,7 @@
 
 Uses clangd .idx files instead of LSP queries for incremental updates.
 """
+
 from __future__ import annotations
 
 import json
@@ -10,8 +11,9 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from ..log_utils import get_logger
-from ..types import (
+
+from ...log_utils import get_logger
+from ...types import (
     EDGE_TYPE_CONTAIN,
     EDGE_TYPE_REFERENCE,
     NODE_TYPE_FUNCTION,
@@ -33,8 +35,14 @@ class PatcherCpp(PatcherBase):
 
     def _get_crossfile_token_types(self):
         return {
-            "type", "class", "struct", "enum", "function", "method",
-            "namespace", "macro",
+            "type",
+            "class",
+            "struct",
+            "enum",
+            "function",
+            "method",
+            "namespace",
+            "macro",
         }
 
     def _build_unified_name(self, file_path, name, parent_unified_part, kind):
@@ -62,11 +70,16 @@ class PatcherCpp(PatcherBase):
     def patch_files(self, changed_files, **kwargs):
         """C++ incremental: delete old subgraphs, reindex via .idx, rebuild."""
         total_stats = {
-            "files_deleted": 0, "files_modified": 0,
-            "files_added": 0, "files_renamed": 0,
-            "vertices_deleted": 0, "vertices_created": 0,
-            "refs_incoming": 0, "refs_outgoing": 0,
-            "refs_remapped": 0, "refs_unmatched": 0,
+            "files_deleted": 0,
+            "files_modified": 0,
+            "files_added": 0,
+            "files_renamed": 0,
+            "vertices_deleted": 0,
+            "vertices_created": 0,
+            "refs_incoming": 0,
+            "refs_outgoing": 0,
+            "refs_remapped": 0,
+            "refs_unmatched": 0,
         }
 
         # Rebuild indexes for delete_file_subgraph
@@ -106,9 +119,7 @@ class PatcherCpp(PatcherBase):
             total_stats["vertices_created"] = stats["vertices_created"]
             total_stats["refs_outgoing"] = stats["refs_added"]
 
-        total_stats["files_modified"] = len(
-            changed_files.get("modified", [])
-        )
+        total_stats["files_modified"] = len(changed_files.get("modified", []))
         total_stats["files_added"] = len(changed_files.get("added", []))
         total_stats["files_renamed"] = len(changed_files.get("renamed", []))
 
@@ -195,9 +206,7 @@ class PatcherCpp(PatcherBase):
         )
         return stats
 
-    def _reindex_changed_files(
-        self, changed_files: list[str]
-    ) -> Path | None:
+    def _reindex_changed_files(self, changed_files: list[str]) -> Path | None:
         """Run clangd background-index, preserving .idx cache."""
         clangd = shutil.which("clangd")
         if not clangd:
@@ -235,12 +244,14 @@ class PatcherCpp(PatcherBase):
         if idx_dir is None:
             logger.info("No .idx cache, running full clangd index")
             from ..ls_index.clangd_indexer import ClangdIndexer
+
             indexer = ClangdIndexer(project_root=str(self.project_root))
             success = indexer.generate_index(compdb_path=str(comp_db))
             return indexer.idx_directory if success else None
 
         pre_mtime = max(
-            (f.stat().st_mtime for f in idx_dir.glob("*.idx")), default=0,
+            (f.stat().st_mtime for f in idx_dir.glob("*.idx")),
+            default=0,
         )
         pre_count = len(list(idx_dir.glob("*.idx")))
         logger.info(
@@ -249,13 +260,18 @@ class PatcherCpp(PatcherBase):
         )
 
         cmd = [
-            clangd, "--background-index",
+            clangd,
+            "--background-index",
             f"--compile-commands-dir={comp_db.parent}",
-            "--background-index-priority=normal", "--log=error",
+            "--background-index-priority=normal",
+            "--log=error",
         ]
         process = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, cwd=str(self.project_root),
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(self.project_root),
         )
 
         def lsp_send(msg):
@@ -265,18 +281,26 @@ class PatcherCpp(PatcherBase):
             process.stdin.flush()
 
         try:
-            lsp_send({
-                "jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {
-                    "processId": os.getpid(),
-                    "rootUri": Path(self.project_root).as_uri(),
-                    "capabilities": {},
-                },
-            })
+            lsp_send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "processId": os.getpid(),
+                        "rootUri": Path(self.project_root).as_uri(),
+                        "capabilities": {},
+                    },
+                }
+            )
             time.sleep(1)
-            lsp_send({
-                "jsonrpc": "2.0", "method": "initialized", "params": {},
-            })
+            lsp_send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "initialized",
+                    "params": {},
+                }
+            )
             time.sleep(0.5)
 
             for fpath in changed_files:
@@ -287,18 +311,20 @@ class PatcherCpp(PatcherBase):
                     text = abs_path.read_text(errors="replace")
                 except Exception:
                     continue
-                lsp_send({
-                    "jsonrpc": "2.0",
-                    "method": "textDocument/didOpen",
-                    "params": {
-                        "textDocument": {
-                            "uri": abs_path.as_uri(),
-                            "languageId": "cpp",
-                            "version": 1,
-                            "text": text,
-                        }
-                    },
-                })
+                lsp_send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didOpen",
+                        "params": {
+                            "textDocument": {
+                                "uri": abs_path.as_uri(),
+                                "languageId": "cpp",
+                                "version": 1,
+                                "text": text,
+                            }
+                        },
+                    }
+                )
 
             stable = 0
             last_mtime = pre_mtime
@@ -319,20 +345,26 @@ class PatcherCpp(PatcherBase):
                         break
 
             post_count = len(list(idx_dir.glob("*.idx")))
-            logger.info(
-                f"C++ incremental done: {pre_count}→{post_count} .idx files"
-            )
+            logger.info(f"C++ incremental done: {pre_count}→{post_count} .idx files")
 
         finally:
             try:
-                lsp_send({
-                    "jsonrpc": "2.0", "id": 99,
-                    "method": "shutdown", "params": None,
-                })
+                lsp_send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 99,
+                        "method": "shutdown",
+                        "params": None,
+                    }
+                )
                 time.sleep(0.5)
-                lsp_send({
-                    "jsonrpc": "2.0", "method": "exit", "params": None,
-                })
+                lsp_send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "exit",
+                        "params": None,
+                    }
+                )
                 process.wait(timeout=5)
             except Exception:
                 process.kill()
@@ -347,10 +379,10 @@ class PatcherCpp(PatcherBase):
     ) -> tuple[int, int]:
         """Add symbols and edges from .idx data for changed files."""
         from ..ls_index.clangd_decode import (
+            KIND_MACRO,
             REF_KIND_DEFINITION,
             REF_KIND_REFERENCE,
             ZERO_SYMBOL_ID,
-            KIND_MACRO,
         )
 
         changed_set = set(changed_files)
@@ -380,7 +412,8 @@ class PatcherCpp(PatcherBase):
             scope_start, scope_end = decoder._find_range(rel_file, line)
 
             self.code_graph.add_symbol_node(
-                sym_id, line,
+                sym_id,
+                line,
                 scope_start_line=scope_start,
                 scope_end_line=scope_end,
                 symbol_type=node_type,
@@ -391,9 +424,9 @@ class PatcherCpp(PatcherBase):
                 unified_display = qualified_name.replace("::", ".")
                 if node_type in (NODE_TYPE_FUNCTION, NODE_TYPE_METHOD):
                     unified_display = f"{unified_display}()"
-                self.code_graph.graph.vs[vid]["unified_name"] = (
-                    f"{rel_file}:{unified_display}"
-                )
+                self.code_graph.graph.vs[vid][
+                    "unified_name"
+                ] = f"{rel_file}:{unified_display}"
                 self.code_graph.graph.vs[vid]["file"] = rel_file
                 new_vertices += 1
 
@@ -423,9 +456,7 @@ class PatcherCpp(PatcherBase):
             vid = self.code_graph.name_to_vertex[sym_id]
             file_path = self.code_graph.graph.vs[vid].attributes().get("file")
             if file_path and file_path in self.code_graph.name_to_vertex:
-                self.code_graph._add_edge(
-                    file_path, sym_id, EDGE_TYPE_CONTAIN
-                )
+                self.code_graph._add_edge(file_path, sym_id, EDGE_TYPE_CONTAIN)
 
         for sym_id, ref_list in decoder._refs.items():
             if sym_id not in self.code_graph.name_to_vertex:
@@ -438,13 +469,8 @@ class PatcherCpp(PatcherBase):
                     continue
                 if container_id not in self.code_graph.name_to_vertex:
                     continue
-                if (
-                    sym_id in changed_sym_ids
-                    or container_id in changed_sym_ids
-                ):
-                    self.code_graph._add_edge(
-                        container_id, sym_id, EDGE_TYPE_REFERENCE
-                    )
+                if sym_id in changed_sym_ids or container_id in changed_sym_ids:
+                    self.code_graph._add_edge(container_id, sym_id, EDGE_TYPE_REFERENCE)
                     new_refs += 1
 
         return new_vertices, new_refs

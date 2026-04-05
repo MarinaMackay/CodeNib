@@ -1,26 +1,37 @@
-"""Python-specific incremental patcher."""
+"""TypeScript/JavaScript-specific incremental patcher."""
+
 from __future__ import annotations
 
-from ..types import NODE_TYPE_FUNCTION, NODE_TYPE_METHOD
+from ...types import NODE_TYPE_FUNCTION, NODE_TYPE_METHOD
 from .patcher_base import PatcherBase
 
 
-class PatcherPython(PatcherBase):
-    """Python incremental patcher. Matches SCIPPythonGraphDecoder naming."""
+class PatcherTS(PatcherBase):
+    """TS/JS incremental patcher. Matches SCIPTypeScriptGraphDecoder naming."""
 
     def get_lsp_command(self):
-        return ["basedpyright-langserver", "--stdio"]
+        return ["typescript-language-server", "--stdio"]
 
     def _language_id(self):
-        return "python"
+        return "typescript"
 
     def _get_crossfile_token_types(self):
         return {
-            "type", "class", "function", "method", "namespace",
+            "type",
+            "class",
+            "enum",
+            "function",
+            "method",
+            "namespace",
+            "interface",
+            "variable",
             "property",
         }
 
     def _build_unified_name(self, file_path, name, parent_unified_part, kind):
+        if name in ("<constructor>", "constructor"):
+            name = "constructor"
+
         node_type = self._classify_symbol_type(kind)
 
         if parent_unified_part:
