@@ -46,7 +46,7 @@ import pytest
 from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.ls_router import LSIndexer
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.integration_serial
 
 # ==============================================================================
 # Language configuration

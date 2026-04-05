@@ -78,7 +78,8 @@ norecursedirs = [
 ]
 markers = [
     "slow: marks tests that need LLM API, GPU, or HuggingFace downloads (deselect with '-m \"not slow\"')",
-    "integration: marks tests that clone repos or build indexes (moderate runtime)",
+    "integration: marks tests that use external repos but are read-only / parallel-safe (chunkers, fixture-based SCIP)",
+    "integration_serial: marks tests that mutate shared repos (process_instance, git checkout/apply) and must run sequentially",
 ]
 
 [tool.black]

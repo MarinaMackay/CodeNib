@@ -101,10 +101,11 @@ jobs:
 
       - name: Run unit tests
         shell: bash -l {0}
-        run: pytest -n auto -m "not slow and not integration" -x --tb=short
+        run: pytest -n auto -m "not slow and not integration and not integration_serial" -x --tb=short
 
   # =============================================================
-  # Job 2 — Integration tests  (clone repos, SCIP, chunkers, ~15 min)
+  # Job 2 — Integration tests  (read-only, parallel-safe, ~2 min)
+  #   Chunkers, fixture-based SCIP — uses xdist for parallelism
   # =============================================================
   integration:
     needs: [preflight, unit]
@@ -128,15 +129,45 @@ jobs:
           install-clangd: "true"
           install-bear: "true"
 
-      - name: Run integration tests
+      - name: Run integration tests (parallel)
         shell: bash -l {0}
-        run: pytest -m "integration" --tb=short
+        run: pytest -n auto -m "integration" --tb=short
 
   # =============================================================
-  # Job 3 — Slow tests  (LLM API, GPU embeddings, ~15 min)
+  # Job 3 — Integration serial  (mutates repos, ~25 min)
+  #   SCIP indexing, process_instance, git checkout/apply
+  # =============================================================
+  integration-serial:
+    needs: [preflight, integration]
+    if: needs.preflight.outputs.should-run == 'true'
+    runs-on: self-hosted
+    env:
+      PIP_CACHE_DIR: ${{ github.workspace }}/../.cache/pip
+      npm_config_cache: ${{ github.workspace }}/../.cache/npm
+    steps:
+      - name: Prepare temp HOME
+        run: |
+          mkdir -p "$RUNNER_TEMP/home"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-env
+        with:
+          install-clangd: "true"
+          install-bear: "true"
+
+      - name: Run integration serial tests
+        shell: bash -l {0}
+        run: pytest -m "integration_serial" --tb=short
+
+  # =============================================================
+  # Job 4 — Slow tests  (LLM API, GPU embeddings, ~15 min)
   # =============================================================
   slow:
-    needs: [preflight, integration]
+    needs: [preflight, integration-serial]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: self-hosted
     env:

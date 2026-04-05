@@ -34,7 +34,7 @@ from codeminer.graph.incremental.graph_patcher import GraphPatcher
 from codeminer.graph.incremental.lsp_client import LSPClient
 from codeminer.ls_router import LSIndexer
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.integration_serial
 
 
 def test_ls_indexer_graph_patch_import():

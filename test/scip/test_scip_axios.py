@@ -17,7 +17,7 @@ from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
 from codeminer.ls_router import LSIndexer
 from codeminer.types import is_symbol_node
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.integration_serial
 
 
 def _pick_axios_instance() -> dict:
