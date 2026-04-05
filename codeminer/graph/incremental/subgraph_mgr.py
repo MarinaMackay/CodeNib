@@ -163,7 +163,7 @@ class SubgraphMgr(ABC):
         if hasattr(g, "file_to_vertices") and file_path in g.file_to_vertices:
             vids = set(g.file_to_vertices[file_path])
         else:
-            from ..graph.code_graph import is_symbol_node
+            from ..code_graph import is_symbol_node
             from ..types import NODE_TYPE_FILE as NTF
 
             vids = set()

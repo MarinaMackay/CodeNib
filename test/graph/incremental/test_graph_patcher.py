@@ -34,6 +34,8 @@ from codeminer.graph.incremental.graph_patcher import GraphPatcher
 from codeminer.graph.incremental.lsp_client import LSPClient
 from codeminer.ls_router import LSIndexer
 
+pytestmark = pytest.mark.integration
+
 
 def test_ls_indexer_graph_patch_import():
     """Smoke test: LSIndexer.graph_patch lazy imports resolve correctly."""
