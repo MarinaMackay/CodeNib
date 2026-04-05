@@ -97,13 +97,13 @@ jobs:
 
       - name: Run unit tests
         shell: bash -l {0}
-        run: pytest -m "not slow and not integration" -x --tb=short
+        run: pytest -n auto -m "not slow and not integration" -x --tb=short
 
   # =============================================================
   # Job 2 — Integration tests  (clone repos, SCIP, chunkers, ~15 min)
   # =============================================================
   integration:
-    needs: preflight
+    needs: [preflight, unit]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: self-hosted
     env:
@@ -126,13 +126,13 @@ jobs:
 
       - name: Run integration tests
         shell: bash -l {0}
-        run: pytest -m "integration" --tb=short
+        run: pytest -n auto -m "integration" --tb=short
 
   # =============================================================
   # Job 3 — Slow tests  (LLM API, GPU embeddings, ~15 min)
   # =============================================================
   slow:
-    needs: preflight
+    needs: [preflight, integration]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: self-hosted
     env:
@@ -152,4 +152,4 @@ jobs:
 
       - name: Run slow tests (LLM + embedding)
         shell: bash -l {0}
-        run: pytest -m "slow" --tb=short
+        run: pytest -n auto -m "slow" --tb=short
