@@ -19,12 +19,6 @@ Usage:
         --vertex-project YOUR_GCP_PROJECT \
         --vertex-location us-central1 \
         ...
-
-    # vLLM later
-    python examples/skill_agent_eval.py \
-        --model openai/Qwen/Qwen2.5-Coder-7B-Instruct \
-        --api-base http://localhost:9000/v1 \
-        ...
 """
 
 from __future__ import annotations
@@ -38,9 +32,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# ---------------------------------------------------------------------------
 # Ensure the project root is on sys.path when running as a script
-# ---------------------------------------------------------------------------
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
@@ -64,10 +56,8 @@ from codeminer.types import QueriedNode
 logger = get_logger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Output Schema (matching hengjia branch)
-# ---------------------------------------------------------------------------
 
+# Output Schema 
 
 @dataclass
 class CodeSymbol:
@@ -106,10 +96,7 @@ class SkillEvalReport:
     aggregate_metrics: Dict[str, Any] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
 # QueriedNode -> CodeSymbol conversion
-# ---------------------------------------------------------------------------
-
 
 def queried_node_to_symbol(node: QueriedNode) -> CodeSymbol:
     """Convert a QueriedNode to CodeSymbol."""
@@ -124,10 +111,7 @@ def queried_node_to_symbol(node: QueriedNode) -> CodeSymbol:
     )
 
 
-# ---------------------------------------------------------------------------
 # Core evaluation logic
-# ---------------------------------------------------------------------------
-
 
 def build_bm25_index(
     repo_path: str, languages: List[str], max_k: int = 128
@@ -353,10 +337,7 @@ def evaluate_instance(
         }
 
 
-# ---------------------------------------------------------------------------
 # Main evaluation loop
-# ---------------------------------------------------------------------------
-
 
 def run_evaluation(args: argparse.Namespace) -> SkillEvalReport:
     """Run evaluation on the dataset."""
@@ -446,10 +427,7 @@ def run_evaluation(args: argparse.Namespace) -> SkillEvalReport:
     return report
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
