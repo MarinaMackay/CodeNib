@@ -130,7 +130,7 @@ jobs:
 
       - name: Run integration tests
         shell: bash -l {0}
-        run: pytest -n auto -m "integration" --tb=short
+        run: pytest -m "integration" --tb=short
 
   # =============================================================
   # Job 3 — Slow tests  (LLM API, GPU embeddings, ~15 min)
