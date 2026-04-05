@@ -29,6 +29,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # =============================================================
   # Preflight — evaluate skip condition once for all jobs
@@ -152,4 +156,4 @@ jobs:
 
       - name: Run slow tests (LLM + embedding)
         shell: bash -l {0}
-        run: pytest -n auto -m "slow" --tb=short
+        run: pytest -m "slow" --tb=short
