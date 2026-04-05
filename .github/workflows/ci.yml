@@ -167,7 +167,7 @@ jobs:
   # Job 4 — Slow tests  (LLM API, GPU embeddings, ~15 min)
   # =============================================================
   slow:
-    needs: [preflight, integration-serial]
+    needs: [preflight, unit]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: self-hosted
     env:
