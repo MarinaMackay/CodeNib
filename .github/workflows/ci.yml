@@ -148,6 +148,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/home"
           echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
 
+      - name: Setup GCP credentials
+        run: |
+          mkdir -p "$HOME/.config/gcloud"
+          echo '${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}' > "$HOME/.config/gcloud/application_default_credentials.json"
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
