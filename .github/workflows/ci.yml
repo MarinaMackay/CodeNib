@@ -141,6 +141,7 @@ jobs:
     needs: [preflight, integration]
     if: needs.preflight.outputs.should-run == 'true'
     runs-on: self-hosted
+    timeout-minutes: 45
     env:
       PIP_CACHE_DIR: ${{ github.workspace }}/../.cache/pip
       npm_config_cache: ${{ github.workspace }}/../.cache/npm
@@ -149,6 +150,12 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/home"
           echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+
+      - name: Persist codeminer cache across runs
+        run: |
+          CACHE_DIR="${{ github.workspace }}/../.cache/codeminer"
+          mkdir -p "$CACHE_DIR"
+          ln -sfn "$CACHE_DIR" "$HOME/.codeminer"
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -161,7 +168,7 @@ jobs:
 
       - name: Run integration serial tests
         shell: bash -l {0}
-        run: pytest -m "integration_serial" --tb=short
+        run: pytest -m "integration_serial" -v --tb=short
 
   # =============================================================
   # Job 4 — Slow tests  (LLM API, GPU embeddings, ~15 min)
@@ -173,11 +180,18 @@ jobs:
     env:
       PIP_CACHE_DIR: ${{ github.workspace }}/../.cache/pip
       npm_config_cache: ${{ github.workspace }}/../.cache/npm
+      VERTEXAI_PROJECT: ${{ vars.VERTEXAI_PROJECT }}
     steps:
       - name: Prepare temp HOME
         run: |
           mkdir -p "$RUNNER_TEMP/home"
           echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+
+      - name: Persist codeminer cache across runs
+        run: |
+          CACHE_DIR="${{ github.workspace }}/../.cache/codeminer"
+          mkdir -p "$CACHE_DIR"
+          ln -sfn "$CACHE_DIR" "$HOME/.codeminer"
 
       - name: Setup GCP credentials
         run: |
