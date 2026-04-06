@@ -160,7 +160,7 @@ jobs:
       - name: Purge stale SCIP Python caches (one-time)
         run: |
           CACHE_DIR="${{ github.workspace }}/../.cache/codeminer"
-          MARKER="$CACHE_DIR/.scip-cache-v2"
+          MARKER="$CACHE_DIR/.scip-cache-v3"
           if [ ! -f "$MARKER" ]; then
             echo "Purging stale SCIP Python graph caches..."
             find "$CACHE_DIR" -name "graph.pkl" -delete 2>/dev/null || true
@@ -208,7 +208,7 @@ jobs:
       - name: Purge stale SCIP Python caches (one-time)
         run: |
           CACHE_DIR="${{ github.workspace }}/../.cache/codeminer"
-          MARKER="$CACHE_DIR/.scip-cache-v2"
+          MARKER="$CACHE_DIR/.scip-cache-v3"
           if [ ! -f "$MARKER" ]; then
             echo "Purging stale SCIP Python graph caches..."
             find "$CACHE_DIR" -name "graph.pkl" -delete 2>/dev/null || true

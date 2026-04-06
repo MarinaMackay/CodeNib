@@ -85,7 +85,7 @@ class SCIPPythonIndexer(SCIPIndexerBase):
 
         if cwd:
             cmd.append("--cwd")
-            cmd.append(str(Path(cwd).absolute()))
+            cmd.append(str(Path(cwd).resolve()))
 
         if project_name:
             cmd.extend(["--project-name", project_name])
@@ -298,7 +298,8 @@ class SCIPPythonIndexer(SCIPIndexerBase):
             import os
 
             scip_bin = self._get_conda_env_bin()
-            work_dir = cwd if cwd else self.project_root
+            # Resolve symlinks so subprocess cwd matches real paths
+            work_dir = Path(cwd if cwd else self.project_root).resolve()
 
             if scip_bin:
                 # Run directly with scip-env/bin on PATH instead of
