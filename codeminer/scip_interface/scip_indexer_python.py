@@ -208,11 +208,11 @@ class SCIPPythonIndexer(SCIPIndexerBase):
             )
 
             if self.conda_env_name in result.stdout:
-                logger.info(f"Conda environment '{self.conda_env_name}' already exists")
+                logger.info(f"Conda environment {self.conda_env_name!r} already exists")
                 return True
 
             if self.env_file.exists():
-                logger.info(f"Creating conda environment '{self.conda_env_name}'...")
+                logger.info(f"Creating conda environment {self.conda_env_name!r}...")
 
                 create_cmd = [
                     "conda",
@@ -237,7 +237,7 @@ class SCIPPythonIndexer(SCIPIndexerBase):
                     )
 
                 logger.info(
-                    f"Conda environment '{self.conda_env_name}' created successfully"
+                    f"Conda environment {self.conda_env_name!r} created successfully"
                 )
                 return True
             else:
@@ -257,6 +257,25 @@ class SCIPPythonIndexer(SCIPIndexerBase):
             )
             return False
 
+    def _get_conda_env_bin(self) -> Optional[str]:
+        """Return the bin directory for the scip conda environment."""
+        try:
+            result = subprocess.run(
+                ["conda", "info", "--envs", "--json"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            import json
+
+            envs = json.loads(result.stdout).get("envs", [])
+            for env_path in envs:
+                if env_path.endswith(f"/{self.conda_env_name}"):
+                    return str(Path(env_path) / "bin")
+        except Exception:
+            pass
+        return None
+
     def _run_in_conda_env(
         self, cmd: list, cwd: Optional[Union[str, Path]] = None
     ) -> bool:
@@ -275,10 +294,23 @@ class SCIPPythonIndexer(SCIPIndexerBase):
 
             logger.info(f"Running in conda environment: {cmd}")
 
+            # Prepend scip-env bin to PATH so scip-python's internal
+            # pip3/python3 calls resolve to the clean scip-env, not
+            # the host environment (which may have hundreds of packages
+            # that cause ENOBUFS in pip show).
+            env = None
+            scip_bin = self._get_conda_env_bin()
+            if scip_bin:
+                import os
+
+                env = os.environ.copy()
+                env["PATH"] = f"{scip_bin}:{env.get('PATH', '')}"
+
             subprocess.run(
                 conda_cmd,
                 check=True,
                 cwd=cwd if cwd else self.project_root,
+                env=env,
             )
             return True
         except subprocess.CalledProcessError as e:
