@@ -1,0 +1,59 @@
+name: RFC / Design Proposal
+description: Propose a significant design change or architectural decision
+labels: ["rfc"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for proposals that require team discussion before implementation.
+        Examples: new retrieval strategies, graph schema changes, evaluation methodology, API redesigns.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-paragraph overview of the proposal.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this change needed? What's the current limitation?
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: Detailed Design
+      description: |
+        Describe the proposed changes in detail.
+        Include: affected modules, new/changed APIs, data flow, schema changes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Trade-offs & Risks
+      description: What are the downsides? What could go wrong? Migration concerns?
+
+  - type: textarea
+    id: milestones
+    attributes:
+      label: Implementation Plan
+      description: Break the work into phases or milestones if applicable.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: How large is this change?
+      options:
+        - "Small — single module, < 1 week"
+        - "Medium — multiple modules, 1-2 weeks"
+        - "Large — cross-cutting, > 2 weeks"
+    validations:
+      required: true
