@@ -271,9 +271,14 @@ class SCIPPythonIndexer(SCIPIndexerBase):
             envs = json.loads(result.stdout).get("envs", [])
             for env_path in envs:
                 if env_path.endswith(f"/{self.conda_env_name}"):
-                    return str(Path(env_path) / "bin")
-        except Exception:
-            pass
+                    bin_dir = str(Path(env_path) / "bin")
+                    logger.debug(f"Found scip-env bin directory: {bin_dir}")
+                    return bin_dir
+        except Exception as e:
+            logger.warning(f"Failed to locate scip-env bin directory: {e}")
+        logger.warning(
+            "Could not find scip-env bin directory, will fall back to conda run"
+        )
         return None
 
     def _run_in_conda_env(
@@ -290,28 +295,33 @@ class SCIPPythonIndexer(SCIPIndexerBase):
             bool: True if command succeeded, False otherwise
         """
         try:
-            conda_cmd = ["conda", "run", "-n", self.conda_env_name] + cmd
+            import os
 
-            logger.info(f"Running in conda environment: {cmd}")
-
-            # Prepend scip-env bin to PATH so scip-python's internal
-            # pip3/python3 calls resolve to the clean scip-env, not
-            # the host environment (which may have hundreds of packages
-            # that cause ENOBUFS in pip show).
-            env = None
             scip_bin = self._get_conda_env_bin()
-            if scip_bin:
-                import os
+            work_dir = cwd if cwd else self.project_root
 
+            if scip_bin:
+                # Run directly with scip-env/bin on PATH instead of
+                # using `conda run`, which resets PATH during activation
+                # and causes pip3 to resolve to the wrong environment.
                 env = os.environ.copy()
                 env["PATH"] = f"{scip_bin}:{env.get('PATH', '')}"
-
-            subprocess.run(
-                conda_cmd,
-                check=True,
-                cwd=cwd if cwd else self.project_root,
-                env=env,
-            )
+                logger.info(f"Running with scip-env PATH ({scip_bin}): {cmd}")
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    cwd=work_dir,
+                    env=env,
+                )
+            else:
+                # Fallback: use conda run (may have PATH issues)
+                conda_cmd = ["conda", "run", "-n", self.conda_env_name] + cmd
+                logger.info(f"Running via conda run (fallback): {cmd}")
+                subprocess.run(
+                    conda_cmd,
+                    check=True,
+                    cwd=work_dir,
+                )
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Error running command in conda environment: {e}")
