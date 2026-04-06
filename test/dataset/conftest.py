@@ -4,6 +4,7 @@
 from pathlib import Path
 
 import pytest
+from filelock import FileLock
 
 from codeminer.dataset.gt_locate import GTLocator
 from codeminer.dataset.swebench_multilingual import SwebenchMultilingualDataset
@@ -19,6 +20,28 @@ REPO_FIXTURES = {
     "rust": "tokio-rs/axum",
     "typescript": "preactjs/preact",
 }
+
+
+class LockedGTLocator:
+    """Wraps GTLocator so analyze_instance acquires a per-repo filelock.
+
+    This prevents xdist workers from running git checkout / git apply on the
+    same repo directory simultaneously.
+    """
+
+    def __init__(self, locator: GTLocator, lock_dir: Path):
+        self._locator = locator
+        self._lock_dir = lock_dir
+        self._lock_dir.mkdir(parents=True, exist_ok=True)
+
+    def analyze_instance(self, instance, **kwargs):
+        repo_name = instance["repo"].replace("/", "_")
+        lock_path = self._lock_dir / f"{repo_name}.lock"
+        with FileLock(str(lock_path)):
+            return self._locator.analyze_instance(instance, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._locator, name)
 
 
 @pytest.fixture(scope="session")
@@ -40,10 +63,12 @@ def _first_instance_for_repo(dataset, repo: str):
 
 
 @pytest.fixture(scope="session")
-def gt_locator():
-    """Shared GTLocator with a persistent work directory."""
+def gt_locator(tmp_path_factory):
+    """Shared GTLocator with a persistent work directory and per-repo locking."""
     GT_TEST_WORK_DIR.mkdir(parents=True, exist_ok=True)
-    return GTLocator(work_dir=str(GT_TEST_WORK_DIR))
+    locator = GTLocator(work_dir=str(GT_TEST_WORK_DIR))
+    lock_dir = tmp_path_factory.getbasetemp().parent / "gt-locks"
+    return LockedGTLocator(locator, lock_dir)
 
 
 @pytest.fixture(scope="session")

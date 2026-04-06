@@ -7,7 +7,7 @@ from codeminer.dataset.locbench import LocbenchDataset
 from codeminer.graph.traverse_graph import traverse_tree_structure
 from codeminer.ls_router import LSIndexer
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.integration_serial
 
 args_dict = {
     "model": "gpt-4o",

@@ -270,7 +270,7 @@ def _assert_valid_result(result):
     assert total_symbols == len(result["code_blocks"])
 
 
-@pytest.mark.integration
+@pytest.mark.integration_serial
 class TestAnalyzeGoInstance:
     """Full pipeline test on a real Go instance from caddyserver/caddy."""
 
@@ -284,7 +284,7 @@ class TestAnalyzeGoInstance:
         assert result["base_commit"] == go_instance["base_commit"]
 
 
-@pytest.mark.integration
+@pytest.mark.integration_serial
 class TestAnalyzeCppInstance:
     """Full pipeline test on a real C/C++ instance from redis/redis."""
 
@@ -296,7 +296,7 @@ class TestAnalyzeCppInstance:
         assert result["repo"] == cpp_instance["repo"]
 
 
-@pytest.mark.integration
+@pytest.mark.integration_serial
 class TestAnalyzeRustInstance:
     """Full pipeline test on a real Rust instance from tokio-rs/axum."""
 
@@ -307,7 +307,7 @@ class TestAnalyzeRustInstance:
         assert result["instance_id"] == rust_instance["instance_id"]
 
 
-@pytest.mark.integration
+@pytest.mark.integration_serial
 class TestAnalyzeTypescriptInstance:
     """Full pipeline test on a real TypeScript instance from preactjs/preact."""
 

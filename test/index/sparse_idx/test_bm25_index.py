@@ -8,7 +8,7 @@ from codeminer.code_chunker import CodeChunker
 from codeminer.index import BM25CodeIndexer
 from codeminer.ls_router import LSIndexer
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.integration_serial
 
 
 @pytest.fixture(scope="module")

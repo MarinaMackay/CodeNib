@@ -40,7 +40,7 @@ import pytest
 from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.ls_router import LSGraphDecoder
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.integration_serial
 from codeminer.ls_router import LSIndexer
 
 # Default instances for testing

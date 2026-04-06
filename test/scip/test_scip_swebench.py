@@ -6,7 +6,7 @@ import pytest
 from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.ls_router import LSIndexer
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.integration_serial
 
 args_dict = {
     "model": "gpt-4o",

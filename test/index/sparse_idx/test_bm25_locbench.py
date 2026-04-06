@@ -7,7 +7,7 @@ from codeminer.dataset.locbench import LocbenchDataset
 from codeminer.index import BM25CodeIndexer
 from codeminer.ls_router import LSIndexer
 
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.integration_serial
 
 args_dict = {
     "model": "gpt-4o",
