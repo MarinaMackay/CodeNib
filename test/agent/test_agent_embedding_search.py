@@ -1,8 +1,9 @@
 """
-Agent integration tests for embedding_search skill.
+Agent integration tests: AgentRunner must invoke embedding_search.
 
-TestEmbeddingSearchE2E: real FAISS index over httpie/cli + Vertex AI agent routing.
-Marked @pytest.mark.slow, run with: pytest -v -m slow
+Uses real FAISS over httpie/cli (shared cache with e2e tests via CODEMINER_INDEX_PATH).
+
+Run: pytest test/agent/test_agent_embedding_search.py -v
 """
 
 from __future__ import annotations
@@ -19,13 +20,11 @@ from codeminer.agent.skills.registry import SkillRegistry
 SKILLS_DIR = str(Path(_skills_pkg.__file__).parent)
 
 
-@pytest.mark.slow
-class TestEmbeddingSearchE2E:
+class TestAgentEmbeddingSearch:
     """
-    Full round-trip: real FAISS index + Vertex AI agent routing.
+    Vertex (or CODEMINER_VERTEX_ROUTING_MODEL) + real FAISS; assert tool_calls use embedding_search.
 
-    Index is cached at /tmp/codeminer_e2e_index (reused across runs).
-    Set CODEMINER_INDEX_PATH to override.
+    Index default: /tmp/codeminer_e2e_index — override with CODEMINER_INDEX_PATH.
     """
 
     @pytest.fixture(scope="class", autouse=True)
@@ -92,16 +91,6 @@ class TestEmbeddingSearchE2E:
         SkillRegistry().register(meta)
 
         return meta
-
-    def test_embedding_search_returns_results(self, real_embedding_search):
-        """embedding_search must return results for a semantic query."""
-        results = real_embedding_search.executor_fn(
-            query="function that sends an HTTP request with authentication",
-            top_k=5,
-            return_content=True,
-        )
-        assert isinstance(results, list)
-        assert len(results) > 0
 
     @pytest.mark.parametrize(
         "vertex_model",

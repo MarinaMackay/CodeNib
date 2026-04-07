@@ -4,17 +4,16 @@ End-to-end smoke test for the embedding_search skill.
 This test builds (or reloads) a real FAISS index over the httpie/cli repository,
 then exercises the full skill loading and execution path.
 
-Marked with @pytest.mark.slow so it is excluded from the default test run.
-To run explicitly:
+Run:
 
-    pytest test/agent/test_embedding_search_e2e.py -v -m slow
+    pytest test/agent/test_embedding_search_e2e.py -v
 
 The index is written to /tmp/codeminer_e2e_index/ and is reused across runs.
 Delete that directory to force a rebuild.
 
 Environment variable CODEMINER_INDEX_PATH can override the cache location:
 
-    CODEMINER_INDEX_PATH=/my/path pytest ... -m slow
+    CODEMINER_INDEX_PATH=/my/path pytest test/agent/test_embedding_search_e2e.py -v
 """
 
 from __future__ import annotations
@@ -118,7 +117,6 @@ def executor_fn(retrieve_context):
     return meta.executor_fn
 
 
-@pytest.mark.slow
 class TestEmbeddingSearchE2E:
     """Full-stack tests using a real FAISS index over httpie/cli."""
 
