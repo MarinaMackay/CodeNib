@@ -1,26 +1,53 @@
 # CodeMiner
 
-## Setup
+An LLM-adapted code indexing and retrieval system for multi-language codebases.
 
-Install Python environment with conda:
+CodeMiner builds LSP-oriented symbol graphs and lightweight indexes from multi-language codebases, designed for efficient retrieval by LLM-based code agents. It supports **Python, Go, Rust, C/C++, JavaScript, and TypeScript**.
+
+## Quick Start
+
 ```bash
 conda create -n codeminer python=3.10
 conda activate codeminer
 pip install -e .
-```
 
-Optional: enable SCIP-based code indexing:
-```bash
+# Enable SCIP/LSP-based code intelligence
 make scip
 ```
-The setup script installs `rust-analyzer`, `scip-clang`, `@sourcegraph/scip-typescript`, and `@sourcegraph/scip-python`.
 
-## Contribute
+## Key Capabilities
 
-Install pre-commit hooks:
+- **LSP-oriented symbol graphs** -- structural code intelligence via SCIP protocol and language servers (scip-python, rust-analyzer, clangd, gopls, scip-typescript)
+- **Incremental graph patching** -- update CodeGraph in-place via LSP without full re-indexing, enabling fast iteration on evolving codebases
+- **Lightweight hybrid retrieval** -- BM25 sparse, regex, and FAISS/Milvus dense indexes with LLM re-ranking
+- **Tree-sitter chunking** at file, symbol, and method granularity
+- **SWE-bench integration** -- ground-truth extraction, multi-language dataset collection, and evaluation
+
+## Development
+
 ```bash
-pip install pre-commit
-pre-commit install
+make dev          # install with dev + test deps
+make test         # run all tests
 ```
 
-Code formatting (black, isort) and linting (flake8) will run automatically before each commit.
+Tests use three pytest marker tiers:
+
+```bash
+pytest -m "not slow and not integration" -x   # unit (~1 min)
+pytest -m integration                          # integration (~15 min)
+pytest -m slow                                 # LLM/GPU (~15 min)
+```
+
+Pre-commit hooks (black, isort, flake8) are configured -- run `pre-commit install` after cloning.
+
+## Documentation
+
+Full docs are served via [mkdocs-material](https://squidfunk.github.io/mkdocs-material/). To run locally:
+
+```bash
+mkdocs serve
+```
+
+## License
+
+MIT

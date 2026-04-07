@@ -230,6 +230,16 @@ class SCIPIndexerBase(ABC):
                 logger.info(f"Saved processed SCIP index to {output_path}")
                 logger.info(f"⏱️  Graph saving took: {save_duration:.2f} seconds")
 
+            n_nodes = graph.graph.vcount()
+            n_edges = graph.graph.ecount()
+            logger.info(
+                f"✅ Graph created successfully ({n_nodes} nodes, {n_edges} edges)"
+            )
+            if n_nodes <= 1:
+                logger.warning(
+                    "⚠️  Graph has no symbol nodes — the SCIP index may be empty. "
+                    "Check that the indexer produced valid output."
+                )
             logger.info(f"⏱️  Index processing took: {duration:.2f} seconds")
             return graph
 

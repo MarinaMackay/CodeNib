@@ -26,8 +26,10 @@ from codeminer.agent.skills.core import SkillInputSpec, SkillMetadata, SkillType
 from codeminer.agent.skills.graph_expand.executor import create_executor
 from codeminer.agent.skills.registry import SkillRegistry
 from codeminer.graph.code_graph import CodeGraph
-from codeminer.llm.llm_config import LLMConfig, LLMProvider, create_llm
+from codeminer.llm.litellm_chat import LiteLLMChat
 from codeminer.ops.expand import ExpandContext
+
+pytestmark = pytest.mark.slow
 
 # ---------------------------------------------------------------------------
 # Real SCIP graph from httpie/cli repo
@@ -120,7 +122,6 @@ def _register_graph_expand(registry: SkillRegistry, graph: CodeGraph) -> None:
     )
 
 
-@pytest.mark.integration
 class TestAgentGraphVertexAI:
     """End-to-end: LLM agent uses graph_expand on the real httpie graph."""
 
@@ -135,13 +136,11 @@ class TestAgentGraphVertexAI:
     @pytest.fixture()
     def vertex_llm(self):
         try:
-            config = LLMConfig(
-                model_name="gemini-2.5-flash",
-                provider=LLMProvider.VERTEX_GEMINI,
+            return LiteLLMChat(
+                model="vertex_ai/gemini-2.5-flash",
                 temperature=0.0,
                 max_tokens=2048,
             )
-            return create_llm(config)
         except Exception as e:
             pytest.skip(f"Vertex AI not available: {e}")
 

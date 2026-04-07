@@ -5,7 +5,11 @@ Regression tests for the C++ code chunker using the fmt repository.
 
 from pathlib import Path
 
+import pytest
+
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
+
+pytestmark = pytest.mark.integration
 
 
 def _collect_chunks(repo_root: Path, chunk_depth: int):

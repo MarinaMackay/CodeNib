@@ -14,11 +14,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import codeminer.agent.skills as _skills_pkg
 from codeminer.agent.skills.loader import SkillLoader
 from codeminer.agent.skills.registry import SkillRegistry
 
-SKILL_DIR = str(Path(_skills_pkg.__file__).parent / "embedding_search")
+
+def _skill_dir() -> str:
+    """Return the absolute path to the embedding_search skill package."""
+    import codeminer.agent.skills as pkg
+
+    return str(Path(pkg.__file__).parent / "embedding_search")
 
 
 def _make_context(
@@ -58,7 +62,7 @@ class TestEmbeddingSearchExecutor:
 
         spec = importlib.util.spec_from_file_location(
             "embedding_search.executor",
-            os.path.join(SKILL_DIR, "executor.py"),
+            os.path.join(_skill_dir(), "executor.py"),
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -118,7 +122,7 @@ class TestEmbeddingSearchLoader:
     def test_loads_and_executes(self):
         mock_ctx = _make_context(vector_store=_make_store())
         loader = SkillLoader()
-        meta = loader.load_skill(SKILL_DIR, contexts={"retrieve": mock_ctx})
+        meta = loader.load_skill(_skill_dir(), contexts={"retrieve": mock_ctx})
 
         assert meta is not None
         assert meta.skill_id == "embedding_search"

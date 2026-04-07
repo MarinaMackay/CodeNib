@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from filelock import FileLock
 
 HTTPIE_REPO_URL = "https://github.com/httpie/cli.git"
 HTTPIE_REPO_PATH = Path("/tmp/httpie-cli")
@@ -73,33 +74,50 @@ def ensure_repo_checkout(repo_url: str, repo_path: Path, ref: str) -> Path:
     return repo_path
 
 
+def _locked_repo_checkout(
+    tmp_path_factory, repo_url: str, repo_path: Path, ref: str
+) -> Path:
+    """Acquire a cross-worker filelock before cloning/checking out a repo."""
+    lock_path = tmp_path_factory.getbasetemp().parent / f"{repo_path.name}.lock"
+    with FileLock(str(lock_path)):
+        return ensure_repo_checkout(repo_url, repo_path, ref)
+
+
 @pytest.fixture(scope="session")
-def httpie_cli_repo():
+def httpie_cli_repo(tmp_path_factory):
     """Provide a pinned checkout of the httpie/cli repository."""
-    return ensure_repo_checkout(HTTPIE_REPO_URL, HTTPIE_REPO_PATH, HTTPIE_REPO_REF)
-
-
-@pytest.fixture(scope="session")
-def express_repo():
-    """Provide a pinned checkout of the express repository."""
-    return ensure_repo_checkout(EXPRESS_REPO_URL, EXPRESS_REPO_PATH, EXPRESS_REPO_REF)
-
-
-@pytest.fixture(scope="session")
-def fmt_repo():
-    """Provide a pinned checkout of the fmt repository."""
-    return ensure_repo_checkout(FMT_REPO_URL, FMT_REPO_PATH, FMT_REPO_REF)
-
-
-@pytest.fixture(scope="session")
-def arrayvec_repo():
-    """Provide a pinned checkout of the arrayvec repository."""
-    return ensure_repo_checkout(
-        ARRAYVEC_REPO_URL, ARRAYVEC_REPO_PATH, ARRAYVEC_REPO_REF
+    return _locked_repo_checkout(
+        tmp_path_factory, HTTPIE_REPO_URL, HTTPIE_REPO_PATH, HTTPIE_REPO_REF
     )
 
 
 @pytest.fixture(scope="session")
-def gjson_repo():
+def express_repo(tmp_path_factory):
+    """Provide a pinned checkout of the express repository."""
+    return _locked_repo_checkout(
+        tmp_path_factory, EXPRESS_REPO_URL, EXPRESS_REPO_PATH, EXPRESS_REPO_REF
+    )
+
+
+@pytest.fixture(scope="session")
+def fmt_repo(tmp_path_factory):
+    """Provide a pinned checkout of the fmt repository."""
+    return _locked_repo_checkout(
+        tmp_path_factory, FMT_REPO_URL, FMT_REPO_PATH, FMT_REPO_REF
+    )
+
+
+@pytest.fixture(scope="session")
+def arrayvec_repo(tmp_path_factory):
+    """Provide a pinned checkout of the arrayvec repository."""
+    return _locked_repo_checkout(
+        tmp_path_factory, ARRAYVEC_REPO_URL, ARRAYVEC_REPO_PATH, ARRAYVEC_REPO_REF
+    )
+
+
+@pytest.fixture(scope="session")
+def gjson_repo(tmp_path_factory):
     """Provide a pinned checkout of the gjson repository."""
-    return ensure_repo_checkout(GJSON_REPO_URL, GJSON_REPO_PATH, GJSON_REPO_REF)
+    return _locked_repo_checkout(
+        tmp_path_factory, GJSON_REPO_URL, GJSON_REPO_PATH, GJSON_REPO_REF
+    )

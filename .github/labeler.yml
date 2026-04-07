@@ -1,0 +1,89 @@
+# Auto-label PRs based on changed file paths
+# See https://github.com/actions/labeler
+
+# ── Domains ──────────────────────────────────────────────────────────
+agent:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/agent/**
+          - test/agent/**
+
+chunking:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/code_chunking/**
+          - test/chunker/**
+
+graph:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/graph/**
+          - test/graph/**
+
+index:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/index/**
+          - test/index/**
+
+dataset:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/dataset/**
+          - test/dataset/**
+
+scip:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/scip_interface/**
+          - codeminer/ls_index/**
+          - test/scip/**
+
+llm:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/llm/**
+
+ops:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/ops/**
+          - test/ops/**
+
+compiler:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/compiler/**
+          - test/compiler/**
+
+eval:
+  - changed-files:
+      - any-glob-to-any-file:
+          - codeminer/eval/**
+
+# ── Cross-cutting ────────────────────────────────────────────────────
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**.md"
+          - docs/**
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - test/**
+          - conftest.py
+          - pyproject.toml
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - requirements*.txt
+          - setup.py
+          - setup.cfg
+          - pyproject.toml

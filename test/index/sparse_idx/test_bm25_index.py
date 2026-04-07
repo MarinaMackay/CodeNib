@@ -8,6 +8,8 @@ from codeminer.code_chunker import CodeChunker
 from codeminer.index import BM25CodeIndexer
 from codeminer.ls_router import LSIndexer
 
+pytestmark = pytest.mark.integration_serial
+
 
 @pytest.fixture(scope="module")
 def samplemod_repo():
@@ -142,7 +144,7 @@ def test_build_index_from_chunks(code_chunks, test_output_dir):
     ]
 
     for query in search_queries:
-        print(f"\nSearching for '{query}':")
+        print(f"\nSearching for {query!r}:")
         results = indexer.search(query, top_k=3, return_code_content=False)
 
         assert isinstance(results, list), "Search should return a list"
@@ -214,12 +216,12 @@ def test_search_with_filter_test(code_graph):
     # Search with filter_test=True
     results_filtered = indexer.search(query, top_k=20, filter_test=True)
 
-    print(f"\nUnfiltered results for '{query}': {len(results_unfiltered)}")
+    print(f"\nUnfiltered results for {query!r}: {len(results_unfiltered)}")
     for result in results_unfiltered:
         print(f"  {result.node_name}")
 
     print(
-        f"\nFiltered results for '{query}' (filter_test=True): {len(results_filtered)}"
+        f"\nFiltered results for {query!r} (filter_test=True): {len(results_filtered)}"
     )
     for result in results_filtered:
         print(f"  {result.node_name}")

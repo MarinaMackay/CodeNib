@@ -28,12 +28,12 @@ Output Format:
         "target_files":     ["astropy/coordinates/builtin_frames/itrs.py", ...],
         "code_blocks": [
             {
-                "file_path": "astropy/coordinates/builtin_frames/itrs.py",
-                "symbol": "ITRS",
+                "change_type": "modified",
                 "start_line": 10,
                 "end_line": 50,
-                "symbol_type": "class",
-                "change_type": "modified"
+                "file_path": "astropy/coordinates/builtin_frames/itrs.py",
+                "symbol": "ITRS",
+                "symbol_type": "class"
             },
             ...
         ],
@@ -116,12 +116,12 @@ def _chunk_to_code_block(chunk: CodeChunk, change_type: str) -> Dict[str, Any]:
     """Convert a CodeChunk to a ground-truth code block dict with 1-based lines."""
     file_path, _, symbol = chunk.node_id.partition(":")
     return {
-        "file_path": file_path,
-        "symbol": symbol or chunk.name,
+        "change_type": change_type,
         "start_line": chunk.start_line + 1,  # 0-based -> 1-based
         "end_line": chunk.end_line + 1,  # 0-based -> 1-based
+        "file_path": file_path,
+        "symbol": symbol or chunk.name,
         "symbol_type": chunk.chunk_type,
-        "change_type": change_type,
     }
 
 

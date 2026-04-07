@@ -85,7 +85,7 @@ class SCIPPythonIndexer(SCIPIndexerBase):
 
         if cwd:
             cmd.append("--cwd")
-            cmd.append(str(Path(cwd).absolute()))
+            cmd.append(str(Path(cwd).resolve()))
 
         if project_name:
             cmd.extend(["--project-name", project_name])
@@ -208,11 +208,11 @@ class SCIPPythonIndexer(SCIPIndexerBase):
             )
 
             if self.conda_env_name in result.stdout:
-                logger.info(f"Conda environment '{self.conda_env_name}' already exists")
+                logger.info(f"Conda environment {self.conda_env_name!r} already exists")
                 return True
 
             if self.env_file.exists():
-                logger.info(f"Creating conda environment '{self.conda_env_name}'...")
+                logger.info(f"Creating conda environment {self.conda_env_name!r}...")
 
                 create_cmd = [
                     "conda",
@@ -237,7 +237,7 @@ class SCIPPythonIndexer(SCIPIndexerBase):
                     )
 
                 logger.info(
-                    f"Conda environment '{self.conda_env_name}' created successfully"
+                    f"Conda environment {self.conda_env_name!r} created successfully"
                 )
                 return True
             else:
@@ -257,6 +257,30 @@ class SCIPPythonIndexer(SCIPIndexerBase):
             )
             return False
 
+    def _get_conda_env_bin(self) -> Optional[str]:
+        """Return the bin directory for the scip conda environment."""
+        try:
+            result = subprocess.run(
+                ["conda", "info", "--envs", "--json"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            import json
+
+            envs = json.loads(result.stdout).get("envs", [])
+            for env_path in envs:
+                if env_path.endswith(f"/{self.conda_env_name}"):
+                    bin_dir = str(Path(env_path) / "bin")
+                    logger.debug(f"Found scip-env bin directory: {bin_dir}")
+                    return bin_dir
+        except Exception as e:
+            logger.warning(f"Failed to locate scip-env bin directory: {e}")
+        logger.warning(
+            "Could not find scip-env bin directory, will fall back to conda run"
+        )
+        return None
+
     def _run_in_conda_env(
         self, cmd: list, cwd: Optional[Union[str, Path]] = None
     ) -> bool:
@@ -271,15 +295,34 @@ class SCIPPythonIndexer(SCIPIndexerBase):
             bool: True if command succeeded, False otherwise
         """
         try:
-            conda_cmd = ["conda", "run", "-n", self.conda_env_name] + cmd
+            import os
 
-            logger.info(f"Running in conda environment: {cmd}")
+            scip_bin = self._get_conda_env_bin()
+            # Resolve symlinks so subprocess cwd matches real paths
+            work_dir = Path(cwd if cwd else self.project_root).resolve()
 
-            subprocess.run(
-                conda_cmd,
-                check=True,
-                cwd=cwd if cwd else self.project_root,
-            )
+            if scip_bin:
+                # Run directly with scip-env/bin on PATH instead of
+                # using `conda run`, which resets PATH during activation
+                # and causes pip3 to resolve to the wrong environment.
+                env = os.environ.copy()
+                env["PATH"] = f"{scip_bin}:{env.get('PATH', '')}"
+                logger.info(f"Running with scip-env PATH ({scip_bin}): {cmd}")
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    cwd=work_dir,
+                    env=env,
+                )
+            else:
+                # Fallback: use conda run (may have PATH issues)
+                conda_cmd = ["conda", "run", "-n", self.conda_env_name] + cmd
+                logger.info(f"Running via conda run (fallback): {cmd}")
+                subprocess.run(
+                    conda_cmd,
+                    check=True,
+                    cwd=work_dir,
+                )
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"Error running command in conda environment: {e}")
