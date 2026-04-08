@@ -64,6 +64,8 @@ def _ensure_user_writable_hf_cache() -> None:
                 if os.access(p, os.W_OK):
                     return
             except OSError:
+                # The configured cache path may be invalid or not writable on shared hosts;
+                # ignore and fall back to a user-writable cache directory below.
                 pass
         os.environ[env_key] = str(fallback)
         fallback.mkdir(parents=True, exist_ok=True)
