@@ -141,8 +141,14 @@ class SwebenchDataset(DatasetBase):
                 base_features["difficulty"] = Value("string")
 
             ft = Features(base_features)
+            hf_json_cache = os.path.join(cache_dir, "_hf_json_cache")
+            os.makedirs(hf_json_cache, exist_ok=True)
             ds = datasets.load_dataset(
-                "json", data_files=data_files, split=self.split, features=ft
+                "json",
+                data_files=data_files,
+                split=self.split,
+                features=ft,
+                cache_dir=hf_json_cache,
             )
             logger.info(
                 f"Loaded {len(ds)} instances from cached dataset at {dataset_path}"
