@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from codeminer.agent.resource_guard import PreflightReport
 from codeminer.agent.runner import AgentRunner
 from codeminer.agent.skills.core import (
     SkillInputSpec,
@@ -136,5 +137,94 @@ class TestAgentRunnerAllowSkills:
     def test_allow_skills_unknown_id_ignored(self, three_skill_registry):
         llm = MagicMock(spec=LiteLLMChat)
         runner = AgentRunner(llm, three_skill_registry, allow_skills={"a", "ghost"})
+        names = {t["function"]["name"] for t in runner.tools}
+        assert names == {"a"}
+
+
+# ---------------------------------------------------------------------------
+# allow_skills × ResourceGuard interaction
+# ---------------------------------------------------------------------------
+
+
+class TestAllowSkillsWithResourceGuard:
+    """Pin the current behaviour when a user-allowed skill is marked
+    unavailable by the ResourceGuard: the guard's ``unavailable`` set is
+    unioned into ``exclude``, which is applied **after** ``allow``, so the
+    skill is silently dropped from ``runner.tools``.
+    """
+
+    def test_guard_unavailable_overrides_allow(self, three_skill_registry):
+        """A skill in ``allow_skills`` but marked unavailable by the guard
+        is excluded (exclude wins over allow)."""
+        fake_guard = MagicMock()
+        fake_guard.preflight.return_value = PreflightReport(
+            available={"a", "c"},
+            unavailable={"b"},
+            warnings=["Skill 'b' unavailable: missing indexes [bm25]"],
+        )
+
+        with patch(
+            "codeminer.agent.resource_guard.ResourceGuard",
+            return_value=fake_guard,
+        ):
+            llm = MagicMock(spec=LiteLLMChat)
+            runner = AgentRunner(
+                llm,
+                three_skill_registry,
+                allow_skills={"a", "b"},
+                manifest=MagicMock(name="manifest"),
+            )
+
+        names = {t["function"]["name"] for t in runner.tools}
+        # 'b' is silently dropped even though the user allowed it.
+        assert names == {"a"}
+        # Warning from the guard is surfaced in the system prompt.
+        assert "missing indexes" in runner.system_prompt
+
+    def test_guard_all_unavailable_with_allow_yields_empty(self, three_skill_registry):
+        """Every allowed skill is unavailable → no tools at all."""
+        fake_guard = MagicMock()
+        fake_guard.preflight.return_value = PreflightReport(
+            unavailable={"a", "b", "c"},
+            warnings=["all unavailable"],
+        )
+
+        with patch(
+            "codeminer.agent.resource_guard.ResourceGuard",
+            return_value=fake_guard,
+        ):
+            llm = MagicMock(spec=LiteLLMChat)
+            runner = AgentRunner(
+                llm,
+                three_skill_registry,
+                allow_skills={"a", "b"},
+                manifest=MagicMock(name="manifest"),
+            )
+
+        assert runner.tools == []
+
+    def test_guard_does_not_expand_allow(self, three_skill_registry):
+        """A skill marked ``available`` by the guard but NOT in
+        ``allow_skills`` stays filtered out — the guard cannot widen the
+        allowlist."""
+        fake_guard = MagicMock()
+        fake_guard.preflight.return_value = PreflightReport(
+            available={"a", "b", "c"},
+            unavailable=set(),
+            warnings=[],
+        )
+
+        with patch(
+            "codeminer.agent.resource_guard.ResourceGuard",
+            return_value=fake_guard,
+        ):
+            llm = MagicMock(spec=LiteLLMChat)
+            runner = AgentRunner(
+                llm,
+                three_skill_registry,
+                allow_skills={"a"},
+                manifest=MagicMock(name="manifest"),
+            )
+
         names = {t["function"]["name"] for t in runner.tools}
         assert names == {"a"}

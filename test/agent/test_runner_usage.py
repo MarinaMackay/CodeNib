@@ -341,3 +341,40 @@ class TestAgentRunnerUsage:
         kwargs = llm._call_raw.call_args.kwargs
         assert "usage_tracker" in kwargs
         assert kwargs["usage_turn"] == 1
+
+    def test_usage_populated_on_max_turns_exhausted(self, echo_registry):
+        """If the LLM never stops calling tools, the max_turns-exhausted
+        return path must still populate ``usage`` / ``usage_records``.
+        """
+        llm = MagicMock(spec=LiteLLMChat)
+
+        def _call_raw(messages, **kwargs):
+            # Always return a tool_call → never reach the terminal branch.
+            tracker = kwargs.get("usage_tracker")
+            tc = _make_tool_call("call_x", "echo", '{"text": "loop"}')
+            resp = _make_response(tool_calls=[tc], prompt_tokens=7, completion_tokens=3)
+            if tracker is not None:
+                with patch(
+                    "codeminer.llm.usage._safe_completion_cost",
+                    return_value=None,
+                ):
+                    tracker.record_response(
+                        resp, model="test-model", turn=kwargs.get("usage_turn")
+                    )
+            return resp
+
+        llm._call_raw.side_effect = _call_raw
+
+        runner = AgentRunner(llm, echo_registry, max_turns=2)
+        result = runner.run("loop forever")
+
+        # Exhausted the budget — answer falls back to last assistant content.
+        assert result.total_turns == 2
+        assert llm._call_raw.call_count == 2
+        # Crucial assertion: usage on the max-turns return path.
+        assert result.usage is not None
+        assert result.usage.prompt_tokens == 14  # 2 × 7
+        assert result.usage.completion_tokens == 6  # 2 × 3
+        assert result.usage.total_tokens == 20
+        assert len(result.usage_records) == 2
+        assert [r.turn for r in result.usage_records] == [1, 2]
