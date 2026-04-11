@@ -777,6 +777,200 @@ class CodeVectorStore:
 
         return stats
 
+    def get_embeddings_by_content_hash(
+        self, level: Level = "l2"
+    ) -> Dict[str, np.ndarray]:
+        """
+        Extract raw embedding vectors from the FAISS index, keyed by content hash.
+
+        This is used to seed the ``EmbeddingsCache`` after a full build so that
+        the first incremental update achieves ~100% cache hit rate for unchanged
+        chunks.
+
+        Each document's content is MD5-hashed to produce the key.  If the
+        document metadata already contains a ``content_hash`` field it is used
+        directly; otherwise the hash is computed on the fly.
+
+        Returns:
+            Dict mapping content_hash → np.ndarray (float32 vectors).
+        """
+        import hashlib
+
+        vector_store, documents = self._get_store_and_docs(level)
+        if not documents or vector_store is None:
+            return {}
+
+        result: Dict[str, np.ndarray] = {}
+        for faiss_idx, docstore_id in vector_store.index_to_docstore_id.items():
+            doc = vector_store.docstore.search(docstore_id)
+            if not doc or not hasattr(doc, "metadata"):
+                continue
+
+            content_hash = doc.metadata.get("content_hash")
+            if content_hash is None:
+                content_hash = hashlib.md5(
+                    doc.page_content.encode("utf-8", errors="replace")
+                ).hexdigest()
+
+            vec = vector_store.index.reconstruct(int(faiss_idx))
+            result[content_hash] = np.asarray(vec, dtype=np.float32)
+
+        logger.info(
+            "Extracted %d embedding vectors from %s FAISS index for cache seeding.",
+            len(result),
+            level,
+        )
+        return result
+
+    def rebuild_from_embeddings(
+        self,
+        documents: List[Document],
+        embeddings: List[np.ndarray],
+        level: Level = "l2",
+    ) -> None:
+        """
+        Clear *level* and rebuild its FAISS index from pre-computed embeddings.
+
+        Used by the incremental update path: unchanged chunks contribute their
+        cached vectors, so only genuinely new/modified chunks require model
+        inference.  No embedding model calls are made by this method.
+
+        Args:
+            documents: LangChain ``Document`` objects (one per chunk).
+            embeddings: Corresponding embedding vectors as ``np.ndarray``
+                (shape ``[dim]``, dtype ``float32``).
+            level: Which index level to rebuild (``"l0"`` or ``"l2"``).
+
+        Raises:
+            ValueError: If *documents* and *embeddings* have different lengths.
+        """
+        if len(documents) != len(embeddings):
+            raise ValueError(
+                f"documents ({len(documents)}) and embeddings ({len(embeddings)}) "
+                "must have the same length."
+            )
+
+        # Wipe the existing index for this level
+        self.clear(level)
+
+        if not documents:
+            logger.debug("rebuild_from_embeddings: no documents; level %s cleared.", level)
+            return
+
+        # Build (text, vector) tuples expected by FAISS.from_embeddings()
+        text_embeddings = [
+            (doc.page_content, emb.tolist()) for doc, emb in zip(documents, embeddings)
+        ]
+        metadatas = [doc.metadata for doc in documents]
+
+        new_vs = FAISS.from_embeddings(
+            text_embeddings=text_embeddings,
+            embedding=self.embedding,
+            metadatas=metadatas,
+        )
+
+        if level == "l0":
+            self.l0_vector_store = new_vs
+            self.l0_index = new_vs.index
+            self.l0_documents = list(documents)
+        else:
+            self.l2_vector_store = new_vs
+            self.l2_index = new_vs.index
+            self.l2_documents = list(documents)
+
+        logger.info(
+            "rebuild_from_embeddings: %s index rebuilt with %d documents.",
+            level,
+            len(documents),
+        )
+
+    def delta_update(
+        self,
+        all_documents: List[Document],
+        all_embeddings: List[np.ndarray],
+        changed_content_hashes: Set[str],
+        level: Level = "l2",
+        threshold: float = 0.1,
+    ) -> None:
+        """
+        Smart update: full rebuild for large deltas, targeted for small ones.
+
+        For small deltas (< *threshold* fraction of total chunks changed),
+        removes the old vectors for changed chunks and adds the new ones
+        without touching unmodified vectors.  For larger deltas, falls back
+        to :meth:`rebuild_from_embeddings`.
+
+        Args:
+            all_documents: The complete set of documents for this level.
+            all_embeddings: Corresponding embedding vectors.
+            changed_content_hashes: Content hashes of chunks that were
+                added, removed, or modified in this update cycle.
+            level: Which index level to update.
+            threshold: Fraction of total chunks above which a full rebuild
+                is used instead of a delta path.
+        """
+        total = len(all_documents)
+        changed = len(changed_content_hashes)
+
+        if total == 0:
+            self.clear(level)
+            return
+
+        # Use full rebuild when delta is large or index is empty
+        vector_store, docs = self._get_store_and_docs(level)
+        if not docs or changed / max(total, 1) >= threshold:
+            logger.info(
+                "delta_update: large delta (%d/%d changed, %.0f%%) → full rebuild.",
+                changed, total, (changed / max(total, 1)) * 100,
+            )
+            self.rebuild_from_embeddings(all_documents, all_embeddings, level=level)
+            return
+
+        # --- Small-delta path: remove old, add new ----------------------
+        # Identify FAISS indices to remove (docs whose content_hash is in changed set)
+        ids_to_remove = []
+        for faiss_idx, docstore_id in vector_store.index_to_docstore_id.items():
+            doc = vector_store.docstore.search(docstore_id)
+            if doc and hasattr(doc, "metadata"):
+                ch = doc.metadata.get("content_hash", "")
+                if ch in changed_content_hashes:
+                    ids_to_remove.append(docstore_id)
+
+        if ids_to_remove:
+            vector_store.delete(ids_to_remove)
+            logger.debug("delta_update: removed %d stale vectors.", len(ids_to_remove))
+
+        # Collect only the new/changed documents to add
+        new_docs = []
+        new_embeddings_list = []
+        for doc, emb in zip(all_documents, all_embeddings):
+            ch = doc.metadata.get("content_hash", "")
+            if ch in changed_content_hashes:
+                new_docs.append(doc)
+                new_embeddings_list.append(emb)
+
+        if new_docs:
+            text_embeddings = [
+                (doc.page_content, emb.tolist())
+                for doc, emb in zip(new_docs, new_embeddings_list)
+            ]
+            metadatas = [doc.metadata for doc in new_docs]
+            vector_store.add_embeddings(
+                text_embeddings=text_embeddings,
+                metadatas=metadatas,
+            )
+
+        # Update the documents list to the full set
+        if level == "l0":
+            self.l0_documents = list(all_documents)
+        else:
+            self.l2_documents = list(all_documents)
+
+        logger.info(
+            "delta_update: %s index patched — %d removed, %d added (total %d).",
+            level, len(ids_to_remove), len(new_docs), total,
+        )
+
     def clear(self, level: Optional[Level] = None) -> None:
         """
         Clear data from the vector store.
