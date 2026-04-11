@@ -259,13 +259,26 @@ class CodeVectorStore:
         # Store documents
         documents_list.extend(documents)
 
+        texts = [doc.page_content for doc in documents]
+        metadatas = [doc.metadata for doc in documents]
+
+        # Phase 1: Embed texts (typically the bottleneck)
         with self._profile_section(
-            f"vector_store_add_documents_{level}",
+            f"embedding_encode_{level}",
             {"num_documents": len(documents), "level": level},
         ):
-            vector_store.add_documents(
-                documents
-            )  # this part will majorly blocked by embedding time
+            embeddings = self.embedding.embed_documents(texts)
+
+        # Phase 2: Add pre-computed vectors to FAISS index
+        with self._profile_section(
+            f"faiss_index_add_{level}",
+            {"num_vectors": len(embeddings), "level": level},
+        ):
+            text_embedding_pairs = list(zip(texts, embeddings, strict=True))
+            vector_store.add_embeddings(
+                text_embeddings=text_embedding_pairs,
+                metadatas=metadatas,
+            )
 
         logger.info(
             f"Successfully added {len(documents)} documents to {level} vector store"
@@ -465,9 +478,10 @@ class CodeVectorStore:
             if not doc or not hasattr(doc, "metadata"):
                 continue
             meta = doc.metadata
-            if meta.get("node_id", "") in mask_node_ids or meta.get(
-                "name", ""
-            ) in mask_node_ids:
+            if (
+                meta.get("node_id", "") in mask_node_ids
+                or meta.get("name", "") in mask_node_ids
+            ):
                 matched.append((faiss_idx, doc))
 
         if not matched:
@@ -475,9 +489,7 @@ class CodeVectorStore:
             return []
 
         # Encode query
-        query_vec = np.array(
-            self.embedding.embed_query(query), dtype=np.float32
-        )
+        query_vec = np.array(self.embedding.embed_query(query), dtype=np.float32)
 
         # Reconstruct stored vectors and compute similarity
         results: list[NodeInfo] = []
