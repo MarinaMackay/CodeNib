@@ -23,21 +23,21 @@ SPLIT="${SPLIT:-test}"
 FILTER="${FILTER:-.*}"
 PROFILE_TAG="${PROFILE_TAG:-codeminer_base_${SPLIT}}"
 
-# model:dimension pairs
+# model:dimension:batch_size triples
+# SweRankEmbed-Large needs batch_size=2 to avoid CUDA OOM on H100 80GB
 MODELS=(
-  "Salesforce/SweRankEmbed-Small:768"
-  "fishmingyu/SweRankEmbed-Large:3584"
-  "jinaai/jina-code-embeddings-1.5b:1536"
+  "Salesforce/SweRankEmbed-Small:768:8"
+  "fishmingyu/SweRankEmbed-Large:3584:2"
+  "jinaai/jina-code-embeddings-1.5b:1536:8"
 )
 
 mkdir -p "${STORAGE_DIR}"
 
 for entry in "${MODELS[@]}"; do
-  MODEL="${entry%%:*}"
-  DIM="${entry##*:}"
+  IFS=':' read -r MODEL DIM BATCH <<< "${entry}"
   echo ""
   echo "================================================================"
-  echo "Building embeddings: ${MODEL} (dim=${DIM})"
+  echo "Building embeddings: ${MODEL} (dim=${DIM}, batch=${BATCH})"
   echo "  dataset=${DATASET}  split=${SPLIT}  filter=${FILTER}"
   echo "================================================================"
   python scripts/embeddings/build_embeddings.py \
@@ -51,6 +51,7 @@ for entry in "${MODELS[@]}"; do
     --embedding-model "${MODEL}" \
     --embedding-provider huggingface \
     --embedding-dimension "${DIM}" \
+    --batch-size "${BATCH}" \
     --trust-remote-code \
     "$@"
 done
