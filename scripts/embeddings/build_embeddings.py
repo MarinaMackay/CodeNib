@@ -109,6 +109,16 @@ def parse_args():
         help="Batch size for embedding encoding",
     )
     parser.add_argument(
+        "--max-seq-length",
+        type=int,
+        default=None,
+        help=(
+            "Override the model's max sequence length for tokenization. "
+            "Use to prevent CUDA OOM on models with long context windows "
+            "when flash-attn is not installed (e.g. 8192 for jina-code-1.5b)."
+        ),
+    )
+    parser.add_argument(
         "--index-metric",
         type=str,
         default="ip",
@@ -195,26 +205,33 @@ _DATASET_DEFAULTS = {
 }
 
 
-def _map_language_group(label: Optional[str], fallback: str = "python") -> str:
-    """Map a dataset ``language_group`` value to a chunker language string.
+def _map_language_group(label: Optional[str], fallback: str = "python") -> List[str]:
+    """Map a dataset ``language_group`` value to chunker language string(s).
 
     Mirrors ``swebench_graph_index._map_language_label`` with an added Go
     mapping so the codeminer-base multilingual instances get the right chunker.
+
+    Returns a list because some language groups (e.g. "TypeScript/JavaScript")
+    cover multiple chunker languages with disjoint file extensions.
     """
     if not label:
-        return fallback
+        return [fallback]
     text = label.lower()
     if "rust" in text:
-        return "rust"
-    if "javascript" in text or "typescript" in text or text in ("ts", "js"):
-        return "ts"
+        return ["rust"]
+    if "javascript" in text and "typescript" in text:
+        return ["ts", "js"]
+    if "typescript" in text or text == "ts":
+        return ["ts"]
+    if "javascript" in text or text == "js":
+        return ["js"]
     if "c++" in text or text in ("cpp", "c"):
-        return "cpp"
+        return ["cpp"]
     if "go" in text or text == "golang":
-        return "go"
+        return ["go"]
     if "python" in text:
-        return "python"
-    return fallback
+        return ["python"]
+    return [fallback]
 
 
 def _resolve_languages(instance: dict, cli_languages: List[str]) -> List[str]:
@@ -225,7 +242,7 @@ def _resolve_languages(instance: dict, cli_languages: List[str]) -> List[str]:
     """
     lang_group = instance.get("language_group")
     if lang_group:
-        return [_map_language_group(lang_group, fallback=cli_languages[0])]
+        return _map_language_group(lang_group, fallback=cli_languages[0])
     return list(cli_languages)
 
 
@@ -335,6 +352,8 @@ def build_embeddings(args):
                 embedding_kwargs["model_kwargs"] = {"trust_remote_code": True}
             if args.batch_size:
                 embedding_kwargs["encode_kwargs"] = {"batch_size": args.batch_size}
+            if args.max_seq_length:
+                embedding_kwargs["max_seq_length"] = args.max_seq_length
 
             logger.info("Building hierarchical vector store...")
             plan_name = args.plan_name
