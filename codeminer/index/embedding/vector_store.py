@@ -122,13 +122,43 @@ class CodeVectorStore:
             model_name = self.embedding_model
             model_kwargs = kwargs.pop("model_kwargs", {})
             encode_kwargs = kwargs.pop("encode_kwargs", {})
+            max_seq_length = kwargs.pop("max_seq_length", None)
 
-            return HuggingFaceEmbeddings(
+            hf_emb = HuggingFaceEmbeddings(
                 model_name=model_name,
                 model_kwargs=model_kwargs,
                 encode_kwargs=encode_kwargs,
                 **kwargs,
             )
+
+            # Cap the effective sequence length to avoid CUDA OOM.
+            # Some models (e.g. jinaai/jina-code-embeddings) set an
+            # unlimited tokenizer.model_max_length and a very large
+            # max_seq_length that exceeds GPU memory without flash-attn.
+            try:
+                st_model = hf_emb._client  # SentenceTransformer instance
+                tok = st_model.tokenizer
+                max_pos = getattr(
+                    st_model[0].auto_model.config,
+                    "max_position_embeddings",
+                    None,
+                )
+                effective_max = max_seq_length or max_pos
+                if effective_max:
+                    if tok.model_max_length > effective_max:
+                        tok.model_max_length = effective_max
+                    if st_model.max_seq_length > effective_max:
+                        logger.info(
+                            "Capping max_seq_length from %s to %s " "for model %s",
+                            st_model.max_seq_length,
+                            effective_max,
+                            model_name,
+                        )
+                        st_model.max_seq_length = effective_max
+            except Exception as e:
+                logger.debug("Could not set max_seq_length: %s", e)
+
+            return hf_emb
         else:
             raise ValueError(
                 f"Unsupported embedding provider: {self.embedding_provider}"
