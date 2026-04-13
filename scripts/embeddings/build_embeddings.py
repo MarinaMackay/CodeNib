@@ -391,6 +391,7 @@ def build_embeddings(args):
                     for label, stats in profile_summary
                 ]
 
+                chunk_stats = getattr(vector_store, "chunk_stats", {})
                 profile_payload = {
                     "instance_id": instance_id,
                     "repo": instance.get("repo", "unknown"),
@@ -405,6 +406,7 @@ def build_embeddings(args):
                     "total_duration": sum(
                         section["total"] for section in sections_payload
                     ),
+                    "chunk_stats": chunk_stats,
                     "sections": sections_payload,
                 }
 
