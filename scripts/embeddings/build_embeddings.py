@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """
-This script builds and caches hierarchical embedding indices for all SWE-bench Lite instances.
-Each instance's embedding will be stored in /mnt/data/codeminer/{instance_id}/
+Build and cache hierarchical embedding indices for SWE-bench or CodeMiner-base instances.
+Each instance's embedding will be stored in <storage-dir>/{instance_id}/
 
-Test Usage:
-    python scripts/build_embeddings.py \\
+Usage:
+    # SWE-bench Lite (default, Python-only)
+    python scripts/embeddings/build_embeddings.py \\
         --filter-instance "^(astropy__astropy-6938)$" \\
         --force-rebuild
+
+    # CodeMiner-base (multi-language, auto-detects language per instance)
+    python scripts/embeddings/build_embeddings.py \\
+        --dataset-class codeminer_base \\
+        --dataset fishmingyu/codeminer-base-dataset \\
+        --enable-profiler
 """
 
 import argparse
@@ -15,8 +22,8 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import List, Optional
 
-from codeminer.dataset.swebench import SwebenchDataset
 from codeminer.index.embedding import build_hierarchical_vector_store
 from codeminer.log_utils import get_logger
 from codeminer.profiler import Profiler
@@ -36,10 +43,25 @@ def parse_args():
 
     # Dataset configuration
     parser.add_argument(
+        "--dataset-class",
+        type=str,
+        choices=["swebench", "codeminer_base"],
+        default="swebench",
+        help=(
+            "Dataset class to use. 'swebench' for SWE-bench Lite/Verified, "
+            "'codeminer_base' for the multi-language CodeMiner-base dataset "
+            "(auto-detects language per instance from 'language_group' column)."
+        ),
+    )
+    parser.add_argument(
         "--dataset",
         type=str,
-        default="princeton-nlp/SWE-bench_Lite",
-        help="Dataset name",
+        default=None,
+        help=(
+            "HuggingFace dataset name. Defaults to "
+            "'princeton-nlp/SWE-bench_Lite' for swebench, "
+            "'fishmingyu/codeminer-base-dataset' for codeminer_base."
+        ),
     )
     parser.add_argument(
         "--split",
@@ -85,6 +107,16 @@ def parse_args():
         type=int,
         default=8,
         help="Batch size for embedding encoding",
+    )
+    parser.add_argument(
+        "--max-seq-length",
+        type=int,
+        default=None,
+        help=(
+            "Override the model's max sequence length for tokenization. "
+            "Use to prevent CUDA OOM on models with long context windows "
+            "when flash-attn is not installed (e.g. 8192 for jina-code-1.5b)."
+        ),
     )
     parser.add_argument(
         "--index-metric",
@@ -163,23 +195,95 @@ def parse_args():
     return parser.parse_args()
 
 
+# ---------------------------------------------------------------------------
+# Language mapping (dataset language_group -> chunker language)
+# ---------------------------------------------------------------------------
+
+_DATASET_DEFAULTS = {
+    "swebench": "princeton-nlp/SWE-bench_Lite",
+    "codeminer_base": "fishmingyu/codeminer-base-dataset",
+}
+
+
+def _map_language_group(label: Optional[str], fallback: str = "python") -> List[str]:
+    """Map a dataset ``language_group`` value to chunker language string(s).
+
+    Mirrors ``swebench_graph_index._map_language_label`` with an added Go
+    mapping so the codeminer-base multilingual instances get the right chunker.
+
+    Returns a list because some language groups (e.g. "TypeScript/JavaScript")
+    cover multiple chunker languages with disjoint file extensions.
+    """
+    if not label:
+        return [fallback]
+    text = label.lower()
+    if "rust" in text:
+        return ["rust"]
+    if "javascript" in text and "typescript" in text:
+        return ["ts", "js"]
+    if "typescript" in text or text == "ts":
+        return ["ts"]
+    if "javascript" in text or text == "js":
+        return ["js"]
+    if "c++" in text or text in ("cpp", "c"):
+        return ["cpp"]
+    if "go" in text or text == "golang":
+        return ["go"]
+    if "python" in text:
+        return ["python"]
+    return [fallback]
+
+
+def _resolve_languages(instance: dict, cli_languages: List[str]) -> List[str]:
+    """Return the language list for a single instance.
+
+    If the instance has a ``language_group`` column (codeminer-base), derive
+    the chunker language from it.  Otherwise fall back to ``cli_languages``.
+    """
+    lang_group = instance.get("language_group")
+    if lang_group:
+        return _map_language_group(lang_group, fallback=cli_languages[0])
+    return list(cli_languages)
+
+
+def _load_dataset(args):
+    """Instantiate the dataset object based on ``--dataset-class``."""
+    dataset_name = args.dataset or _DATASET_DEFAULTS[args.dataset_class]
+
+    if args.dataset_class == "codeminer_base":
+        from codeminer.dataset.codeminer_base import CodeMinerBaseDataset
+
+        return CodeMinerBaseDataset(
+            dataset=dataset_name,
+            split=args.split,
+            filter_instance=args.filter_instance,
+        )
+
+    from codeminer.dataset.swebench import SwebenchDataset
+
+    return SwebenchDataset(
+        dataset=dataset_name,
+        split=args.split,
+        filter_instance=args.filter_instance,
+    )
+
+
 def build_embeddings(args):
-    """Build hierarchical embedding indices for all SWE-bench Lite instances."""
+    """Build hierarchical embedding indices for dataset instances."""
 
     build_levels = [level.lower() for level in args.build_levels]
 
     # Load dataset
-    dataset_obj = SwebenchDataset(
-        dataset=args.dataset,
-        split=args.split,
-        filter_instance=args.filter_instance,
-    )
+    dataset_obj = _load_dataset(args)
     dataset_instances = dataset_obj.load()
 
     if len(dataset_instances) == 0:
-        raise ValueError(f"No instances found in {args.dataset}")
+        raise ValueError(
+            f"No instances found in {args.dataset or _DATASET_DEFAULTS[args.dataset_class]}"
+        )
 
     logger.info(f"Loaded {len(dataset_instances)} instance(s)")
+    logger.info(f"Dataset class: {args.dataset_class}")
     logger.info(f"Embeddings will be stored in: {args.storage_dir}")
 
     # Setup profile output directory
@@ -223,20 +327,24 @@ def build_embeddings(args):
             instance_final_dir = Path(args.storage_dir) / instance_dir_name
             instance_final_dir.mkdir(parents=True, exist_ok=True)
 
+            # Resolve per-instance language (uses language_group when available)
+            instance_languages = _resolve_languages(instance, args.languages)
+
             logger.info(f"Repository path: {repo_path}")
             logger.info(f"Target directory: {instance_final_dir}")
+            logger.info(f"Languages: {instance_languages}")
 
             # Check if embedding already exists (model-specific config)
             model_suffix = args.embedding_model.replace("/", "__")
             config_file = instance_final_dir / f"config_{model_suffix}.json"
             if config_file.exists() and not args.force_rebuild:
                 logger.info(
-                    f"✓ Embedding already exists at {instance_final_dir}, skipping..."
+                    f"Embedding already exists at {instance_final_dir}, skipping..."
                 )
                 continue
             elif config_file.exists() and args.force_rebuild:
                 logger.info(
-                    f" Embedding already exists but force-rebuild is enabled, rebuilding..."
+                    "Embedding already exists but force-rebuild is enabled, rebuilding..."
                 )
 
             embedding_kwargs = {}
@@ -244,6 +352,8 @@ def build_embeddings(args):
                 embedding_kwargs["model_kwargs"] = {"trust_remote_code": True}
             if args.batch_size:
                 embedding_kwargs["encode_kwargs"] = {"batch_size": args.batch_size}
+            if args.max_seq_length:
+                embedding_kwargs["max_seq_length"] = args.max_seq_length
 
             logger.info("Building hierarchical vector store...")
             plan_name = args.plan_name
@@ -252,7 +362,7 @@ def build_embeddings(args):
                     repo_path=repo_path,
                     index_path=str(instance_final_dir),
                     plan_name=plan_name,
-                    languages=list(args.languages),
+                    languages=instance_languages,
                     max_lines_per_chunk=args.max_lines_per_chunk,
                     build_levels=build_levels,
                     embedding_model=args.embedding_model,
@@ -281,10 +391,14 @@ def build_embeddings(args):
                     for label, stats in profile_summary
                 ]
 
+                chunk_stats = getattr(vector_store, "chunk_stats", {})
                 profile_payload = {
                     "instance_id": instance_id,
                     "repo": instance.get("repo", "unknown"),
                     "base_commit": instance.get("base_commit", "unknown"),
+                    "language_group": instance.get("language_group"),
+                    "languages": instance_languages,
+                    "dataset_class": args.dataset_class,
                     "embedding_model": args.embedding_model,
                     "embedding_provider": args.embedding_provider,
                     "embedding_dimension": args.embedding_dimension,
@@ -292,6 +406,7 @@ def build_embeddings(args):
                     "total_duration": sum(
                         section["total"] for section in sections_payload
                     ),
+                    "chunk_stats": chunk_stats,
                     "sections": sections_payload,
                 }
 
@@ -335,7 +450,7 @@ def build_embeddings(args):
     logger.info(f"\n{'='*80}")
     logger.info("Hierarchical embedding build complete!")
     logger.info(f"Processed {len(dataset_instances)} instance(s)")
-    if args.profile_dir:
+    if args.enable_profiler or args.profile_dir:
         logger.info(f"Profile logs stored in: {profile_output_dir}")
     logger.info(f"{'='*80}")
 

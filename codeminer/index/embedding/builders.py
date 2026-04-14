@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Reusable embedding builders for hierarchical pipelines."""
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -10,6 +11,13 @@ from ...profiler import Profiler
 from .vector_store import CodeVectorStore
 
 logger = get_logger(__name__)
+
+
+def _profiler_section(profiler, label, metadata=None):
+    """Return an active profiler section context if profiling is enabled."""
+    if profiler is None:
+        return nullcontext()
+    return profiler.section(label, metadata)
 
 
 def build_hierarchical_vector_store(
@@ -60,13 +68,43 @@ def build_hierarchical_vector_store(
         if not cfg:
             continue
         chunker = CodeChunker(**cfg["chunker_kwargs"])
-        chunks_by_level[level] = chunker.chunk_repository(repo_path=repo_path)
+        with _profiler_section(
+            profiler,
+            f"chunking_{level}",
+            {"level": level, "language": languages[0]},
+        ):
+            chunks_by_level[level] = chunker.chunk_repository(repo_path=repo_path)
+        logger.info(
+            f"Chunked {len(chunks_by_level[level])} {level} chunks "
+            f"(lang={languages[0]})"
+        )
 
     l0_chunks = chunks_by_level.get("l0", [])
     l2_chunks = chunks_by_level.get("l2", [])
 
     if not l0_chunks and not l2_chunks:
         raise ValueError("No code chunks generated from repository.")
+
+    # Compute chunk / LOC statistics by counting actual file lines on disk.
+    repo = Path(repo_path)
+    unique_files = {chunk.file for chunk in (l0_chunks + l2_chunks)}
+    loc_by_file: Dict[str, int] = {}
+    for rel_path in unique_files:
+        try:
+            loc_by_file[rel_path] = len(
+                (repo / rel_path).read_text(errors="replace").splitlines()
+            )
+        except OSError:
+            pass
+    total_loc = sum(loc_by_file.values())
+    total_chunks = len(l0_chunks) + len(l2_chunks)
+    chunk_stats = {
+        "l0_chunks": len(l0_chunks),
+        "l2_chunks": len(l2_chunks),
+        "total_files": len(loc_by_file),
+        "total_loc": total_loc,
+        "avg_chunk_loc": round(total_loc / max(total_chunks, 1), 1),
+    }
 
     store_path = Path(index_path)
     if plan_name:
@@ -92,6 +130,7 @@ def build_hierarchical_vector_store(
         )
 
     vector_store.save(str(store_path))
+    vector_store.chunk_stats = chunk_stats
     return vector_store
 
 

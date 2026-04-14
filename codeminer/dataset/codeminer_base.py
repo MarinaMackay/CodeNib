@@ -208,6 +208,19 @@ class CodeMinerBaseDataset(DatasetBase):
         os.chdir(repo_path)
 
         try:
+            # Ensure refspec fetches all branches (repos that renamed
+            # default branch may have a narrow refspec from the initial clone)
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/remotes/origin/*",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
             logger.info("Fetching updates from remote repository")
             subprocess.run(
                 ["git", "fetch", "--all"],
