@@ -85,14 +85,18 @@ def build_hierarchical_vector_store(
     if not l0_chunks and not l2_chunks:
         raise ValueError("No code chunks generated from repository.")
 
-    # Compute chunk / LOC statistics.
-    # L0 chunks (skeleton_mode) span entire files, so end_line+1 gives LOC.
+    # Compute chunk / LOC statistics by counting actual file lines on disk.
+    repo = Path(repo_path)
+    unique_files = {chunk.file for chunk in (l0_chunks + l2_chunks)}
     loc_by_file: Dict[str, int] = {}
-    for chunk in l0_chunks or l2_chunks:
-        prev = loc_by_file.get(chunk.file, -1)
-        if chunk.end_line > prev:
-            loc_by_file[chunk.file] = chunk.end_line
-    total_loc = sum(end + 1 for end in loc_by_file.values())  # 0-based
+    for rel_path in unique_files:
+        try:
+            loc_by_file[rel_path] = len(
+                (repo / rel_path).read_text(errors="replace").splitlines()
+            )
+        except OSError:
+            pass
+    total_loc = sum(loc_by_file.values())
     total_chunks = len(l0_chunks) + len(l2_chunks)
     chunk_stats = {
         "l0_chunks": len(l0_chunks),

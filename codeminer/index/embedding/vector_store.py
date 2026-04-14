@@ -136,7 +136,14 @@ class CodeVectorStore:
             # unlimited tokenizer.model_max_length and a very large
             # max_seq_length that exceeds GPU memory without flash-attn.
             try:
-                st_model = hf_emb._client  # SentenceTransformer instance
+                # langchain-huggingface >=0.1 uses _client, older uses client
+                st_model = getattr(hf_emb, "_client", None) or getattr(
+                    hf_emb, "client", None
+                )
+                if st_model is None:
+                    raise AttributeError(
+                        "Cannot locate SentenceTransformer on HuggingFaceEmbeddings"
+                    )
                 tok = st_model.tokenizer
                 max_pos = getattr(
                     st_model[0].auto_model.config,
@@ -149,14 +156,23 @@ class CodeVectorStore:
                         tok.model_max_length = effective_max
                     if st_model.max_seq_length > effective_max:
                         logger.info(
-                            "Capping max_seq_length from %s to %s " "for model %s",
+                            "Capping max_seq_length from %s to %s for model %s",
                             st_model.max_seq_length,
                             effective_max,
                             model_name,
                         )
                         st_model.max_seq_length = effective_max
             except Exception as e:
-                logger.debug("Could not set max_seq_length: %s", e)
+                if max_seq_length is not None:
+                    logger.warning(
+                        "--max-seq-length %s was requested but could not be "
+                        "applied to model %s: %s. CUDA OOM may occur.",
+                        max_seq_length,
+                        model_name,
+                        e,
+                    )
+                else:
+                    logger.debug("Could not check tokenizer max length: %s", e)
 
             return hf_emb
         else:

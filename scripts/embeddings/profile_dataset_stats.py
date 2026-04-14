@@ -58,12 +58,17 @@ def compute_chunk_stats(repo_path, languages):
         stats[f"{level}_chunks"] = len(chunks)
 
         if level == "l0":
+            repo = Path(repo_path)
+            unique_files = {c.file for c in chunks}
             loc_by_file = {}
-            for c in chunks:
-                prev = loc_by_file.get(c.file, -1)
-                if c.end_line > prev:
-                    loc_by_file[c.file] = c.end_line
-            stats["total_loc"] = sum(end + 1 for end in loc_by_file.values())
+            for rel_path in unique_files:
+                try:
+                    loc_by_file[rel_path] = len(
+                        (repo / rel_path).read_text(errors="replace").splitlines()
+                    )
+                except OSError:
+                    pass
+            stats["total_loc"] = sum(loc_by_file.values())
             stats["total_files"] = len(loc_by_file)
 
     total_chunks = stats.get("l0_chunks", 0) + stats.get("l2_chunks", 0)
@@ -172,7 +177,8 @@ def main():
         # Re-chunk for detailed stats
         if args.rechunk:
             try:
-                repo_path = dataset_obj.process_instance(instance)
+                dataset_obj.process_instance(instance)
+                repo_path = dataset_obj.get_repo_path(instance)
                 chunk_stats = compute_chunk_stats(repo_path, instance_languages)
                 entry["chunk_stats"] = chunk_stats
                 logger.info(
