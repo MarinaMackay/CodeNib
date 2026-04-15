@@ -13,7 +13,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import List
-from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -42,22 +41,23 @@ def _run(cmd: list, cwd: str) -> None:
     subprocess.run(cmd, cwd=cwd, check=True, capture_output=True)
 
 
-def _make_mock_embedding_model(dim: int = DIM) -> MagicMock:
-    model = MagicMock()
+def _make_mock_embedding_model(dim: int = DIM):
+    from langchain_core.embeddings import Embeddings
 
-    def embed_documents(texts: List[str]) -> List[List[float]]:
-        vecs = []
-        for text in texts:
-            np.random.seed(hash(text) % (2**31))
-            vecs.append(np.random.randn(dim).tolist())
-        return vecs
+    class _DeterministicEmbeddings(Embeddings):
+        """Proper Embeddings subclass so LangChain FAISS can call embed_query."""
 
-    def embed_query(text: str) -> List[float]:
-        return embed_documents([text])[0]
+        def embed_documents(self, texts: List[str]) -> List[List[float]]:
+            vecs = []
+            for text in texts:
+                np.random.seed(hash(text) % (2**31))
+                vecs.append(np.random.randn(dim).tolist())
+            return vecs
 
-    model.embed_documents.side_effect = embed_documents
-    model.embed_query.side_effect = embed_query
-    return model
+        def embed_query(self, text: str) -> List[float]:
+            return self.embed_documents([text])[0]
+
+    return _DeterministicEmbeddings()
 
 
 def _build_real_vector_store(embedding_model, dim=DIM) -> CodeVectorStore:

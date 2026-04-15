@@ -140,10 +140,15 @@ class GitDiffDetector:
             status_code, rel_path = parts[0].strip(), parts[1].strip()
 
             # Renames look like "R100\told_path\tnew_path" — git uses two tabs
-            # In that case parts[1] contains "old_path\tnew_path"; take new path.
+            # In that case parts[1] contains "old_path\tnew_path"; take new path
+            # and explicitly delete the old path to avoid ghost entries.
             if status_code.startswith("R"):
                 subparts = rel_path.split("\t", maxsplit=1)
+                old_rel = subparts[0].strip()
                 rel_path = subparts[-1].strip()
+                old_abs = str((repo_root / old_rel).resolve())
+                if self._is_supported(old_abs):
+                    changes.deleted.append(old_abs)
                 status_code = "M"  # treat rename as modify of the destination
 
             abs_path = str((repo_root / rel_path).resolve())

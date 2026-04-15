@@ -236,3 +236,100 @@ class TestDeltaUpdate:
 
         store.delta_update([new_doc], [vec], {_md5(content)}, level="l2")
         assert len(store.l2_documents) == 1
+
+    def test_seed_time_vectors_carry_content_hash(self):
+        """
+        Documents added via add_code_chunks (initial build) must include
+        content_hash in metadata so delta_update can remove them later.
+
+        Regression: without content_hash on seed-time vectors, the small-delta
+        path cannot identify stale vectors and they accumulate.
+        """
+        from langchain_core.embeddings import Embeddings
+
+        class FixedEmbeddings(Embeddings):
+            def embed_documents(self, texts: List[str]) -> List[List[float]]:
+                return [
+                    [(hash(t) % (2**16) + i) / (2**16) for i in range(DIM)]
+                    for t in texts
+                ]
+
+            def embed_query(self, text: str) -> List[float]:
+                return self.embed_documents([text])[0]
+
+        import faiss
+        from langchain_community.docstore import InMemoryDocstore
+        from langchain_community.vectorstores import FAISS as FAISSStore
+
+        embedding = FixedEmbeddings()
+        store = CodeVectorStore.__new__(CodeVectorStore)
+        store.embedding = embedding
+        store.dimension = DIM
+        store.index_metric = "ip"
+        store.profiler = None
+        store.embedding_model = "test"
+        store.embedding_provider = "test"
+        store.index_type = "flat"
+        store.store_path = None
+
+        for attr, idx_attr, docs_attr in [
+            ("l0_vector_store", "l0_index", "l0_documents"),
+            ("l2_vector_store", "l2_index", "l2_documents"),
+        ]:
+            idx = faiss.IndexFlatIP(DIM)
+            vs = FAISSStore(
+                embedding_function=embedding,
+                index=idx,
+                docstore=InMemoryDocstore(),
+                index_to_docstore_id={},
+            )
+            setattr(store, attr, vs)
+            setattr(store, idx_attr, idx)
+            setattr(store, docs_attr, [])
+
+        # Simulate initial build via add_code_chunks
+        store.add_code_chunks(
+            [
+                {"content": "def foo():\n    return 1\n", "name": "foo", "file": "a.py"},
+                {"content": "def bar():\n    return 2\n", "name": "bar", "file": "a.py"},
+            ],
+            level="l2",
+        )
+
+        # Verify every seeded document carries a content_hash
+        for doc_id in store.l2_vector_store.index_to_docstore_id.values():
+            doc = store.l2_vector_store.docstore.search(doc_id)
+            assert "content_hash" in doc.metadata, (
+                "Seed-time document missing content_hash — delta_update "
+                "will not be able to prune stale vectors"
+            )
+
+        # Now do a delta_update that replaces foo — bar should survive,
+        # and the OLD foo vector must be removed (not left as a ghost).
+        old_foo_hash = _md5("def foo():\n    return 1\n")
+        new_foo = "def foo():\n    return 99\n"
+        new_foo_hash = _md5(new_foo)
+
+        all_docs = [
+            Document(
+                page_content=new_foo,
+                metadata={"content_hash": new_foo_hash, "name": "foo", "file": "a.py"},
+            ),
+            Document(
+                page_content="def bar():\n    return 2\n",
+                metadata={"content_hash": _md5("def bar():\n    return 2\n"), "name": "bar", "file": "a.py"},
+            ),
+        ]
+        all_embs = [
+            np.array(embedding.embed_documents([d.page_content])[0], dtype=np.float32)
+            for d in all_docs
+        ]
+        changed = {old_foo_hash, new_foo_hash}
+
+        store.delta_update(all_docs, all_embs, changed, level="l2", threshold=0.5)
+
+        # The index should have exactly 2 vectors, not 3
+        assert store.l2_index.ntotal == 2, (
+            f"Expected 2 vectors after delta, got {store.l2_index.ntotal} — "
+            "stale seed-time vector was not removed"
+        )

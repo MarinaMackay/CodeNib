@@ -4,6 +4,7 @@ This module provides functionality to create, store, and query vector embeddings
 of code chunks for semantic similarity search.
 """
 
+import hashlib
 import json
 import pickle
 from contextlib import nullcontext
@@ -236,6 +237,7 @@ class CodeVectorStore:
         for i, chunk in enumerate(code_chunks):
             # Extract content and metadata
             content = chunk.get("content", "")
+            content_hash = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
             metadata = {
                 "chunk_id": len(documents_list) + i,
                 "chunk_type": chunk.get("chunk_type", "unknown"),
@@ -245,6 +247,7 @@ class CodeVectorStore:
                 "end_line": chunk.get("end_line", 0),
                 "node_id": chunk.get("node_id", ""),
                 "level": level,  # Track which level this chunk belongs to
+                "content_hash": content_hash,
             }
 
             # Add any additional metadata
@@ -794,8 +797,6 @@ class CodeVectorStore:
         Returns:
             Dict mapping content_hash → np.ndarray (float32 vectors).
         """
-        import hashlib
-
         vector_store, documents = self._get_store_and_docs(level)
         if not documents or vector_store is None:
             return {}

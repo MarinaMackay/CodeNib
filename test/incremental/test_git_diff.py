@@ -148,3 +148,40 @@ class TestDetectChanges:
         assert "foo.py" in all_basenames
         assert "baz.ts" not in all_basenames
         assert "bar.rs" not in all_basenames
+
+    def test_rename_deletes_old_path(self, tmp_path):
+        """
+        Git renames must produce a delete for the old path AND a modify for
+        the new path, so the chunk store cleans up the old path's entries.
+
+        Regression: without the delete, old-path chunks and FAISS vectors
+        remain as ghost entries.
+        """
+        repo = tmp_path / "rename_repo"
+        repo.mkdir()
+        _run(["git", "init"], str(repo))
+        _run(["git", "config", "user.email", "t@t.com"], str(repo))
+        _run(["git", "config", "user.name", "T"], str(repo))
+
+        (repo / "old_name.py").write_text("def f():\n    pass\n")
+        _run(["git", "add", "."], str(repo))
+        _run(["git", "commit", "-m", "initial"], str(repo))
+        commit_a = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True
+        ).stdout.strip()
+
+        _run(["git", "mv", "old_name.py", "new_name.py"], str(repo))
+        _run(["git", "commit", "-m", "rename"], str(repo))
+
+        detector = GitDiffDetector(supported_extensions={".py"})
+        changes = detector.detect_changes(str(repo), commit_a)
+
+        deleted_basenames = [Path(p).name for p in changes.deleted]
+        modified_or_added = [Path(p).name for p in changes.modified + changes.added]
+
+        assert "old_name.py" in deleted_basenames, (
+            f"Old path should be in deleted list, got deleted={deleted_basenames}"
+        )
+        assert "new_name.py" in modified_or_added, (
+            f"New path should be in modified/added list, got={modified_or_added}"
+        )
