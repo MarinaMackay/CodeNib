@@ -237,7 +237,9 @@ class CodeVectorStore:
         for i, chunk in enumerate(code_chunks):
             # Extract content and metadata
             content = chunk.get("content", "")
-            content_hash = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()
+            content_hash = hashlib.md5(
+                content.encode("utf-8", errors="replace")
+            ).hexdigest()
             metadata = {
                 "chunk_id": len(documents_list) + i,
                 "chunk_type": chunk.get("chunk_type", "unknown"),
@@ -468,9 +470,10 @@ class CodeVectorStore:
             if not doc or not hasattr(doc, "metadata"):
                 continue
             meta = doc.metadata
-            if meta.get("node_id", "") in mask_node_ids or meta.get(
-                "name", ""
-            ) in mask_node_ids:
+            if (
+                meta.get("node_id", "") in mask_node_ids
+                or meta.get("name", "") in mask_node_ids
+            ):
                 matched.append((faiss_idx, doc))
 
         if not matched:
@@ -478,9 +481,7 @@ class CodeVectorStore:
             return []
 
         # Encode query
-        query_vec = np.array(
-            self.embedding.embed_query(query), dtype=np.float32
-        )
+        query_vec = np.array(self.embedding.embed_query(query), dtype=np.float32)
 
         # Reconstruct stored vectors and compute similarity
         results: list[NodeInfo] = []
@@ -855,12 +856,15 @@ class CodeVectorStore:
         self.clear(level)
 
         if not documents:
-            logger.debug("rebuild_from_embeddings: no documents; level %s cleared.", level)
+            logger.debug(
+                "rebuild_from_embeddings: no documents; level %s cleared.", level
+            )
             return
 
         # Build (text, vector) tuples expected by FAISS.from_embeddings()
         text_embeddings = [
-            (doc.page_content, emb.tolist()) for doc, emb in zip(documents, embeddings)
+            (doc.page_content, emb.tolist())
+            for doc, emb in zip(documents, embeddings, strict=True)
         ]
         metadatas = [doc.metadata for doc in documents]
 
@@ -922,7 +926,9 @@ class CodeVectorStore:
         if not docs or changed / max(total, 1) >= threshold:
             logger.info(
                 "delta_update: large delta (%d/%d changed, %.0f%%) → full rebuild.",
-                changed, total, (changed / max(total, 1)) * 100,
+                changed,
+                total,
+                (changed / max(total, 1)) * 100,
             )
             self.rebuild_from_embeddings(all_documents, all_embeddings, level=level)
             return
@@ -930,7 +936,7 @@ class CodeVectorStore:
         # --- Small-delta path: remove old, add new ----------------------
         # Identify FAISS indices to remove (docs whose content_hash is in changed set)
         ids_to_remove = []
-        for faiss_idx, docstore_id in vector_store.index_to_docstore_id.items():
+        for _faiss_idx, docstore_id in vector_store.index_to_docstore_id.items():
             doc = vector_store.docstore.search(docstore_id)
             if doc and hasattr(doc, "metadata"):
                 ch = doc.metadata.get("content_hash", "")
@@ -944,7 +950,7 @@ class CodeVectorStore:
         # Collect only the new/changed documents to add
         new_docs = []
         new_embeddings_list = []
-        for doc, emb in zip(all_documents, all_embeddings):
+        for doc, emb in zip(all_documents, all_embeddings, strict=True):
             ch = doc.metadata.get("content_hash", "")
             if ch in changed_content_hashes:
                 new_docs.append(doc)
@@ -953,7 +959,7 @@ class CodeVectorStore:
         if new_docs:
             text_embeddings = [
                 (doc.page_content, emb.tolist())
-                for doc, emb in zip(new_docs, new_embeddings_list)
+                for doc, emb in zip(new_docs, new_embeddings_list, strict=True)
             ]
             metadatas = [doc.metadata for doc in new_docs]
             vector_store.add_embeddings(
@@ -969,7 +975,10 @@ class CodeVectorStore:
 
         logger.info(
             "delta_update: %s index patched — %d removed, %d added (total %d).",
-            level, len(ids_to_remove), len(new_docs), total,
+            level,
+            len(ids_to_remove),
+            len(new_docs),
+            total,
         )
 
     def clear(self, level: Optional[Level] = None) -> None:

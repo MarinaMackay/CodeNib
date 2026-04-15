@@ -14,12 +14,10 @@ import pickle
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from codeminer.code_chunking.base import CodeChunk
-from codeminer.incremental.chunk_store import IncrementalChunkStore, VersionedChunk
+from codeminer.incremental.chunk_store import IncrementalChunkStore
 from codeminer.incremental.embeddings_cache import EmbeddingsCache
-
 
 # ---------------------------------------------------------------------------
 # Helpers

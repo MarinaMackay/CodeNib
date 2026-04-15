@@ -38,7 +38,9 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--dataset", type=str, required=True,
+        "--dataset",
+        type=str,
+        required=True,
         choices=["swebench_lite", "locbench_v1"],
     )
     parser.add_argument("--split", type=str, default="test")
@@ -47,30 +49,45 @@ def parse_args():
 
     # Embedding config
     parser.add_argument(
-        "--embedding-model", type=str, default="nomic-ai/CodeRankEmbed",
+        "--embedding-model",
+        type=str,
+        default="nomic-ai/CodeRankEmbed",
     )
     parser.add_argument(
-        "--embedding-provider", type=str, default="huggingface",
+        "--embedding-provider",
+        type=str,
+        default="huggingface",
     )
     parser.add_argument(
-        "--embedding-dimension", type=int, default=768,
+        "--embedding-dimension",
+        type=int,
+        default=768,
     )
 
     # Evaluation
     parser.add_argument(
-        "--eval-instances", type=str, default=None,
+        "--eval-instances",
+        type=str,
+        default=None,
         help="Path to eval annotations JSON. Auto-generated if not provided.",
     )
     parser.add_argument(
-        "--metrics-k", type=int, nargs="+", default=[1, 3, 5, 10, 15, 20],
+        "--metrics-k",
+        type=int,
+        nargs="+",
+        default=[1, 3, 5, 10, 15, 20],
     )
 
     # Cache
     parser.add_argument(
-        "--index-cache-dir", type=str, default="/mnt/data/codeminer",
+        "--index-cache-dir",
+        type=str,
+        default="/mnt/data/codeminer",
     )
     parser.add_argument(
-        "--repo-cache-dir", type=str, default="~/.codeminer/",
+        "--repo-cache-dir",
+        type=str,
+        default="~/.codeminer/",
     )
     parser.add_argument("--result-path", type=str, default=None)
 
@@ -156,29 +173,37 @@ def run_embedding_pipeline(args):
             eval_count += 1
 
             logger.info(
-                "[%s] Done in %.1fs (%d results)", instance_id, elapsed, len(results),
+                "[%s] Done in %.1fs (%d results)",
+                instance_id,
+                elapsed,
+                len(results),
             )
             for scope, per_k in metrics.items():
                 for k, stats in per_k.items():
                     logger.info(
                         "  [%s] k=%d acc=%.3f prec=%.3f recall=%.3f hits=%d",
-                        scope, k,
-                        stats["accuracy"], stats["precision"],
-                        stats["recall"], int(stats["hits"]),
+                        scope,
+                        k,
+                        stats["accuracy"],
+                        stats["precision"],
+                        stats["recall"],
+                        int(stats["hits"]),
                     )
 
             if all_results is not None:
                 unique_files, normalized_symbols = extract_predictions(results)
-                all_results.append({
-                    "instance_id": instance_id,
-                    "method": "embedding_baseline",
-                    "topk": args.topk,
-                    "num_results": len(results),
-                    "elapsed_s": elapsed,
-                    "metric_k_files": unique_files[:metric_max_k],
-                    "metric_k_node_ids": normalized_symbols[:metric_max_k],
-                    "metrics": metrics,
-                })
+                all_results.append(
+                    {
+                        "instance_id": instance_id,
+                        "method": "embedding_baseline",
+                        "topk": args.topk,
+                        "num_results": len(results),
+                        "elapsed_s": elapsed,
+                        "metric_k_files": unique_files[:metric_max_k],
+                        "metric_k_node_ids": normalized_symbols[:metric_max_k],
+                        "metrics": metrics,
+                    }
+                )
 
         except Exception:
             logger.exception("Error processing %s", instance_id)
@@ -191,15 +216,19 @@ def run_embedding_pipeline(args):
     if aggregate and eval_count:
         averaged = average_metrics(aggregate, eval_count)
         logger.info(
-            "=== Embedding Baseline Aggregate (%d instances) ===", eval_count,
+            "=== Embedding Baseline Aggregate (%d instances) ===",
+            eval_count,
         )
         for scope, per_k in averaged.items():
             for k, stats in per_k.items():
                 logger.info(
                     "[%s] k=%d acc=%.3f prec=%.3f recall=%.3f avg_hits=%.3f",
-                    scope, k,
-                    stats["accuracy"], stats["precision"],
-                    stats["recall"], stats["avg_hits"],
+                    scope,
+                    k,
+                    stats["accuracy"],
+                    stats["precision"],
+                    stats["recall"],
+                    stats["avg_hits"],
                 )
 
     if args.result_path and all_results is not None:

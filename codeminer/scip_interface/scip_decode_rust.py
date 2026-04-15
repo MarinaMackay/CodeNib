@@ -9,6 +9,7 @@ Decodes SCIP index files into CodeGraph format, focusing on:
 - Traits (treated as classes)
 """
 import re
+
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -193,9 +194,7 @@ class SCIPRustGraphDecoder:
                 except Exception:
                     continue
 
-        self.logger.info(
-            f"Loaded {len(internal_crates)} internal workspace crates"
-        )
+        self.logger.info(f"Loaded {len(internal_crates)} internal workspace crates")
         return internal_crates
 
     def _process_occurrence(self, occurrence_text, file_path):
@@ -289,7 +288,7 @@ class SCIPRustGraphDecoder:
             if end == -1:
                 break
             brackets.append(rest[1:end])  # content inside [ ]
-            rest = rest[end + 1:]
+            rest = rest[end + 1 :]
 
         # brackets[0] = ImplType, brackets[1] = Trait (if present)
         impl_type = brackets[0] if brackets else ""
@@ -450,7 +449,14 @@ class SCIPRustGraphDecoder:
         return NODE_TYPE_FUNCTION
 
     def _process_symbol(
-        self, symbol, file_path, line, col_start, col_end, symbol_roles, enclosing_ranges
+        self,
+        symbol,
+        file_path,
+        line,
+        col_start,
+        col_end,
+        symbol_roles,
+        enclosing_ranges,
     ):
         """
         Process a symbol occurrence and add it to the graph.
@@ -496,11 +502,17 @@ class SCIPRustGraphDecoder:
                 )
                 if unified_symbol in self.code_graph.name_to_vertex:
                     vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-                    self.code_graph.graph.vs[vertex_id]["unified_name"] = self._get_unified_name(unified_symbol, file_path, symbol_type)
+                    self.code_graph.graph.vs[vertex_id]["unified_name"] = (
+                        self._get_unified_name(unified_symbol, file_path, symbol_type)
+                    )
 
                 self.code_graph.add_containment_edge(unified_symbol)
 
-                if symbol_type in [NODE_TYPE_CLASS, NODE_TYPE_FUNCTION, NODE_TYPE_METHOD]:
+                if symbol_type in [
+                    NODE_TYPE_CLASS,
+                    NODE_TYPE_FUNCTION,
+                    NODE_TYPE_METHOD,
+                ]:
                     self.code_graph.update_current_scope(
                         unified_symbol, scope_start_line, scope_end_line
                     )
@@ -513,15 +525,21 @@ class SCIPRustGraphDecoder:
                 )
                 if unified_symbol in self.code_graph.name_to_vertex:
                     vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-                    self.code_graph.graph.vs[vertex_id]["unified_name"] = self._get_unified_name(unified_symbol, file_path, symbol_type)
+                    self.code_graph.graph.vs[vertex_id]["unified_name"] = (
+                        self._get_unified_name(unified_symbol, file_path, symbol_type)
+                    )
 
                 self.code_graph.add_containment_edge(unified_symbol)
             else:
                 # No enclosing range (stable rust-analyzer)
-                self.code_graph.add_symbol_node(unified_symbol, line, symbol_type=symbol_type)
+                self.code_graph.add_symbol_node(
+                    unified_symbol, line, symbol_type=symbol_type
+                )
                 if unified_symbol in self.code_graph.name_to_vertex:
                     vertex_id = self.code_graph.name_to_vertex[unified_symbol]
-                    self.code_graph.graph.vs[vertex_id]["unified_name"] = self._get_unified_name(unified_symbol, file_path, symbol_type)
+                    self.code_graph.graph.vs[vertex_id]["unified_name"] = (
+                        self._get_unified_name(unified_symbol, file_path, symbol_type)
+                    )
 
                 self.code_graph._add_edge(
                     self.code_graph.current_scope, unified_symbol, EDGE_TYPE_CONTAIN

@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 import numpy as np
 from langchain_core.documents import Document
 
-from ..code_chunking.base import CodeChunk
 from ..log_utils import get_logger
 from .chunk_store import IncrementalChunkStore, VersionedChunk
 from .embeddings_cache import EmbeddingsCache
@@ -131,7 +130,9 @@ class IncrementalIndexUpdater:
         result.files_changed = len(changes.affected) + len(changes.deleted)
 
         if changes.is_empty:
-            logger.info("No source files changed since %s; skipping update.", last_commit[:8])
+            logger.info(
+                "No source files changed since %s; skipping update.", last_commit[:8]
+            )
             result.total_chunks = chunk_store.chunk_count()
             result.duration_seconds = time.monotonic() - t_start
             return result
@@ -198,7 +199,7 @@ class IncrementalIndexUpdater:
             if misses:
                 miss_contents = [vc.chunk.content for vc in misses]
                 raw_vectors = self._embedding_model.embed_documents(miss_contents)
-                for vc, raw_vec in zip(misses, raw_vectors):
+                for vc, raw_vec in zip(misses, raw_vectors, strict=True):
                     vec = np.asarray(raw_vec, dtype=np.float32)
                     embeddings_cache.put(vc.content_hash, vec)
                     hits.append((vc, vec))

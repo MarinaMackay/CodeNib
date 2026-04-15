@@ -65,7 +65,8 @@ LOCAGENT_LITE_SUBSET_DOC = (
 )
 
 
-# Output Schema 
+# Output Schema
+
 
 @dataclass
 class CodeSymbol:
@@ -109,6 +110,7 @@ class SkillEvalReport:
 
 # QueriedNode -> CodeSymbol conversion
 
+
 def queried_node_to_symbol(node: QueriedNode) -> CodeSymbol:
     """Convert a QueriedNode to CodeSymbol."""
     return CodeSymbol(
@@ -123,6 +125,7 @@ def queried_node_to_symbol(node: QueriedNode) -> CodeSymbol:
 
 
 # Core evaluation logic
+
 
 def build_bm25_index(
     repo_path: str, languages: List[str], max_k: int = 128
@@ -286,7 +289,9 @@ def evaluate_instance(
         # Step 2: Build BM25 index
         execution_log.append("Building BM25 index...")
         bm25_index = build_bm25_index(repo_path, args.languages, max_k=128)
-        execution_log.append(f"BM25 index built with {len(bm25_index.documents)} documents")
+        execution_log.append(
+            f"BM25 index built with {len(bm25_index.documents)} documents"
+        )
 
         simplified_gt = args.gt_symbols != "full"
 
@@ -400,6 +405,7 @@ def evaluate_instance(
 
 # Main evaluation loop
 
+
 def run_evaluation(args: argparse.Namespace) -> SkillEvalReport:
     """Run evaluation on the dataset."""
     logger.info(f"Starting evaluation with:")
@@ -483,7 +489,9 @@ def run_evaluation(args: argparse.Namespace) -> SkillEvalReport:
     metric_count = 0
 
     for idx, instance in enumerate(instances):
-        logger.info(f"\n[{idx + 1}/{len(instances)}] Evaluating {instance['instance_id']}")
+        logger.info(
+            f"\n[{idx + 1}/{len(instances)}] Evaluating {instance['instance_id']}"
+        )
 
         result = evaluate_instance(
             instance, dataset, llm, args, eval_metadata=eval_lookup
@@ -496,17 +504,11 @@ def run_evaluation(args: argparse.Namespace) -> SkillEvalReport:
             metric_count += 1
 
     # Compute average metrics (only over instances that produced metrics)
-    avg_metrics = (
-        average_metrics(aggregate, metric_count) if metric_count else {}
-    )
+    avg_metrics = average_metrics(aggregate, metric_count) if metric_count else {}
 
     # Build report
-    skill_ids = (
-        ["bm25_search"] if args.eval_mode == "agent" else ["bm25_baseline"]
-    )
-    report_model = (
-        args.model if args.eval_mode == "agent" else "bm25_baseline"
-    )
+    skill_ids = ["bm25_search"] if args.eval_mode == "agent" else ["bm25_baseline"]
+    report_model = args.model if args.eval_mode == "agent" else "bm25_baseline"
     report = SkillEvalReport(
         dataset=args.dataset,
         model=report_model,
@@ -523,6 +525,7 @@ def run_evaluation(args: argparse.Namespace) -> SkillEvalReport:
 
 
 # CLI
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

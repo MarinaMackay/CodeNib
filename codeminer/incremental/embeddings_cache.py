@@ -71,7 +71,7 @@ class EmbeddingsCache:
 
     def put_batch(self, hashes: List[str], embeddings: List[np.ndarray]) -> None:
         """Store multiple (hash, embedding) pairs at once."""
-        for h, vec in zip(hashes, embeddings):
+        for h, vec in zip(hashes, embeddings, strict=True):
             self.put(h, vec)
 
     # ------------------------------------------------------------------
@@ -134,7 +134,9 @@ class EmbeddingsCache:
 
         logger.debug(
             "EmbeddingsCache saved (%d entries) → %s + %s",
-            self.size(), json_path, npz_path,
+            self.size(),
+            json_path,
+            npz_path,
         )
 
     @classmethod
@@ -154,14 +156,16 @@ class EmbeddingsCache:
                 cache._cache[h] = vectors[i].astype(np.float32)
             logger.debug(
                 "EmbeddingsCache loaded from JSON+NPZ (%d entries) ← %s",
-                cache.size(), json_path,
+                cache.size(),
+                json_path,
             )
         elif path.exists():
             with open(path, "rb") as f:
                 cache._cache = pickle.load(f)
             logger.debug(
                 "EmbeddingsCache loaded from pickle (%d entries) ← %s",
-                cache.size(), path,
+                cache.size(),
+                path,
             )
         else:
             raise FileNotFoundError(

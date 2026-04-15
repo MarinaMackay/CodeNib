@@ -10,8 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from codeminer.incremental.git_diff import GitDiffDetector, RepoChanges
-
+from codeminer.incremental.git_diff import GitDiffDetector
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -179,9 +178,9 @@ class TestDetectChanges:
         deleted_basenames = [Path(p).name for p in changes.deleted]
         modified_or_added = [Path(p).name for p in changes.modified + changes.added]
 
-        assert "old_name.py" in deleted_basenames, (
-            f"Old path should be in deleted list, got deleted={deleted_basenames}"
-        )
-        assert "new_name.py" in modified_or_added, (
-            f"New path should be in modified/added list, got={modified_or_added}"
-        )
+        assert (
+            "old_name.py" in deleted_basenames
+        ), f"Old path should be in deleted list, got deleted={deleted_basenames}"
+        assert (
+            "new_name.py" in modified_or_added
+        ), f"New path should be in modified/added list, got={modified_or_added}"

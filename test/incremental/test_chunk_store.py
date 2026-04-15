@@ -3,11 +3,7 @@ Unit tests for IncrementalChunkStore.
 """
 
 from codeminer.code_chunking.base import CodeChunk
-from codeminer.incremental.chunk_store import (
-    IncrementalChunkStore,
-    _hash_content,
-)
-
+from codeminer.incremental.chunk_store import IncrementalChunkStore, _hash_content
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -177,7 +173,10 @@ class TestGetAllContentHashes:
         ]
         store = IncrementalChunkStore.from_chunks(chunks, COMMIT_A)
         hashes = store.get_all_content_hashes()
-        assert hashes == {_hash_content("def a(): pass"), _hash_content("def b(): pass")}
+        assert hashes == {
+            _hash_content("def a(): pass"),
+            _hash_content("def b(): pass"),
+        }
 
 
 # ---------------------------------------------------------------------------

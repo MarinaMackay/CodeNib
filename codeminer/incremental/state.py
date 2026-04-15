@@ -53,7 +53,11 @@ class IncrementalState:
         with open(state_path, "r") as f:
             data = json.load(f)
         state = cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
-        logger.debug("IncrementalState loaded ← %s (commit %s)", state_path, state.last_commit[:8] if state.last_commit else "none")
+        logger.debug(
+            "IncrementalState loaded ← %s (commit %s)",
+            state_path,
+            state.last_commit[:8] if state.last_commit else "none",
+        )
         return state
 
     @classmethod

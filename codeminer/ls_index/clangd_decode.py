@@ -73,6 +73,7 @@ ZERO_SYMBOL_ID = "0" * 16
 # Low-level RIFF / .idx parsing
 # ===================================================================
 
+
 def read_riff(data: bytes) -> dict:
     """Parse RIFF container into chunks."""
     assert data[:4] == b"RIFF", f"Not a RIFF file, got {data[:4]!r}"
@@ -83,9 +84,9 @@ def read_riff(data: bytes) -> dict:
     offset = 12
     chunks = {}
     while offset < 8 + total_len:
-        chunk_id = data[offset: offset + 4].decode("ascii")
+        chunk_id = data[offset : offset + 4].decode("ascii")
         chunk_len = struct.unpack_from("<I", data, offset + 4)[0]
-        chunk_data = data[offset + 8: offset + 8 + chunk_len]
+        chunk_data = data[offset + 8 : offset + 8 + chunk_len]
         chunks[chunk_id] = chunk_data
         offset += 8 + chunk_len
         if chunk_len % 2 == 1:
@@ -137,10 +138,10 @@ def decode_location(data: bytes, offset: int, strings: list) -> tuple:
     }, offset
 
 
-
 # ===================================================================
 # Chunk decoders
 # ===================================================================
+
 
 def decode_symbols(symb_data: bytes, strings: list) -> list:
     """Decode the symb chunk into a list of symbol records."""
@@ -153,7 +154,7 @@ def decode_symbols(symb_data: bytes, strings: list) -> list:
         # SymbolID: 8 bytes
         if offset + 8 > len(symb_data):
             break
-        sym["id"] = symb_data[offset: offset + 8].hex()
+        sym["id"] = symb_data[offset : offset + 8].hex()
         offset += 8
 
         # SymbolKind: uint8
@@ -235,7 +236,7 @@ def decode_refs(refs_data: bytes, strings: list) -> list:
     while offset < len(refs_data):
         if offset + 8 > len(refs_data):
             break
-        sym_id = refs_data[offset: offset + 8].hex()
+        sym_id = refs_data[offset : offset + 8].hex()
         offset += 8
 
         num_refs, offset = read_varint(refs_data, offset)
@@ -255,14 +256,16 @@ def decode_refs(refs_data: bytes, strings: list) -> list:
             if offset + 8 > len(refs_data):
                 container_id = ""
             else:
-                container_id = refs_data[offset: offset + 8].hex()
+                container_id = refs_data[offset : offset + 8].hex()
                 offset += 8
 
-            sym_refs.append({
-                "kind": kind,
-                "location": loc,
-                "container": container_id,
-            })
+            sym_refs.append(
+                {
+                    "kind": kind,
+                    "location": loc,
+                    "container": container_id,
+                }
+            )
 
         refs.append({"symbol_id": sym_id, "refs": sym_refs})
 
@@ -277,18 +280,20 @@ def decode_relations(rela_data: bytes) -> list:
     while offset < len(rela_data):
         if offset + 17 > len(rela_data):  # 8 + 1 + 8
             break
-        subject = rela_data[offset: offset + 8].hex()
+        subject = rela_data[offset : offset + 8].hex()
         offset += 8
         predicate = rela_data[offset]
         offset += 1
-        obj = rela_data[offset: offset + 8].hex()
+        obj = rela_data[offset : offset + 8].hex()
         offset += 8
 
-        relations.append({
-            "subject": subject,
-            "predicate": predicate,
-            "object": obj,
-        })
+        relations.append(
+            {
+                "subject": subject,
+                "predicate": predicate,
+                "object": obj,
+            }
+        )
 
     return relations
 
@@ -335,6 +340,7 @@ def parse_idx_file(filepath: str) -> dict:
 # ClangdGraphDecoder — .idx directory → CodeGraph
 # ===================================================================
 
+
 class ClangdGraphDecoder:
     """
     Decoder that builds a CodeGraph from clangd .idx files.
@@ -353,12 +359,14 @@ class ClangdGraphDecoder:
         self.code_graph = CodeGraph(str(self.project_root))
 
         # Accumulated data from all .idx files (Pass 1)
-        self._symbols = {}      # sym_id -> symbol record dict
-        self._refs = {}         # sym_id -> [ref record, ...]
-        self._relations = []    # [relation record, ...]
+        self._symbols = {}  # sym_id -> symbol record dict
+        self._refs = {}  # sym_id -> [ref record, ...]
+        self._relations = []  # [relation record, ...]
 
         # Mappings built during Pass 2
-        self._id_to_display = {}   # sym_id -> display name (e.g. "Namespace::Class::method")
+        self._id_to_display = (
+            {}
+        )  # sym_id -> display name (e.g. "Namespace::Class::method")
         self._indexed_files = set()
         self._indexed_directories = set()
 
@@ -417,7 +425,9 @@ class ClangdGraphDecoder:
                     # If existing has no valid definition but this one does, update
                     existing_def = self._symbols[sym_id].get("definition")
                     new_def = sym.get("definition")
-                    if (not existing_def or existing_def.get("file", "") == "") and new_def:
+                    if (
+                        not existing_def or existing_def.get("file", "") == ""
+                    ) and new_def:
                         self._symbols[sym_id] = sym
 
             # Merge refs (union all)
@@ -490,8 +500,13 @@ class ClangdGraphDecoder:
             return NODE_TYPE_CLASS
         elif kind == KIND_FUNCTION:
             return NODE_TYPE_FUNCTION
-        elif kind in (KIND_INSTANCE_METHOD, KIND_CLASS_METHOD, KIND_STATIC_METHOD,
-                       KIND_CONSTRUCTOR, KIND_DESTRUCTOR):
+        elif kind in (
+            KIND_INSTANCE_METHOD,
+            KIND_CLASS_METHOD,
+            KIND_STATIC_METHOD,
+            KIND_CONSTRUCTOR,
+            KIND_DESTRUCTOR,
+        ):
             return NODE_TYPE_METHOD
         elif kind == KIND_FIELD:
             return NODE_TYPE_FIELD
@@ -512,9 +527,12 @@ class ClangdGraphDecoder:
           3. symb definition -> fallback
         """
         result = {
-            "file": None, "line": 0, "col": 0,
+            "file": None,
+            "line": 0,
+            "col": 0,
             "macro_expanded": False,
-            "spelling_file": None, "spelling_line": None,
+            "spelling_file": None,
+            "spelling_line": None,
         }
 
         ref_list = self._refs.get(sym_id, [])
@@ -555,7 +573,10 @@ class ClangdGraphDecoder:
                     spelling_line = sym_def["start"][0]
                     expansion_file = loc["file"]
                     expansion_line = loc["start"][0]
-                    if spelling_file != expansion_file or spelling_line != expansion_line:
+                    if (
+                        spelling_file != expansion_file
+                        or spelling_line != expansion_line
+                    ):
                         result["macro_expanded"] = True
                         result["spelling_file"] = spelling_file
                         result["spelling_line"] = spelling_line
@@ -698,15 +719,21 @@ class ClangdGraphDecoder:
                 unified_display = qualified_name.replace("::", ".")
                 if node_type in (NODE_TYPE_FUNCTION, NODE_TYPE_METHOD):
                     unified_display = f"{unified_display}()"
-                self.code_graph.graph.vs[vid]["unified_name"] = f"{relative_file}:{unified_display}"
+                self.code_graph.graph.vs[vid][
+                    "unified_name"
+                ] = f"{relative_file}:{unified_display}"
                 self.code_graph.graph.vs[vid]["file"] = relative_file
-                self.code_graph.graph.vs[vid]["macro_expanded"] = def_info["macro_expanded"]
+                self.code_graph.graph.vs[vid]["macro_expanded"] = def_info[
+                    "macro_expanded"
+                ]
                 if def_info["spelling_file"]:
                     self.code_graph.graph.vs[vid]["spelling_file"] = (
                         self._file_uri_to_relative(def_info["spelling_file"])
                     )
                 if def_info["spelling_line"]:
-                    self.code_graph.graph.vs[vid]["spelling_line"] = def_info["spelling_line"]
+                    self.code_graph.graph.vs[vid]["spelling_line"] = def_info[
+                        "spelling_line"
+                    ]
 
     def _add_contain_edges(self):
         """Add containment edges from refs container field."""
@@ -726,7 +753,10 @@ class ClangdGraphDecoder:
 
                 if is_def and container_id and container_id != ZERO_SYMBOL_ID:
                     container_name = self._resolve_sym_id(container_id)
-                    if container_name and container_name in self.code_graph.name_to_vertex:
+                    if (
+                        container_name
+                        and container_name in self.code_graph.name_to_vertex
+                    ):
                         self.code_graph._add_edge(
                             container_name, sym_name, EDGE_TYPE_CONTAIN
                         )
@@ -766,7 +796,10 @@ class ClangdGraphDecoder:
 
                 if is_reference and container_id and container_id != ZERO_SYMBOL_ID:
                     container_name = self._resolve_sym_id(container_id)
-                    if container_name and container_name in self.code_graph.name_to_vertex:
+                    if (
+                        container_name
+                        and container_name in self.code_graph.name_to_vertex
+                    ):
                         self.code_graph._add_edge(
                             container_name, sym_name, EDGE_TYPE_REFERENCE
                         )

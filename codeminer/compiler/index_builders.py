@@ -120,7 +120,11 @@ class VectorIndexBuilder:
         from pathlib import Path
 
         from ..code_chunker import CodeChunker, RepoChunkingConfig
-        from ..incremental import EmbeddingsCache, IncrementalChunkStore, IncrementalState
+        from ..incremental import (
+            EmbeddingsCache,
+            IncrementalChunkStore,
+            IncrementalState,
+        )
         from ..index.embedding.builders import build_hierarchical_vector_store
 
         os.makedirs(output_dir, exist_ok=True)
@@ -148,6 +152,7 @@ class VectorIndexBuilder:
         # We need the current HEAD commit and the L2 chunks that were just built.
         try:
             import subprocess
+
             result_git = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=repo_path,

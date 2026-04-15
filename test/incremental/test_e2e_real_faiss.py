@@ -17,7 +17,6 @@ from typing import List
 import numpy as np
 import pytest
 
-from codeminer.code_chunking.base import CodeChunk
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
 from codeminer.incremental import (
     EmbeddingsCache,
@@ -28,7 +27,6 @@ from codeminer.incremental import (
 from codeminer.incremental.chunk_store import _hash_content
 from codeminer.incremental.state import IncrementalState
 from codeminer.index.embedding.vector_store import CodeVectorStore
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -110,12 +108,9 @@ def py_repo(tmp_path: Path):
 
     # Commit A: two files
     (repo / "math_ops.py").write_text(
-        "def add(a, b):\n    return a + b\n\n"
-        "def subtract(a, b):\n    return a - b\n"
+        "def add(a, b):\n    return a + b\n\n" "def subtract(a, b):\n    return a - b\n"
     )
-    (repo / "string_ops.py").write_text(
-        "def concat(a, b):\n    return a + b\n"
-    )
+    (repo / "string_ops.py").write_text("def concat(a, b):\n    return a + b\n")
     _run(["git", "add", "."], str(repo))
     _run(["git", "commit", "-m", "initial"], str(repo))
     commit_a = subprocess.run(
@@ -127,9 +122,7 @@ def py_repo(tmp_path: Path):
         "def add(a, b):\n    return a + b\n\n"
         "def subtract(a, b):\n    return abs(a - b)\n"  # changed
     )
-    (repo / "new_utils.py").write_text(
-        "def helper():\n    return 42\n"
-    )
+    (repo / "new_utils.py").write_text("def helper():\n    return 42\n")
     (repo / "string_ops.py").unlink()
     _run(["git", "add", "."], str(repo))
     _run(["git", "commit", "-m", "update"], str(repo))
@@ -147,6 +140,7 @@ def py_repo(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.integration
 class TestEndToEndRealFaiss:
@@ -169,21 +163,33 @@ class TestEndToEndRealFaiss:
         )
 
         # Check out commit A and chunk the repo at that state
-        _sp.run(["git", "checkout", py_repo["commit_a"]], cwd=repo_path,
-                capture_output=True, check=True)
+        _sp.run(
+            ["git", "checkout", py_repo["commit_a"]],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
         alpha_chunks = chunker.chunk_repository(repo_path=repo_path)
-        chunk_store = IncrementalChunkStore.from_chunks(alpha_chunks, py_repo["commit_a"])
+        chunk_store = IncrementalChunkStore.from_chunks(
+            alpha_chunks, py_repo["commit_a"]
+        )
 
         # Seed embeddings cache from commit-A chunks
         emb_cache = EmbeddingsCache()
         for chunk in alpha_chunks:
             h = _hash_content(chunk.content)
-            vec = np.array(embedding_model.embed_documents([chunk.content])[0], dtype=np.float32)
+            vec = np.array(
+                embedding_model.embed_documents([chunk.content])[0], dtype=np.float32
+            )
             emb_cache.put(h, vec)
 
         # Move back to commit B (HEAD)
-        _sp.run(["git", "checkout", py_repo["commit_b"]], cwd=repo_path,
-                capture_output=True, check=True)
+        _sp.run(
+            ["git", "checkout", py_repo["commit_b"]],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
 
         # Run incremental update
         updater = IncrementalIndexUpdater(
@@ -251,7 +257,9 @@ class TestEndToEndRealFaiss:
         emb_cache = EmbeddingsCache()
         for chunk in all_chunks:
             h = _hash_content(chunk.content)
-            vec = np.array(embedding_model.embed_documents([chunk.content])[0], dtype=np.float32)
+            vec = np.array(
+                embedding_model.embed_documents([chunk.content])[0], dtype=np.float32
+            )
             emb_cache.put(h, vec)
 
         updater = IncrementalIndexUpdater(

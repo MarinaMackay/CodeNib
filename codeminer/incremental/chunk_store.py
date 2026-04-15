@@ -148,11 +148,16 @@ class IncrementalChunkStore:
         self._store[store_key] = new_versioned
         logger.debug(
             "update_file %s [%s]: +%d chunks, -%d chunks",
-            file_path, level, len(added), len(removed),
+            file_path,
+            level,
+            len(added),
+            len(removed),
         )
         return added, removed
 
-    def delete_file(self, file_path: str, level: Optional[str] = None) -> List[CodeChunk]:
+    def delete_file(
+        self, file_path: str, level: Optional[str] = None
+    ) -> List[CodeChunk]:
         """
         Remove *file_path* from the store.
 
@@ -181,9 +186,7 @@ class IncrementalChunkStore:
     # Read-only helpers
     # ------------------------------------------------------------------
 
-    def get_chunks_for_file(
-        self, file_path: str, level: str = "l2"
-    ) -> List[CodeChunk]:
+    def get_chunks_for_file(self, file_path: str, level: str = "l2") -> List[CodeChunk]:
         """Return current chunks for *file_path* at *level* (empty list if unknown)."""
         key = self._make_key(file_path, level)
         return [vc.chunk for vc in self._store.get(key, [])]
@@ -307,7 +310,9 @@ class IncrementalChunkStore:
                 ]
             logger.debug(
                 "ChunkStore loaded from JSON (%d files, %d chunks) ← %s",
-                store.file_count(), store.chunk_count(), json_path,
+                store.file_count(),
+                store.chunk_count(),
+                json_path,
             )
         elif path.exists():
             # Backward compat: load legacy pickle
@@ -315,12 +320,12 @@ class IncrementalChunkStore:
                 store._store = pickle.load(f)
             logger.debug(
                 "ChunkStore loaded from pickle (%d files, %d chunks) ← %s",
-                store.file_count(), store.chunk_count(), path,
+                store.file_count(),
+                store.chunk_count(),
+                path,
             )
         else:
-            raise FileNotFoundError(
-                f"No chunk store found at {json_path} or {path}"
-            )
+            raise FileNotFoundError(f"No chunk store found at {json_path} or {path}")
         return store
 
     @classmethod

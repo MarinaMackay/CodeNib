@@ -14,13 +14,13 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from typing import List
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from codeminer.code_chunking.base import CodeChunk
 from codeminer.code_chunker import CodeChunker, RepoChunkingConfig
+from codeminer.code_chunking.base import CodeChunk
 from codeminer.incremental import (
     EmbeddingsCache,
     GitDiffDetector,
@@ -30,7 +30,6 @@ from codeminer.incremental import (
 from codeminer.incremental.chunk_store import _hash_content
 from codeminer.incremental.index_updater import UpdateResult
 from codeminer.index.embedding.vector_store import CodeVectorStore
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -160,8 +159,12 @@ class TestIncrementalChunkStoreAndCache:
         # beta() changed content, so it appears in both added and removed
         added_names = [c.name for c in added]
         removed_names = [c.name for c in removed]
-        assert any("beta" in n for n in added_names), f"Expected beta in added: {added_names}"
-        assert any("beta" in n for n in removed_names), f"Expected beta in removed: {removed_names}"
+        assert any(
+            "beta" in n for n in added_names
+        ), f"Expected beta in added: {added_names}"
+        assert any(
+            "beta" in n for n in removed_names
+        ), f"Expected beta in removed: {removed_names}"
 
     def test_unchanged_chunk_stays_in_cache(self):
         """Chunks whose content hash is already cached are not re-embedded."""
@@ -194,7 +197,9 @@ class TestIncrementalIndexUpdater:
         # hashes match what the updater will produce.
         _run(["git", "checkout", py_repo["commit_a"]], repo_path)
         initial_chunks = chunker.chunk_repository(repo_path=repo_path)
-        chunk_store = IncrementalChunkStore.from_chunks(initial_chunks, py_repo["commit_a"])
+        chunk_store = IncrementalChunkStore.from_chunks(
+            initial_chunks, py_repo["commit_a"]
+        )
 
         # Move back to commit B (HEAD) for the incremental update
         _run(["git", "checkout", py_repo["commit_b"]], repo_path)
@@ -204,7 +209,9 @@ class TestIncrementalIndexUpdater:
         embedding_model = _make_mock_embedding_model(DIM)
         for chunk in initial_chunks:
             h = _hash_content(chunk.content)
-            vec = np.array(embedding_model.embed_documents([chunk.content])[0], dtype=np.float32)
+            vec = np.array(
+                embedding_model.embed_documents([chunk.content])[0], dtype=np.float32
+            )
             emb_cache.put(h, vec)
 
         mock_store = _make_mock_vector_store(embedding_model, DIM)
@@ -226,9 +233,9 @@ class TestIncrementalIndexUpdater:
         # gamma() in file_b.py was untouched → should come from cache.
         # alpha() may or may not be a cache hit depending on whether the
         # chunker includes surrounding context that changed with beta().
-        assert result.chunks_from_cache >= 1, (
-            f"Expected at least gamma from cache, got {result.chunks_from_cache}"
-        )
+        assert (
+            result.chunks_from_cache >= 1
+        ), f"Expected at least gamma from cache, got {result.chunks_from_cache}"
         assert result.cache_hit_rate > 0
 
     def test_rebuild_from_embeddings_called(self, py_repo):
@@ -287,7 +294,11 @@ class TestIncrementalIndexUpdater:
             last_commit=py_repo["commit_b"],  # already at HEAD
         )
 
-        assert result.is_empty if hasattr(result, "is_empty") else result.files_changed == 0
+        assert (
+            result.is_empty
+            if hasattr(result, "is_empty")
+            else result.files_changed == 0
+        )
         mock_store.delta_update.assert_not_called()
 
     def test_deleted_file_chunks_removed(self, tmp_path):

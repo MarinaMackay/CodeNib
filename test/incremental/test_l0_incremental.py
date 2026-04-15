@@ -7,14 +7,8 @@ L0 and L2 chunks as separate layers for the same files.
 
 from __future__ import annotations
 
-from typing import List
-
-import numpy as np
-import pytest
-
 from codeminer.code_chunking.base import CodeChunk
-from codeminer.incremental.chunk_store import IncrementalChunkStore, _hash_content
-
+from codeminer.incremental.chunk_store import IncrementalChunkStore
 
 # ---------------------------------------------------------------------------
 # Helpers

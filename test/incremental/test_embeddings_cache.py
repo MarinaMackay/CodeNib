@@ -48,7 +48,7 @@ class TestBasicOperations:
         vecs = [make_vec(float(i)) for i in range(3)]
         cache.put_batch(hashes, vecs)
         assert cache.size() == 3
-        for h, v in zip(hashes, vecs):
+        for h, v in zip(hashes, vecs, strict=True):
             np.testing.assert_array_equal(cache.get(h), v)
 
     def test_get_batch_returns_only_cached(self):

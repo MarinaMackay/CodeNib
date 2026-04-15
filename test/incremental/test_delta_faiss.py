@@ -16,7 +16,6 @@ from langchain_core.documents import Document
 
 from codeminer.index.embedding.vector_store import CodeVectorStore
 
-
 DIM = 8
 
 
@@ -28,10 +27,7 @@ def _mock_embedding():
     model = MagicMock()
 
     def embed_documents(texts: List[str]) -> List[List[float]]:
-        return [
-            [(hash(t) % (2**16) + i) / (2**16) for i in range(DIM)]
-            for t in texts
-        ]
+        return [[(hash(t) % (2**16) + i) / (2**16) for i in range(DIM)] for t in texts]
 
     def embed_query(text: str) -> List[float]:
         return embed_documents([text])[0]
@@ -122,7 +118,9 @@ class TestDeltaUpdate:
         # Build the full new document set
         new_docs = list(docs)
         new_embeddings = [
-            np.array(store.embedding.embed_documents([d.page_content])[0], dtype=np.float32)
+            np.array(
+                store.embedding.embed_documents([d.page_content])[0], dtype=np.float32
+            )
             for d in new_docs
         ]
         new_docs[0] = Document(
@@ -148,7 +146,7 @@ class TestDeltaUpdate:
         store, docs, hashes = _build_store_with_docs(contents)
 
         # Change all chunks
-        new_contents = [f"def f_{i}():\n    return {i*10}\n" for i in range(5)]
+        new_contents = [f"def f_{i}():\n    return {i * 10}\n" for i in range(5)]
         new_docs = []
         new_embeddings = []
         changed_hashes = set()
@@ -183,7 +181,9 @@ class TestDeltaUpdate:
         store, docs, hashes = _build_store_with_docs(contents)
 
         embeddings = [
-            np.array(store.embedding.embed_documents([d.page_content])[0], dtype=np.float32)
+            np.array(
+                store.embedding.embed_documents([d.page_content])[0], dtype=np.float32
+            )
             for d in docs
         ]
 
@@ -290,8 +290,16 @@ class TestDeltaUpdate:
         # Simulate initial build via add_code_chunks
         store.add_code_chunks(
             [
-                {"content": "def foo():\n    return 1\n", "name": "foo", "file": "a.py"},
-                {"content": "def bar():\n    return 2\n", "name": "bar", "file": "a.py"},
+                {
+                    "content": "def foo():\n    return 1\n",
+                    "name": "foo",
+                    "file": "a.py",
+                },
+                {
+                    "content": "def bar():\n    return 2\n",
+                    "name": "bar",
+                    "file": "a.py",
+                },
             ],
             level="l2",
         )
@@ -317,7 +325,11 @@ class TestDeltaUpdate:
             ),
             Document(
                 page_content="def bar():\n    return 2\n",
-                metadata={"content_hash": _md5("def bar():\n    return 2\n"), "name": "bar", "file": "a.py"},
+                metadata={
+                    "content_hash": _md5("def bar():\n    return 2\n"),
+                    "name": "bar",
+                    "file": "a.py",
+                },
             ),
         ]
         all_embs = [

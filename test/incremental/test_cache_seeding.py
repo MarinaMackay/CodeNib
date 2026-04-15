@@ -18,7 +18,6 @@ from langchain_core.documents import Document
 
 from codeminer.index.embedding.vector_store import CodeVectorStore
 
-
 DIM = 8
 
 

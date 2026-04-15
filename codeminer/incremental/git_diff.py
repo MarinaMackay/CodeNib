@@ -20,16 +20,29 @@ logger = get_logger(__name__)
 # Mirrors the defaults in RepoChunkingConfig.
 _DEFAULT_EXTENSIONS: Set[str] = {
     # Python
-    ".py", ".pyx", ".pyi",
+    ".py",
+    ".pyx",
+    ".pyi",
     # C / C++
-    ".cpp", ".cxx", ".cc", ".c", ".hpp", ".h", ".hxx",
+    ".cpp",
+    ".cxx",
+    ".cc",
+    ".c",
+    ".hpp",
+    ".h",
+    ".hxx",
     # Rust
     ".rs",
     # Go
     ".go",
     # JavaScript / TypeScript
-    ".js", ".jsx", ".mjs",
-    ".ts", ".tsx", ".mts", ".cts",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".ts",
+    ".tsx",
+    ".mts",
+    ".cts",
 }
 
 
@@ -68,7 +81,8 @@ class GitDiffDetector:
         supported_extensions: Set[str] = None,
     ) -> None:
         self._extensions = (
-            supported_extensions if supported_extensions is not None
+            supported_extensions
+            if supported_extensions is not None
             else _DEFAULT_EXTENSIONS
         )
 
@@ -163,7 +177,9 @@ class GitDiffDetector:
             elif status_code == "D":
                 changes.deleted.append(abs_path)
             else:
-                logger.debug("Unhandled git diff status %r for %s", status_code, abs_path)
+                logger.debug(
+                    "Unhandled git diff status %r for %s", status_code, abs_path
+                )
 
         logger.info(
             "Detected %d added, %d modified, %d deleted source files since %s",
