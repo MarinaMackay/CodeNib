@@ -1,5 +1,5 @@
 """
-Vector Store implementation using FAISS and LangChain for code embeddings.
+Vector Store implementation using FAISS and sentence-transformers for code embeddings.
 This module provides functionality to create, store, and query vector embeddings
 of code chunks for semantic similarity search.
 """
@@ -12,12 +12,6 @@ from typing import Any, Dict, List, Literal, Optional, Set
 
 import faiss
 import numpy as np
-from langchain_community.docstore import InMemoryDocstore
-from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document
-from langchain_core.embeddings import Embeddings
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_openai import OpenAIEmbeddings
 
 from ...log_utils import get_logger
 from ...profiler import Profiler
@@ -28,9 +22,138 @@ logger = get_logger(__name__)
 Level = Literal["l0", "l2"]
 
 
+class _Document:
+    """Lightweight document container replacing LangChain Document.
+
+    Provides the same ``page_content`` / ``metadata`` interface so that
+    callers accessing ``store.l0_documents`` or ``store.l2_documents``
+    continue to work without changes.
+    """
+
+    __slots__ = ("page_content", "metadata")
+
+    def __init__(self, page_content: str = "", metadata: Optional[Dict] = None):
+        self.page_content = page_content
+        self.metadata = metadata if metadata is not None else {}
+
+    def __repr__(self) -> str:
+        name = self.metadata.get("name", "")
+        return f"_Document(name={name!r}, len={len(self.page_content)})"
+
+
+class _HuggingFaceEmbeddingWrapper:
+    """Wraps ``SentenceTransformer`` to expose ``embed_query`` / ``embed_documents``.
+
+    The interface is intentionally compatible with the LangChain ``Embeddings``
+    protocol so that external callers accessing ``store.embedding.embed_query``
+    or ``store.embedding.embed_documents`` keep working.
+    """
+
+    def __init__(self, model_name: str, max_seq_length: Optional[int] = None, **kwargs):
+        from sentence_transformers import SentenceTransformer
+
+        model_kwargs = kwargs.pop("model_kwargs", {})
+        self._encode_kwargs = kwargs.pop("encode_kwargs", {})
+
+        # Build SentenceTransformer init kwargs
+        st_kwargs: Dict[str, Any] = {}
+        if kwargs.pop("trust_remote_code", False):
+            st_kwargs["trust_remote_code"] = True
+        # Forward remaining kwargs (e.g. device, cache_folder)
+        st_kwargs.update(kwargs)
+        st_kwargs.update(model_kwargs)
+
+        self._model = SentenceTransformer(model_name, **st_kwargs)
+
+        # Cap the effective sequence length to avoid CUDA OOM.
+        self._apply_max_seq_length(model_name, max_seq_length)
+
+    # Expose the underlying SentenceTransformer so that callers that
+    # previously reached through ``store.embedding._client`` (langchain-
+    # huggingface >=0.1) or ``store.embedding.client`` (older) keep working.
+    @property
+    def _client(self):
+        return self._model
+
+    @property
+    def client(self):
+        return self._model
+
+    def _apply_max_seq_length(
+        self, model_name: str, max_seq_length: Optional[int]
+    ) -> None:
+        """Cap tokeniser / model sequence length to prevent OOM."""
+        try:
+            tok = self._model.tokenizer
+            max_pos = getattr(
+                self._model[0].auto_model.config,
+                "max_position_embeddings",
+                None,
+            )
+            effective_max = max_seq_length or max_pos
+            if effective_max:
+                if tok.model_max_length > effective_max:
+                    tok.model_max_length = effective_max
+                if self._model.max_seq_length > effective_max:
+                    logger.info(
+                        "Capping max_seq_length from %s to %s for model %s",
+                        self._model.max_seq_length,
+                        effective_max,
+                        model_name,
+                    )
+                    self._model.max_seq_length = effective_max
+        except Exception as e:
+            if max_seq_length is not None:
+                logger.warning(
+                    "--max-seq-length %s was requested but could not be "
+                    "applied to model %s: %s. CUDA OOM may occur.",
+                    max_seq_length,
+                    model_name,
+                    e,
+                )
+            else:
+                logger.debug("Could not check tokenizer max length: %s", e)
+
+    def embed_query(self, text: str) -> List[float]:
+        vec = self._model.encode([text], **self._encode_kwargs)
+        return vec[0].tolist()
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        vecs = self._model.encode(texts, **self._encode_kwargs)
+        return vecs.tolist()
+
+
+class _OpenAIEmbeddingWrapper:
+    """Wraps the OpenAI SDK to expose ``embed_query`` / ``embed_documents``."""
+
+    def __init__(self, model: str, **kwargs):
+        from openai import OpenAI
+
+        self._model = model
+        self._client = OpenAI(**kwargs)
+
+    def embed_query(self, text: str) -> List[float]:
+        resp = self._client.embeddings.create(input=[text], model=self._model)
+        return resp.data[0].embedding
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        resp = self._client.embeddings.create(input=texts, model=self._model)
+        return [d.embedding for d in sorted(resp.data, key=lambda x: x.index)]
+
+
+def _to_document(obj: Any) -> _Document:
+    """Convert any document-like object to ``_Document`` (duck-typed)."""
+    if isinstance(obj, _Document):
+        return obj
+    return _Document(
+        page_content=getattr(obj, "page_content", ""),
+        metadata=getattr(obj, "metadata", {}),
+    )
+
+
 class CodeVectorStore:
     """
-    Vector store for code embeddings using FAISS and LangChain.
+    Vector store for code embeddings using FAISS and sentence-transformers.
     Provides semantic search capabilities over code chunks.
 
     Supports hierarchical indexing:
@@ -82,99 +205,35 @@ class CodeVectorStore:
         self.embedding = self._initialize_embedding_model(**embedding_kwargs)
         self.dimension = self._infer_embedding_dimension(dimension)
 
-        # Initialize L0 vector store (file-level skeletons)
+        # Initialize L0 (file-level skeletons)
         self.l0_index = self._build_faiss_index()
-        self.l0_vector_store = FAISS(
-            embedding_function=self.embedding,
-            index=self.l0_index,
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-        )
-        self.l0_documents: List[Document] = []
+        self.l0_documents: List[_Document] = []
 
-        # Initialize L2 vector store (function/method-level) - default
+        # Initialize L2 (function/method-level) - default
         self.l2_index = self._build_faiss_index()
-        self.l2_vector_store = FAISS(
-            embedding_function=self.embedding,
-            index=self.l2_index,
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-        )
-        self.l2_documents: List[Document] = []
+        self.l2_documents: List[_Document] = []
+
         logger.info(
             f"Initialized CodeVectorStore with {embedding_provider}:{embedding_model}"
         )
 
-    def _get_store_and_docs(self, level: Level) -> tuple[FAISS, List[Document]]:
-        """Get the vector store and documents list for the specified level."""
+    def _get_index_and_docs(self, level: Level) -> tuple[faiss.Index, List[_Document]]:
+        """Get the FAISS index and documents list for the specified level."""
         if level == "l0":
-            return self.l0_vector_store, self.l0_documents
+            return self.l0_index, self.l0_documents
         elif level == "l2":
-            return self.l2_vector_store, self.l2_documents
+            return self.l2_index, self.l2_documents
         else:
             raise ValueError(f"Invalid level: {level}. Must be 'l0' or 'l2'.")
 
-    def _initialize_embedding_model(self, **kwargs) -> Embeddings:
+    def _initialize_embedding_model(self, **kwargs):
         """Initialize the embedding model based on provider."""
         if self.embedding_provider.lower() == "openai":
-            return OpenAIEmbeddings(model=self.embedding_model, **kwargs)
+            return _OpenAIEmbeddingWrapper(model=self.embedding_model, **kwargs)
         elif self.embedding_provider.lower() == "huggingface":
-            model_name = self.embedding_model
-            model_kwargs = kwargs.pop("model_kwargs", {})
-            encode_kwargs = kwargs.pop("encode_kwargs", {})
-            max_seq_length = kwargs.pop("max_seq_length", None)
-
-            hf_emb = HuggingFaceEmbeddings(
-                model_name=model_name,
-                model_kwargs=model_kwargs,
-                encode_kwargs=encode_kwargs,
-                **kwargs,
+            return _HuggingFaceEmbeddingWrapper(
+                model_name=self.embedding_model, **kwargs
             )
-
-            # Cap the effective sequence length to avoid CUDA OOM.
-            # Some models (e.g. jinaai/jina-code-embeddings) set an
-            # unlimited tokenizer.model_max_length and a very large
-            # max_seq_length that exceeds GPU memory without flash-attn.
-            try:
-                # langchain-huggingface >=0.1 uses _client, older uses client
-                st_model = getattr(hf_emb, "_client", None) or getattr(
-                    hf_emb, "client", None
-                )
-                if st_model is None:
-                    raise AttributeError(
-                        "Cannot locate SentenceTransformer on HuggingFaceEmbeddings"
-                    )
-                tok = st_model.tokenizer
-                max_pos = getattr(
-                    st_model[0].auto_model.config,
-                    "max_position_embeddings",
-                    None,
-                )
-                effective_max = max_seq_length or max_pos
-                if effective_max:
-                    if tok.model_max_length > effective_max:
-                        tok.model_max_length = effective_max
-                    if st_model.max_seq_length > effective_max:
-                        logger.info(
-                            "Capping max_seq_length from %s to %s for model %s",
-                            st_model.max_seq_length,
-                            effective_max,
-                            model_name,
-                        )
-                        st_model.max_seq_length = effective_max
-            except Exception as e:
-                if max_seq_length is not None:
-                    logger.warning(
-                        "--max-seq-length %s was requested but could not be "
-                        "applied to model %s: %s. CUDA OOM may occur.",
-                        max_seq_length,
-                        model_name,
-                        e,
-                    )
-                else:
-                    logger.debug("Could not check tokenizer max length: %s", e)
-
-            return hf_emb
         else:
             raise ValueError(
                 f"Unsupported embedding provider: {self.embedding_provider}"
@@ -212,10 +271,8 @@ class CodeVectorStore:
         filter if score > threshold
         """
         if self.index_metric == "ip":
-            # Inner product: higher is better (similarity score)
             return score < threshold
-        elif self.index_metric == "l2":  # l2
-            # L2 distance: lower is better (distance)
+        elif self.index_metric == "l2":
             return score > threshold
         else:
             raise ValueError(
@@ -226,12 +283,42 @@ class CodeVectorStore:
         """Create a flat FAISS index with the configured metric."""
         if self.index_metric == "ip":
             return faiss.IndexFlatIP(self.dimension)
-        elif self.index_metric == "l2":  # l2
+        elif self.index_metric == "l2":
             return faiss.IndexFlatL2(self.dimension)
         else:
             raise ValueError(
                 f"Unsupported index_metric: {self.index_metric}. Must be 'ip' or 'l2'."
             )
+
+    def _search_index(
+        self,
+        query: str,
+        index: faiss.Index,
+        documents: List[_Document],
+        top_k: int,
+    ) -> List[tuple[_Document, float]]:
+        """Encode *query* and search a raw FAISS index.
+
+        Returns a list of ``(document, score)`` pairs sorted by relevance.
+        """
+        if index is None or index.ntotal == 0:
+            return []
+
+        query_vec = np.array(
+            self.embedding.embed_query(query), dtype=np.float32
+        ).reshape(1, -1)
+
+        # FAISS search
+        k = min(top_k, index.ntotal)
+        distances, indices = index.search(query_vec, k)
+
+        results: List[tuple[_Document, float]] = []
+        for dist, idx in zip(distances[0], indices[0], strict=True):
+            if idx < 0:
+                continue  # FAISS sentinel for empty slots
+            if idx < len(documents):
+                results.append((documents[idx], float(dist)))
+        return results
 
     def close(self) -> None:
         """Release embeddings and FAISS resources to free memory."""
@@ -244,8 +331,6 @@ class CodeVectorStore:
 
         self.l0_documents.clear()
         self.l2_documents.clear()
-        self.l0_vector_store = None
-        self.l2_vector_store = None
         self.l0_index = None
         self.l2_index = None
 
@@ -274,13 +359,12 @@ class CodeVectorStore:
             logger.warning("No code chunks provided")
             return
 
-        vector_store, documents_list = self._get_store_and_docs(level)
+        index, documents_list = self._get_index_and_docs(level)
         logger.info(f"Adding {len(code_chunks)} code chunks to {level} vector store")
 
-        # Convert chunks to Document objects
-        documents = []
+        # Convert chunks to _Document objects
+        documents: List[_Document] = []
         for i, chunk in enumerate(code_chunks):
-            # Extract content and metadata
             content = chunk.get("content", "")
             metadata = {
                 "chunk_id": len(documents_list) + i,
@@ -290,23 +374,18 @@ class CodeVectorStore:
                 "start_line": chunk.get("start_line", 0),
                 "end_line": chunk.get("end_line", 0),
                 "node_id": chunk.get("node_id", ""),
-                "level": level,  # Track which level this chunk belongs to
+                "level": level,
             }
-
-            # Add any additional metadata
             for key, value in chunk.items():
                 if key not in ["content"] and key not in metadata:
                     metadata[key] = value
 
-            # Create Document
-            document = Document(page_content=content, metadata=metadata)
-            documents.append(document)
+            documents.append(_Document(page_content=content, metadata=metadata))
 
         # Store documents
         documents_list.extend(documents)
 
         texts = [doc.page_content for doc in documents]
-        metadatas = [doc.metadata for doc in documents]
 
         # Phase 1: Embed texts (typically the bottleneck)
         with self._profile_section(
@@ -320,11 +399,8 @@ class CodeVectorStore:
             f"faiss_index_add_{level}",
             {"num_vectors": len(embeddings), "level": level},
         ):
-            text_embedding_pairs = list(zip(texts, embeddings, strict=True))
-            vector_store.add_embeddings(
-                text_embeddings=text_embedding_pairs,
-                metadatas=metadatas,
-            )
+            vectors = np.array(embeddings, dtype=np.float32)
+            index.add(vectors)
 
         logger.info(
             f"Successfully added {len(documents)} documents to {level} vector store"
@@ -376,25 +452,20 @@ class CodeVectorStore:
         Returns:
             List of NodeInfo objects with scores populated
         """
-        vector_store, _ = self._get_store_and_docs(level)
+        index, documents = self._get_index_and_docs(level)
 
-        if vector_store is None:
+        if index is None or index.ntotal == 0:
             logger.warning(f"No {level} vector store available. Add code chunks first.")
             return []
 
         logger.debug(f"Searching {level} for: {query[:100]}...")
 
-        docs_with_scores = vector_store.similarity_search_with_score(query, k=top_k)
+        docs_with_scores = self._search_index(query, index, documents, top_k)
 
-        # Convert to NodeInfo objects
         results = []
         for doc, score in docs_with_scores:
             metadata = doc.metadata
 
-            # Apply score threshold based on index metric
-            # ip (inner product): higher score = more similar, filter if score <
-            # threshold
-            # l2 (distance): lower score = more similar, filter if score > threshold
             if score_threshold is not None and self._should_filter_by_threshold(
                 score, score_threshold
             ):
@@ -443,23 +514,18 @@ class CodeVectorStore:
         Returns:
             List of NodeInfo objects with content populated
         """
-        vector_store, _ = self._get_store_and_docs(level)
+        index, documents = self._get_index_and_docs(level)
 
-        if vector_store is None:
+        if index is None or index.ntotal == 0:
             logger.warning(f"No {level} vector store available. Add code chunks first.")
             return []
 
-        docs_with_scores = vector_store.similarity_search_with_score(query, k=top_k)
+        docs_with_scores = self._search_index(query, index, documents, top_k)
 
-        # Convert to NodeInfo objects
         results = []
         for doc, score in docs_with_scores:
             metadata = doc.metadata
 
-            # Apply score threshold based on index metric
-            # ip (inner product): higher score = more similar, filter if score <
-            # threshold
-            # l2 (distance): lower score = more similar, filter if score > threshold
             if score_threshold is not None and self._should_filter_by_threshold(
                 score, score_threshold
             ):
@@ -512,23 +578,20 @@ class CodeVectorStore:
         Returns:
             List of NodeInfo objects sorted by similarity score.
         """
-        vector_store, _ = self._get_store_and_docs(level)
-        if vector_store is None:
+        index, documents = self._get_index_and_docs(level)
+        if index is None or index.ntotal == 0:
             logger.warning(f"No {level} vector store available.")
             return []
 
-        # Find FAISS internal indices whose node_id or name is in mask set
-        matched: list[tuple[int, Document]] = []
-        for faiss_idx, docstore_id in vector_store.index_to_docstore_id.items():
-            doc = vector_store.docstore.search(docstore_id)
-            if not doc or not hasattr(doc, "metadata"):
-                continue
+        # Find documents whose node_id or name is in mask set
+        matched: list[tuple[int, _Document]] = []
+        for i, doc in enumerate(documents):
             meta = doc.metadata
             if (
                 meta.get("node_id", "") in mask_node_ids
                 or meta.get("name", "") in mask_node_ids
             ):
-                matched.append((faiss_idx, doc))
+                matched.append((i, doc))
 
         if not matched:
             logger.debug("search_within_ids: no matching documents found")
@@ -540,7 +603,7 @@ class CodeVectorStore:
         # Reconstruct stored vectors and compute similarity
         results: list[NodeInfo] = []
         for faiss_idx, doc in matched:
-            vec = vector_store.index.reconstruct(int(faiss_idx))
+            vec = index.reconstruct(faiss_idx)
             if self.index_metric == "ip":
                 score = float(np.dot(query_vec, vec))
             else:  # l2 — lower is better
@@ -644,55 +707,13 @@ class CodeVectorStore:
 
         model_suffix = self.embedding_model.replace("/", "__")
 
-        # Save L0 vector store
-        l0_path = save_path / "l0"
-        if self.l0_vector_store is not None and self.l0_documents:
-            l0_path.mkdir(parents=True, exist_ok=True)
-            index_name = f"index_{model_suffix}"
-            self.l0_vector_store.save_local(str(l0_path), index_name=index_name)
-            # Save L0 documents
-            docs_path = l0_path / f"documents_{model_suffix}.pkl"
-            with open(docs_path, "wb") as f:
-                pickle.dump(self.l0_documents, f)
-            # Save L0 config
-            config_path = l0_path / f"config_{model_suffix}.json"
-            config = {
-                "embedding_model": self.embedding_model,
-                "embedding_provider": self.embedding_provider,
-                "dimension": self.dimension,
-                "index_type": self.index_type,
-                "index_metric": self.index_metric,
-                "level": "l0",
-                "num_documents": len(self.l0_documents),
-            }
-            with open(config_path, "w") as f:
-                json.dump(config, f, indent=2)
-            logger.info(f"Saved L0 store with {len(self.l0_documents)} documents")
+        # Save L0
+        if self.l0_index is not None and self.l0_documents:
+            self._save_level(save_path, "l0", model_suffix)
 
-        # Save L2 vector store
-        l2_path = save_path / "l2"
-        if self.l2_vector_store is not None and self.l2_documents:
-            l2_path.mkdir(parents=True, exist_ok=True)
-            index_name = f"index_{model_suffix}"
-            self.l2_vector_store.save_local(str(l2_path), index_name=index_name)
-            # Save L2 documents
-            docs_path = l2_path / f"documents_{model_suffix}.pkl"
-            with open(docs_path, "wb") as f:
-                pickle.dump(self.l2_documents, f)
-            # Save L2 config
-            config_path = l2_path / f"config_{model_suffix}.json"
-            config = {
-                "embedding_model": self.embedding_model,
-                "embedding_provider": self.embedding_provider,
-                "dimension": self.dimension,
-                "index_type": self.index_type,
-                "index_metric": self.index_metric,
-                "level": "l2",
-                "num_documents": len(self.l2_documents),
-            }
-            with open(config_path, "w") as f:
-                json.dump(config, f, indent=2)
-            logger.info(f"Saved L2 store with {len(self.l2_documents)} documents")
+        # Save L2
+        if self.l2_index is not None and self.l2_documents:
+            self._save_level(save_path, "l2", model_suffix)
 
         # Save top-level configuration
         config_path = save_path / f"config_{model_suffix}.json"
@@ -709,6 +730,38 @@ class CodeVectorStore:
             json.dump(config, f, indent=2)
 
         logger.info("Vector store saved successfully")
+
+    def _save_level(self, save_path: Path, level: str, model_suffix: str) -> None:
+        """Save a single level (l0 or l2) to disk."""
+        index, documents = self._get_index_and_docs(level)
+
+        level_path = save_path / level
+        level_path.mkdir(parents=True, exist_ok=True)
+
+        # Write raw FAISS index
+        index_name = f"index_{model_suffix}"
+        faiss.write_index(index, str(level_path / f"{index_name}.faiss"))
+
+        # Save documents (list of _Document)
+        docs_path = level_path / f"documents_{model_suffix}.pkl"
+        with open(docs_path, "wb") as f:
+            pickle.dump(documents, f)
+
+        # Save level config
+        config_path = level_path / f"config_{model_suffix}.json"
+        config = {
+            "embedding_model": self.embedding_model,
+            "embedding_provider": self.embedding_provider,
+            "dimension": self.dimension,
+            "index_type": self.index_type,
+            "index_metric": self.index_metric,
+            "level": level,
+            "num_documents": len(documents),
+        }
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+        logger.info(f"Saved {level.upper()} store with {len(documents)} documents")
 
     def load(self, path: Optional[str] = None) -> None:
         """
@@ -738,7 +791,6 @@ class CodeVectorStore:
             with open(config_path, "r") as f:
                 config = json.load(f)
 
-            # Verify configuration matches
             if config.get("dimension") != self.dimension:
                 logger.warning(
                     f"Dimension mismatch: expected {self.dimension}, "
@@ -753,51 +805,98 @@ class CodeVectorStore:
                 )
                 self.index_metric = saved_metric
 
-        # Load L0 vector store
+        # Load L0
         l0_path = load_path / "l0"
         if l0_path.exists():
-            try:
-                index_name = f"index_{model_suffix}"
-                self.l0_vector_store = FAISS.load_local(
-                    str(l0_path),
-                    self.embedding,
-                    index_name=index_name,
-                    allow_dangerous_deserialization=True,
-                )
-                # Load L0 documents
-                docs_path = l0_path / f"documents_{model_suffix}.pkl"
-                if docs_path.exists():
-                    with open(docs_path, "rb") as f:
-                        self.l0_documents = pickle.load(f)
+            loaded = self._load_level(l0_path, model_suffix)
+            if loaded is not None:
+                self.l0_index, self.l0_documents = loaded
                 logger.info(f"Loaded L0 store with {len(self.l0_documents)} documents")
-            except Exception as e:
-                logger.warning(f"Could not load L0 vector store: {e}")
 
-        # Load L2 vector store
+        # Load L2
         l2_path = load_path / "l2"
         if l2_path.exists():
-            try:
-                index_name = f"index_{model_suffix}"
-                self.l2_vector_store = FAISS.load_local(
-                    str(l2_path),
-                    self.embedding,
-                    index_name=index_name,
-                    allow_dangerous_deserialization=True,
-                )
-                # Load L2 documents
-                docs_path = l2_path / f"documents_{model_suffix}.pkl"
-                if docs_path.exists():
-                    with open(docs_path, "rb") as f:
-                        self.l2_documents = pickle.load(f)
+            loaded = self._load_level(l2_path, model_suffix)
+            if loaded is not None:
+                self.l2_index, self.l2_documents = loaded
                 logger.info(f"Loaded L2 store with {len(self.l2_documents)} documents")
-            except Exception as e:
-                logger.warning(f"Could not load L2 vector store: {e}")
 
         total_docs = len(self.l0_documents) + len(self.l2_documents)
         logger.info(
             f"Vector store loaded successfully with {total_docs} total documents "
             f"(L0: {len(self.l0_documents)}, L2: {len(self.l2_documents)})"
         )
+
+    def _load_level(
+        self, level_path: Path, model_suffix: str
+    ) -> Optional[tuple[faiss.Index, List[_Document]]]:
+        """Load a single level from disk.
+
+        Handles both the new format (raw FAISS + _Document list) and the
+        legacy LangChain format (FAISS + docstore pkl) transparently.
+        """
+        index_name = f"index_{model_suffix}"
+        faiss_path = level_path / f"{index_name}.faiss"
+
+        if not faiss_path.exists():
+            logger.warning(f"FAISS index not found at {faiss_path}")
+            return None
+
+        try:
+            index = faiss.read_index(str(faiss_path))
+        except Exception as e:
+            logger.warning(f"Could not load FAISS index from {faiss_path}: {e}")
+            return None
+
+        # Try loading documents pickle (works for both new _Document and
+        # legacy LangChain Document objects via duck-typing conversion).
+        docs_path = level_path / f"documents_{model_suffix}.pkl"
+        if docs_path.exists():
+            try:
+                with open(docs_path, "rb") as f:
+                    raw_docs = pickle.load(f)
+                documents = [_to_document(d) for d in raw_docs]
+                return index, documents
+            except Exception as e:
+                logger.warning(f"Could not load documents from {docs_path}: {e}")
+
+        # Fallback: try LangChain FAISS pkl (index_name.pkl contains
+        # (InMemoryDocstore, index_to_docstore_id) tuple).
+        lc_pkl_path = level_path / f"{index_name}.pkl"
+        if lc_pkl_path.exists():
+            try:
+                documents = self._load_langchain_pkl(lc_pkl_path)
+                logger.info(
+                    "Loaded %d documents from legacy LangChain format",
+                    len(documents),
+                )
+                return index, documents
+            except Exception as e:
+                logger.warning(
+                    f"Could not load legacy LangChain pkl from {lc_pkl_path}: {e}"
+                )
+
+        logger.warning(f"No document store found for {level_path}")
+        return index, []
+
+    @staticmethod
+    def _load_langchain_pkl(pkl_path: Path) -> List[_Document]:
+        """Extract documents from a LangChain FAISS pkl file.
+
+        The pkl file contains ``(InMemoryDocstore, index_to_docstore_id)``
+        where ``index_to_docstore_id`` maps integer FAISS indices to
+        docstore string IDs.
+        """
+        with open(pkl_path, "rb") as f:
+            docstore, index_to_docstore_id = pickle.load(f)
+
+        documents: List[_Document] = []
+        for i in sorted(index_to_docstore_id.keys()):
+            doc_id = index_to_docstore_id[i]
+            doc = docstore.search(doc_id)
+            if doc and hasattr(doc, "page_content"):
+                documents.append(_to_document(doc))
+        return documents
 
     def get_stats(self) -> Dict[str, Any]:
         """
@@ -846,23 +945,11 @@ class CodeVectorStore:
         if level is None or level == "l0":
             logger.info("Clearing L0 vector store")
             self.l0_index = self._build_faiss_index()
-            self.l0_vector_store = FAISS(
-                embedding_function=self.embedding,
-                index=self.l0_index,
-                docstore=InMemoryDocstore(),
-                index_to_docstore_id={},
-            )
             self.l0_documents = []
 
         if level is None or level == "l2":
             logger.info("Clearing L2 vector store")
             self.l2_index = self._build_faiss_index()
-            self.l2_vector_store = FAISS(
-                embedding_function=self.embedding,
-                index=self.l2_index,
-                docstore=InMemoryDocstore(),
-                index_to_docstore_id={},
-            )
             self.l2_documents = []
 
         logger.info("Vector store cleared")

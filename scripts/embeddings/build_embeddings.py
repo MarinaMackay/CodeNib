@@ -192,6 +192,16 @@ def parse_args():
             "overwriting runs (e.g., dev_run1, rerank_expA)."
         ),
     )
+    parser.add_argument(
+        "--isolate-instances",
+        action="store_true",
+        default=False,
+        help=(
+            "Run each instance in a separate subprocess for CUDA fault "
+            "isolation. Prevents OOM in one instance from corrupting the "
+            "GPU state for subsequent instances."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -455,11 +465,97 @@ def build_embeddings(args):
     logger.info(f"{'='*80}")
 
 
+def build_embeddings_isolated(args):
+    """Run each instance in a separate subprocess for CUDA fault isolation.
+
+    Loads the dataset once to discover instance IDs, then spawns a fresh
+    ``python build_embeddings.py`` subprocess per instance (with
+    ``--filter-instance`` pinned to that single ID and ``--isolate-instances``
+    removed).  Each subprocess gets its own CUDA context, so an OOM or
+    segfault in one instance cannot poison subsequent ones.
+    """
+    import re
+    import subprocess
+
+    dataset_obj = _load_dataset(args)
+    dataset_instances = dataset_obj.load()
+
+    if len(dataset_instances) == 0:
+        raise ValueError(
+            f"No instances found in "
+            f"{args.dataset or _DATASET_DEFAULTS[args.dataset_class]}"
+        )
+
+    logger.info(f"Isolated mode: will process {len(dataset_instances)} instance(s)")
+
+    # Rebuild the argv without --isolate-instances, and without any existing
+    # --filter-instance (we'll supply our own per-instance filter).
+    child_argv = [sys.executable, __file__]
+    skip_next = False
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--isolate-instances":
+            continue
+        if arg == "--filter-instance":
+            skip_next = True  # skip the next token (the regex value)
+            continue
+        if arg.startswith("--filter-instance="):
+            continue
+        child_argv.append(arg)
+
+    succeeded, failed, skipped = 0, 0, 0
+    for idx, instance in enumerate(dataset_instances):
+        instance_id = instance["instance_id"]
+        # Exact-match filter so only this instance is processed
+        instance_filter = f"^({re.escape(instance_id)})$"
+        cmd = child_argv + ["--filter-instance", instance_filter]
+
+        logger.info(
+            f"\n{'='*80}\n"
+            f"[isolated {idx+1}/{len(dataset_instances)}] {instance_id}\n"
+            f"{'='*80}"
+        )
+
+        # Check if already built (mirrors the skip logic in build_embeddings)
+        instance_dir_name = instance_id.replace("/", "__")
+        instance_final_dir = Path(args.storage_dir) / instance_dir_name
+        model_suffix = args.embedding_model.replace("/", "__")
+        config_file = instance_final_dir / f"config_{model_suffix}.json"
+        if config_file.exists() and not args.force_rebuild:
+            logger.info(f"  Already exists, skipping: {config_file}")
+            skipped += 1
+            continue
+
+        result = subprocess.run(cmd)
+        if result.returncode == 0:
+            succeeded += 1
+        else:
+            logger.error(
+                f"  Subprocess exited with code {result.returncode} "
+                f"for {instance_id}"
+            )
+            failed += 1
+
+    logger.info(
+        f"\n{'='*80}\n"
+        f"Isolated build complete: {succeeded} succeeded, {failed} failed, "
+        f"{skipped} skipped\n"
+        f"{'='*80}"
+    )
+    if failed:
+        sys.exit(1)
+
+
 def main():
     """Main entry point."""
     args = parse_args()
 
-    build_embeddings(args)
+    if args.isolate_instances:
+        build_embeddings_isolated(args)
+    else:
+        build_embeddings(args)
 
 
 if __name__ == "__main__":

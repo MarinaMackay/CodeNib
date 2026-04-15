@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 #
-# Build embeddings for the CodeMiner-base dataset with three models:
-#   1. Salesforce/SweRankEmbed-Small   (768d)
-#   2. fishmingyu/SweRankEmbed-Large   (3584d)
-#   3. jinaai/jina-code-embeddings-1.5b (1536d)
+# Build embeddings for the CodeMiner-base dataset with five models:
+#   1. Salesforce/SweRankEmbed-Small       (768d,  ~0.1B, encoder)
+#   2. fishmingyu/SweRankEmbed-Large       (3584d, ~7B,   encoder)
+#   3. jinaai/jina-code-embeddings-1.5b    (1536d, 1.5B,  encoder)
+#   4. Qwen/Qwen3-Embedding-0.6B          (1024d, 0.6B,  decoder, last-token pooling)
+#   5. Qwen/Qwen3-Embedding-4B            (2560d, 4B,    decoder, last-token pooling)
 #
 # Usage:
 #   # Full run (all instances, all models)
@@ -28,15 +30,20 @@ PROFILE_TAG="${PROFILE_TAG:-codeminer_base_${SPLIT}}"
 # max_seq_length caps tokenization to prevent CUDA OOM on long documents.
 # Use 0 for max_seq_length to use the model's default.
 #
-# NOTE: jina-code-1.5b has max_position_embeddings=32768 but its tokenizer
-# does not enforce truncation, and 32K seq OOMs even at batch=1 without
-# flash-attn. We cap at 8192 which is safe for batch=4.
+# NOTE: Models with 32K+ context (jina-code-1.5b, Qwen3-Embedding) have
+# tokenizers that do not enforce truncation, and 32K seq OOMs even at batch=1
+# without flash-attn. We cap at 8192 which is safe at the listed batch sizes.
 # The main offender is hashicorp__terraform-35611 (L0 files up to ~49K tokens,
 # 14145 L2 chunks). With flash-attn installed, the cap could be raised.
+#
+# Qwen3 models use decoder-only (causal LM) backbone with last-token pooling.
+# sentence-transformers >= 2.7.0 handles this automatically.
 MODELS=(
-  "Salesforce/SweRankEmbed-Small:768:8:4:0"
-  "fishmingyu/SweRankEmbed-Large:3584:2:1:0"
-  "jinaai/jina-code-embeddings-1.5b:1536:4:2:8192"
+  # "Salesforce/SweRankEmbed-Small:768:8:4:0"
+  # "fishmingyu/SweRankEmbed-Large:3584:2:1:0"
+  # "jinaai/jina-code-embeddings-1.5b:1536:4:2:8192"
+  "Qwen/Qwen3-Embedding-0.6B:1024:8:4:8192"
+  "Qwen/Qwen3-Embedding-4B:2560:2:1:8192"
 )
 
 mkdir -p "${STORAGE_DIR}"
@@ -67,11 +74,19 @@ for entry in "${MODELS[@]}"; do
     --embedding-dimension "${DIM}" \
     --batch-size "${BATCH}" \
     --trust-remote-code \
+    --isolate-instances \
     ${SEQ_FLAG} \
     "$@" || true
 
-  # Retry failed instances with a smaller batch size
+  # Retry failed instances with a smaller batch size.
+  # Do NOT forward --force-rebuild here: we only want to retry instances
+  # that genuinely failed in the primary run above.
   if [ "${FALLBACK_BATCH}" != "${BATCH}" ]; then
+    # Strip --force-rebuild from extra args so the retry skips successes.
+    RETRY_ARGS=()
+    for arg in "$@"; do
+      [ "${arg}" != "--force-rebuild" ] && RETRY_ARGS+=("${arg}")
+    done
     echo ""
     echo "----------------------------------------------------------------"
     echo "Retrying with fallback batch=${FALLBACK_BATCH} for any failures"
@@ -89,8 +104,9 @@ for entry in "${MODELS[@]}"; do
       --embedding-dimension "${DIM}" \
       --batch-size "${FALLBACK_BATCH}" \
       --trust-remote-code \
+      --isolate-instances \
       ${SEQ_FLAG} \
-      "$@" || true
+      "${RETRY_ARGS[@]}" || true
   fi
 done
 
