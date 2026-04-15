@@ -27,8 +27,8 @@ Typical usage
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import numpy as np
 from langchain_core.documents import Document

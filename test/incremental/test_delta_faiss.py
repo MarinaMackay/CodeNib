@@ -8,11 +8,10 @@ the index for small deltas and falls back to full rebuild for large ones.
 from __future__ import annotations
 
 import hashlib
-from typing import Dict, List, Set
+from typing import List
 from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 from langchain_core.documents import Document
 
 from codeminer.index.embedding.vector_store import CodeVectorStore

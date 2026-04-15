@@ -6,7 +6,6 @@ dependencies and to fully control the commit history.
 """
 
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest

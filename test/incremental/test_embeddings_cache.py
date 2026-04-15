@@ -5,7 +5,6 @@ Unit tests for EmbeddingsCache.
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from codeminer.incremental.embeddings_cache import EmbeddingsCache
 

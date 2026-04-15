@@ -163,18 +163,22 @@ class VectorIndexBuilder:
         from ..code_chunking.base import CodeChunk
 
         def _docs_to_chunks(docs):
-            return [
-                CodeChunk(
-                    content=doc.page_content,
-                    start_line=doc.metadata.get("start_line", 0),
-                    end_line=doc.metadata.get("end_line", 0),
-                    chunk_type=doc.metadata.get("chunk_type", "unknown"),
-                    name=doc.metadata.get("name", ""),
-                    file=doc.metadata.get("file", ""),
-                    node_id=doc.metadata.get("node_id", ""),
+            chunks = []
+            for doc in docs:
+                if not hasattr(doc, "page_content"):
+                    continue
+                chunks.append(
+                    CodeChunk(
+                        content=doc.page_content,
+                        start_line=doc.metadata.get("start_line", 0),
+                        end_line=doc.metadata.get("end_line", 0),
+                        chunk_type=doc.metadata.get("chunk_type", "unknown"),
+                        name=doc.metadata.get("name", ""),
+                        file=doc.metadata.get("file", ""),
+                        node_id=doc.metadata.get("node_id", ""),
+                    )
                 )
-                for doc in docs
-            ]
+            return chunks
 
         chunk_store = IncrementalChunkStore()
         emb_cache = EmbeddingsCache()

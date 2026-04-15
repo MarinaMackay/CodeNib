@@ -2,15 +2,9 @@
 Unit tests for IncrementalChunkStore.
 """
 
-import pickle
-from pathlib import Path
-
-import pytest
-
 from codeminer.code_chunking.base import CodeChunk
 from codeminer.incremental.chunk_store import (
     IncrementalChunkStore,
-    VersionedChunk,
     _hash_content,
 )
 
