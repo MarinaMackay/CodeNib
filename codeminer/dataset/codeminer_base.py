@@ -27,10 +27,11 @@ class CodeMinerBaseDataset(DatasetBase):
     deleted symbols, and code blocks) produced by the tree-sitter chunking
     pipeline (see ``scripts/build_swebench_locator_hf_dataset.py``).
 
-    Because the ground truth is baked into the dataset rows, there is no need
-    to clone the repo and re-parse the patch to compute eval metadata — the
-    ``load_eval_metadata`` override returns the GT columns directly.
+    GT includes non-function symbols (JS/TS object constants, Go variables,
+    etc.) so simplified_symbols filtering is disabled for this dataset.
     """
+
+    simplified_symbols: bool = False
 
     def __init__(
         self,
