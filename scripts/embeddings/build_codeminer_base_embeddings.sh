@@ -39,9 +39,9 @@ PROFILE_TAG="${PROFILE_TAG:-codeminer_base_${SPLIT}}"
 # Qwen3 models use decoder-only (causal LM) backbone with last-token pooling.
 # sentence-transformers >= 2.7.0 handles this automatically.
 MODELS=(
-  # "Salesforce/SweRankEmbed-Small:768:8:4:0"
-  # "fishmingyu/SweRankEmbed-Large:3584:2:1:0"
-  # "jinaai/jina-code-embeddings-1.5b:1536:4:2:8192"
+  "Salesforce/SweRankEmbed-Small:768:8:4:0"
+  "fishmingyu/SweRankEmbed-Large:3584:2:1:0"
+  "jinaai/jina-code-embeddings-1.5b:1536:4:2:8192"
   "Qwen/Qwen3-Embedding-0.6B:1024:8:4:8192"
   "Qwen/Qwen3-Embedding-4B:2560:2:1:8192"
 )
