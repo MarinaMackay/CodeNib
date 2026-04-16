@@ -34,8 +34,40 @@ def build_hierarchical_vector_store(
     embedding_kwargs: Optional[Dict[str, object]] = None,
     index_metric: str = "ip",
     profiler: Optional[Profiler] = None,
+    force_rebuild: bool = False,
 ) -> CodeVectorStore:
-    """Build a hierarchical vector store (L0/L2) for a repository."""
+    """Build (or load) a hierarchical vector store (L0/L2) for a repository.
+
+    When ``force_rebuild=False`` (the default) and a saved index for the
+    requested ``embedding_model`` already exists at ``index_path``, the store
+    is loaded from disk instead of re-chunking and re-embedding the repository.
+    Pass ``force_rebuild=True`` to unconditionally rebuild.
+    """
+    store_path = Path(index_path)
+    if plan_name:
+        store_path = store_path / plan_name
+
+    if not force_rebuild:
+        model_suffix = embedding_model.replace("/", "__")
+        config_path = store_path / f"config_{model_suffix}.json"
+        if config_path.exists():
+            logger.info(
+                "Pre-built index found at %s — loading instead of rebuilding "
+                "(pass force_rebuild=True to override).",
+                store_path,
+            )
+            vector_store = CodeVectorStore(
+                embedding_model=embedding_model,
+                embedding_provider=embedding_provider,
+                dimension=embedding_dimension,
+                index_metric=index_metric,
+                store_path=str(store_path),
+                profiler=profiler,
+                **(embedding_kwargs or {}),
+            )
+            vector_store.load(str(store_path))
+            return vector_store
+
     languages = languages or ["python"]
     build_levels = [level.lower() for level in (build_levels or ["l0", "l2"])]
     repo_cfg = RepoChunkingConfig(languages=languages)
@@ -106,9 +138,6 @@ def build_hierarchical_vector_store(
         "avg_chunk_loc": round(total_loc / max(total_chunks, 1), 1),
     }
 
-    store_path = Path(index_path)
-    if plan_name:
-        store_path = store_path / plan_name
     store_path.mkdir(parents=True, exist_ok=True)
     vector_store = CodeVectorStore(
         embedding_model=embedding_model,

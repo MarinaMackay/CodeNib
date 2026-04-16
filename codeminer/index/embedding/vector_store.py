@@ -320,6 +320,31 @@ class CodeVectorStore:
                 results.append((documents[idx], float(dist)))
         return results
 
+    def swap_index(self, path: str) -> None:
+        """Hot-swap the FAISS index without reloading the embedding model.
+
+        Frees the current L0/L2 FAISS indices and documents from memory, then
+        loads a new index from *path*.  The embedding model is left intact so
+        the caller can reuse the same model across many instances.
+        """
+        # Free current FAISS index memory (GPU or CPU).
+        for index in (self.l0_index, self.l2_index):
+            if index is None:
+                continue
+            reset = getattr(index, "reset", None)
+            if callable(reset):
+                reset()
+
+        # Reinitialise to empty indices (guards against a partially-failed
+        # subsequent load leaving the store in a mixed state).
+        self.l0_index = self._build_faiss_index()
+        self.l0_documents = []
+        self.l2_index = self._build_faiss_index()
+        self.l2_documents = []
+
+        self.store_path = Path(path)
+        self.load(path)
+
     def close(self) -> None:
         """Release embeddings and FAISS resources to free memory."""
         for index in (self.l0_index, self.l2_index):
