@@ -464,8 +464,12 @@ class CodeChunker:
                             file_path,
                         )
                         return True
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug(
+                "Unable to inspect file for minification, treating as not minified: %s (%s)",
+                file_path,
+                exc,
+            )
         return False
 
     def _chunk_file_with_language(
