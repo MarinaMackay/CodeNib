@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import List
 
+import faiss
 import numpy as np
 import pytest
 
@@ -39,31 +40,29 @@ def _run(cmd: list, cwd: str) -> None:
     subprocess.run(cmd, cwd=cwd, check=True, capture_output=True)
 
 
+class _DeterministicEmbeddings:
+    """Mock embedding model with deterministic output (no LangChain dep)."""
+
+    def __init__(self, dim: int = DIM):
+        self._dim = dim
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        vecs = []
+        for text in texts:
+            np.random.seed(hash(text) % (2**31))
+            vecs.append(np.random.randn(self._dim).tolist())
+        return vecs
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed_documents([text])[0]
+
+
 def _make_mock_embedding_model(dim: int = DIM):
-    from langchain_core.embeddings import Embeddings
-
-    class _DeterministicEmbeddings(Embeddings):
-        """Proper Embeddings subclass so LangChain FAISS can call embed_query."""
-
-        def embed_documents(self, texts: List[str]) -> List[List[float]]:
-            vecs = []
-            for text in texts:
-                np.random.seed(hash(text) % (2**31))
-                vecs.append(np.random.randn(dim).tolist())
-            return vecs
-
-        def embed_query(self, text: str) -> List[float]:
-            return self.embed_documents([text])[0]
-
-    return _DeterministicEmbeddings()
+    return _DeterministicEmbeddings(dim)
 
 
 def _build_real_vector_store(embedding_model, dim=DIM) -> CodeVectorStore:
     """Create a real CodeVectorStore with a mock embedding model."""
-    import faiss
-    from langchain_community.docstore import InMemoryDocstore
-    from langchain_community.vectorstores import FAISS as FAISSStore
-
     store = CodeVectorStore.__new__(CodeVectorStore)
     store.embedding = embedding_model
     store.dimension = dim
@@ -74,20 +73,10 @@ def _build_real_vector_store(embedding_model, dim=DIM) -> CodeVectorStore:
     store.index_type = "flat"
     store.store_path = None
 
-    for attr, idx_attr, docs_attr in [
-        ("l0_vector_store", "l0_index", "l0_documents"),
-        ("l2_vector_store", "l2_index", "l2_documents"),
-    ]:
-        index = faiss.IndexFlatIP(dim)
-        vs = FAISSStore(
-            embedding_function=embedding_model,
-            index=index,
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-        )
-        setattr(store, attr, vs)
-        setattr(store, idx_attr, index)
-        setattr(store, docs_attr, [])
+    store.l0_index = faiss.IndexFlatIP(dim)
+    store.l0_documents = []
+    store.l2_index = faiss.IndexFlatIP(dim)
+    store.l2_documents = []
 
     return store
 

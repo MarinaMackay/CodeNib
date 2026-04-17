@@ -7,7 +7,7 @@ from ..graph.roi_subgraph import ROISubgraph
 from ..index.embedding import CodeVectorStore, build_hierarchical_vector_store
 from ..index.sparse_idx.bm25_index import BM25CodeIndexer
 from ..log_utils import get_logger
-from ..scip_interface import SCIPIndexer
+from ..scip_interface import SCIPIndexerBase as SCIPIndexer
 from ..types import QueriedNode
 
 logger = get_logger(__name__)

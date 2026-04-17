@@ -1,8 +1,8 @@
 """
 Tests for Phase 4: Delta FAISS update optimization.
 
-Verifies that CodeVectorStore.delta_update() correctly patches
-the index for small deltas and falls back to full rebuild for large ones.
+Verifies that CodeVectorStore.delta_update() correctly rebuilds
+the index when chunks change.
 """
 
 from __future__ import annotations
@@ -11,10 +11,10 @@ import hashlib
 from typing import List
 from unittest.mock import MagicMock
 
+import faiss
 import numpy as np
-from langchain_core.documents import Document
 
-from codeminer.index.embedding.vector_store import CodeVectorStore
+from codeminer.index.embedding.vector_store import CodeVectorStore, _Document
 
 DIM = 8
 
@@ -39,10 +39,6 @@ def _mock_embedding():
 
 def _build_store_with_docs(contents: List[str]):
     """Build a CodeVectorStore populated with the given contents at L2."""
-    import faiss
-    from langchain_community.docstore import InMemoryDocstore
-    from langchain_community.vectorstores import FAISS
-
     embedding = _mock_embedding()
     store = CodeVectorStore.__new__(CodeVectorStore)
     store.embedding = embedding
@@ -55,22 +51,22 @@ def _build_store_with_docs(contents: List[str]):
     store.store_path = None
 
     documents = []
-    text_embeddings = []
+    vectors = []
     hashes = {}
 
     for i, content in enumerate(contents):
         ch = _md5(content)
         hashes[ch] = content
         vec = embedding.embed_documents([content])[0]
-        text_embeddings.append((content, vec))
+        vectors.append(vec)
         documents.append(
-            Document(
+            _Document(
                 page_content=content,
                 metadata={
                     "chunk_id": i,
                     "chunk_type": "function",
                     "name": f"func_{i}",
-                    "file": f"file.py",
+                    "file": "file.py",
                     "start_line": i * 3,
                     "end_line": i * 3 + 2,
                     "node_id": f"file.py:func_{i}()",
@@ -80,23 +76,14 @@ def _build_store_with_docs(contents: List[str]):
             )
         )
 
-    vs = FAISS.from_embeddings(
-        text_embeddings=text_embeddings,
-        embedding=embedding,
-        metadatas=[doc.metadata for doc in documents],
-    )
-    store.l2_vector_store = vs
-    store.l2_index = vs.index
+    # Build raw FAISS index
+    l2_idx = faiss.IndexFlatIP(DIM)
+    l2_idx.add(np.array(vectors, dtype=np.float32))
+    store.l2_index = l2_idx
     store.l2_documents = documents
 
     l0_idx = faiss.IndexFlatIP(DIM)
     store.l0_index = l0_idx
-    store.l0_vector_store = FAISS(
-        embedding_function=embedding,
-        index=l0_idx,
-        docstore=InMemoryDocstore(),
-        index_to_docstore_id={},
-    )
     store.l0_documents = []
 
     return store, documents, hashes
@@ -123,7 +110,7 @@ class TestDeltaUpdate:
             )
             for d in new_docs
         ]
-        new_docs[0] = Document(
+        new_docs[0] = _Document(
             page_content=new_content,
             metadata={**docs[0].metadata, "content_hash": new_hash},
         )
@@ -159,7 +146,7 @@ class TestDeltaUpdate:
                 store.embedding.embed_documents([content])[0], dtype=np.float32
             )
             new_docs.append(
-                Document(
+                _Document(
                     page_content=content,
                     metadata={**docs[i].metadata, "content_hash": ch},
                 )
@@ -192,10 +179,6 @@ class TestDeltaUpdate:
 
     def test_delta_on_empty_index_does_full_rebuild(self):
         """If the index is empty, delta_update should do a full rebuild."""
-        import faiss
-        from langchain_community.docstore import InMemoryDocstore
-        from langchain_community.vectorstores import FAISS
-
         embedding = _mock_embedding()
         store = CodeVectorStore.__new__(CodeVectorStore)
         store.embedding = embedding
@@ -207,28 +190,13 @@ class TestDeltaUpdate:
         store.index_type = "flat"
         store.store_path = None
 
-        # Build truly empty L2 store (no FAISS.from_embeddings call)
-        l2_idx = faiss.IndexFlatIP(DIM)
-        store.l2_index = l2_idx
-        store.l2_vector_store = FAISS(
-            embedding_function=embedding,
-            index=l2_idx,
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-        )
+        store.l2_index = faiss.IndexFlatIP(DIM)
         store.l2_documents = []
-        l0_idx = faiss.IndexFlatIP(DIM)
-        store.l0_index = l0_idx
-        store.l0_vector_store = FAISS(
-            embedding_function=embedding,
-            index=l0_idx,
-            docstore=InMemoryDocstore(),
-            index_to_docstore_id={},
-        )
+        store.l0_index = faiss.IndexFlatIP(DIM)
         store.l0_documents = []
 
         content = "def a():\n    pass\n"
-        new_doc = Document(
+        new_doc = _Document(
             page_content=content,
             metadata={"content_hash": _md5(content), "level": "l2"},
         )
@@ -240,28 +208,12 @@ class TestDeltaUpdate:
     def test_seed_time_vectors_carry_content_hash(self):
         """
         Documents added via add_code_chunks (initial build) must include
-        content_hash in metadata so delta_update can remove them later.
+        content_hash in metadata so delta_update can identify them later.
 
-        Regression: without content_hash on seed-time vectors, the small-delta
-        path cannot identify stale vectors and they accumulate.
+        Regression: without content_hash on seed-time vectors, the
+        delta path cannot identify stale vectors and they accumulate.
         """
-        from langchain_core.embeddings import Embeddings
-
-        class FixedEmbeddings(Embeddings):
-            def embed_documents(self, texts: List[str]) -> List[List[float]]:
-                return [
-                    [(hash(t) % (2**16) + i) / (2**16) for i in range(DIM)]
-                    for t in texts
-                ]
-
-            def embed_query(self, text: str) -> List[float]:
-                return self.embed_documents([text])[0]
-
-        import faiss
-        from langchain_community.docstore import InMemoryDocstore
-        from langchain_community.vectorstores import FAISS as FAISSStore
-
-        embedding = FixedEmbeddings()
+        embedding = _mock_embedding()
         store = CodeVectorStore.__new__(CodeVectorStore)
         store.embedding = embedding
         store.dimension = DIM
@@ -272,20 +224,10 @@ class TestDeltaUpdate:
         store.index_type = "flat"
         store.store_path = None
 
-        for attr, idx_attr, docs_attr in [
-            ("l0_vector_store", "l0_index", "l0_documents"),
-            ("l2_vector_store", "l2_index", "l2_documents"),
-        ]:
-            idx = faiss.IndexFlatIP(DIM)
-            vs = FAISSStore(
-                embedding_function=embedding,
-                index=idx,
-                docstore=InMemoryDocstore(),
-                index_to_docstore_id={},
-            )
-            setattr(store, attr, vs)
-            setattr(store, idx_attr, idx)
-            setattr(store, docs_attr, [])
+        store.l0_index = faiss.IndexFlatIP(DIM)
+        store.l0_documents = []
+        store.l2_index = faiss.IndexFlatIP(DIM)
+        store.l2_documents = []
 
         # Simulate initial build via add_code_chunks
         store.add_code_chunks(
@@ -305,8 +247,7 @@ class TestDeltaUpdate:
         )
 
         # Verify every seeded document carries a content_hash
-        for doc_id in store.l2_vector_store.index_to_docstore_id.values():
-            doc = store.l2_vector_store.docstore.search(doc_id)
+        for doc in store.l2_documents:
             assert "content_hash" in doc.metadata, (
                 "Seed-time document missing content_hash — delta_update "
                 "will not be able to prune stale vectors"
@@ -319,11 +260,15 @@ class TestDeltaUpdate:
         new_foo_hash = _md5(new_foo)
 
         all_docs = [
-            Document(
+            _Document(
                 page_content=new_foo,
-                metadata={"content_hash": new_foo_hash, "name": "foo", "file": "a.py"},
+                metadata={
+                    "content_hash": new_foo_hash,
+                    "name": "foo",
+                    "file": "a.py",
+                },
             ),
-            Document(
+            _Document(
                 page_content="def bar():\n    return 2\n",
                 metadata={
                     "content_hash": _md5("def bar():\n    return 2\n"),

@@ -31,8 +31,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import numpy as np
-from langchain_core.documents import Document
 
+from ..index.embedding.vector_store import _Document
 from ..log_utils import get_logger
 from .chunk_store import IncrementalChunkStore, VersionedChunk
 from .embeddings_cache import EmbeddingsCache
@@ -250,9 +250,9 @@ class IncrementalIndexUpdater:
     @staticmethod
     def _build_doc_embedding_pairs(
         versioned_with_embeddings: List[Tuple[VersionedChunk, np.ndarray]],
-    ) -> Tuple[List[Document], List[np.ndarray]]:
+    ) -> Tuple[List[_Document], List[np.ndarray]]:
         """Convert (VersionedChunk, embedding) pairs to (Document, embedding) pairs."""
-        documents: List[Document] = []
+        documents: list = []
         embeddings: List[np.ndarray] = []
 
         for i, (vc, vec) in enumerate(versioned_with_embeddings):
@@ -269,7 +269,7 @@ class IncrementalIndexUpdater:
                 "content_hash": vc.content_hash,
                 "commit_sha": vc.commit_sha,
             }
-            documents.append(Document(page_content=chunk.content, metadata=metadata))
+            documents.append(_Document(page_content=chunk.content, metadata=metadata))
             embeddings.append(vec)
 
         return documents, embeddings

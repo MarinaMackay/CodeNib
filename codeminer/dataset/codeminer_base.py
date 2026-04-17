@@ -27,10 +27,11 @@ class CodeMinerBaseDataset(DatasetBase):
     deleted symbols, and code blocks) produced by the tree-sitter chunking
     pipeline (see ``scripts/build_swebench_locator_hf_dataset.py``).
 
-    Because the ground truth is baked into the dataset rows, there is no need
-    to clone the repo and re-parse the patch to compute eval metadata — the
-    ``load_eval_metadata`` override returns the GT columns directly.
+    GT includes non-function symbols (JS/TS object constants, Go variables,
+    etc.) so simplified_symbols filtering is disabled for this dataset.
     """
+
+    simplified_symbols: bool = False
 
     def __init__(
         self,
@@ -208,6 +209,19 @@ class CodeMinerBaseDataset(DatasetBase):
         os.chdir(repo_path)
 
         try:
+            # Ensure refspec fetches all branches (repos that renamed
+            # default branch may have a narrow refspec from the initial clone)
+            subprocess.run(
+                [
+                    "git",
+                    "config",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/remotes/origin/*",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
             logger.info("Fetching updates from remote repository")
             subprocess.run(
                 ["git", "fetch", "--all"],

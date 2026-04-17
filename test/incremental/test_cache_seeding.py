@@ -12,11 +12,11 @@ import hashlib
 from typing import List
 from unittest.mock import MagicMock
 
+import faiss
 import numpy as np
 import pytest
-from langchain_core.documents import Document
 
-from codeminer.index.embedding.vector_store import CodeVectorStore
+from codeminer.index.embedding.vector_store import CodeVectorStore, _Document
 
 DIM = 8
 
@@ -62,10 +62,6 @@ def populated_store():
     store.index_type = "flat"
     store.store_path = None
 
-    import faiss
-    from langchain_community.docstore import InMemoryDocstore
-    from langchain_community.vectorstores import FAISS
-
     contents = [
         "def alpha():\n    return 1\n",
         "def beta():\n    return 2\n",
@@ -73,16 +69,16 @@ def populated_store():
     ]
 
     documents = []
-    text_embeddings = []
+    vectors = []
     expected_hashes = {}
 
     for i, content in enumerate(contents):
         ch = _md5(content)
         expected_hashes[ch] = content
         vec = embedding.embed_documents([content])[0]
-        text_embeddings.append((content, vec))
+        vectors.append(vec)
         documents.append(
-            Document(
+            _Document(
                 page_content=content,
                 metadata={
                     "chunk_id": i,
@@ -98,25 +94,14 @@ def populated_store():
             )
         )
 
-    vs = FAISS.from_embeddings(
-        text_embeddings=text_embeddings,
-        embedding=embedding,
-        metadatas=[doc.metadata for doc in documents],
-    )
-
-    store.l2_vector_store = vs
-    store.l2_index = vs.index
+    # Build raw FAISS index for L2
+    l2_idx = faiss.IndexFlatIP(DIM)
+    l2_idx.add(np.array(vectors, dtype=np.float32))
+    store.l2_index = l2_idx
     store.l2_documents = documents
 
     # Empty L0
-    l0_index = faiss.IndexFlatIP(DIM)
-    store.l0_index = l0_index
-    store.l0_vector_store = FAISS(
-        embedding_function=embedding,
-        index=l0_index,
-        docstore=InMemoryDocstore(),
-        index_to_docstore_id={},
-    )
+    store.l0_index = faiss.IndexFlatIP(DIM)
     store.l0_documents = []
 
     return store, expected_hashes
