@@ -9,7 +9,7 @@ import json
 import pickle
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 import faiss
 import numpy as np
@@ -1073,36 +1073,111 @@ class CodeVectorStore:
         threshold: float = 0.1,
     ) -> None:
         """
-        Rebuild the FAISS index from the complete set of documents/embeddings.
+        Patch the FAISS index in place when the change set is small.
 
-        With the raw FAISS backend (no LangChain wrapper), individual vector
-        deletion is not efficient on ``IndexFlat``, so we always perform a
-        full rebuild.  The *threshold* parameter is retained for logging but
-        does not change behaviour.
+        When the fraction of changed chunks is below *threshold*, this uses
+        ``IndexFlat.remove_ids`` + ``add`` to modify only the affected rows,
+        keeping unchanged vectors and their aligned documents untouched.  If
+        the change ratio exceeds the threshold (or the index is empty), it
+        falls back to a full rebuild via :meth:`rebuild_from_embeddings`.
 
         Args:
-            all_documents: The complete set of documents for this level.
-            all_embeddings: Corresponding embedding vectors.
+            all_documents: The complete desired set of documents for *level*
+                after the update.  Must carry ``content_hash`` in metadata.
+            all_embeddings: Corresponding embedding vectors, aligned with
+                *all_documents*.
             changed_content_hashes: Content hashes of chunks that were
-                added, removed, or modified in this update cycle.
+                added, removed, or modified in this update cycle.  Used both
+                to decide between delta/rebuild and to identify stale rows.
             level: Which index level to update.
-            threshold: Retained for API compatibility (logged only).
+            threshold: Maximum change ratio (changed/total) for the delta
+                path; above this a full rebuild is performed.
         """
         total = len(all_documents)
-        changed = len(changed_content_hashes)
 
         if total == 0:
             self.clear(level)
             return
 
+        index, current_docs = self._get_index_and_docs(level)
+        change_ratio = len(changed_content_hashes) / total
+
+        # Fall back to full rebuild when the delta path can't help.
+        if (
+            index is None
+            or index.ntotal == 0
+            or not current_docs
+            or change_ratio > threshold
+        ):
+            logger.info(
+                "delta_update: %d/%d changed (%.0f%%) → full rebuild of %s.",
+                len(changed_content_hashes),
+                total,
+                change_ratio * 100,
+                level,
+            )
+            self.rebuild_from_embeddings(all_documents, all_embeddings, level=level)
+            return
+
+        # --- Delta path: in-place patch -------------------------------
+        target_by_hash: Dict[str, Tuple[object, np.ndarray]] = {}
+        for doc, emb in zip(all_documents, all_embeddings, strict=True):
+            ch = doc.metadata.get("content_hash")
+            if ch is None:
+                # Can't align by hash → safest to rebuild.
+                logger.warning(
+                    "delta_update: target doc missing content_hash → full rebuild."
+                )
+                self.rebuild_from_embeddings(all_documents, all_embeddings, level=level)
+                return
+            target_by_hash[ch] = (doc, emb)
+
+        current_hashes = [d.metadata.get("content_hash") for d in current_docs]
+        rows_to_remove = [
+            i
+            for i, h in enumerate(current_hashes)
+            if h is None or h not in target_by_hash or h in changed_content_hashes
+        ]
+
+        surviving_hashes = {
+            h
+            for i, h in enumerate(current_hashes)
+            if i not in set(rows_to_remove) and h is not None
+        }
+        docs_to_add = [
+            target_by_hash[h] for h in target_by_hash if h not in surviving_hashes
+        ]
+
+        if rows_to_remove:
+            selector = faiss.IDSelectorBatch(np.array(rows_to_remove, dtype=np.int64))
+            index.remove_ids(selector)
+            keep_set = set(rows_to_remove)
+            new_docs_list = [d for i, d in enumerate(current_docs) if i not in keep_set]
+        else:
+            new_docs_list = list(current_docs)
+
+        if docs_to_add:
+            add_vectors = np.array(
+                [np.asarray(e, dtype=np.float32) for _, e in docs_to_add],
+                dtype=np.float32,
+            )
+            index.add(add_vectors)
+            new_docs_list.extend(_to_document(d) for d, _ in docs_to_add)
+
+        if level == "l0":
+            self.l0_documents = new_docs_list
+        else:
+            self.l2_documents = new_docs_list
+
         logger.info(
-            "delta_update: %d/%d chunks changed (%.0f%%) → rebuilding %s index.",
-            changed,
-            total,
-            (changed / max(total, 1)) * 100,
+            "delta_update: %s patched in place — removed %d, added %d "
+            "(ntotal=%d, %.0f%% changed).",
             level,
+            len(rows_to_remove),
+            len(docs_to_add),
+            index.ntotal,
+            change_ratio * 100,
         )
-        self.rebuild_from_embeddings(all_documents, all_embeddings, level=level)
 
     def clear(self, level: Optional[Level] = None) -> None:
         """

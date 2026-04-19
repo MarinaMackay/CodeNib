@@ -97,12 +97,15 @@ class TestDeltaUpdate:
         contents = [f"def func_{i}():\n    return {i}\n" for i in range(10)]
         store, docs, hashes = _build_store_with_docs(contents)
 
+        # Capture the original index object; the delta path must patch it
+        # in place (identity preserved), whereas a full rebuild replaces it.
+        original_index = store.l2_index
+        unchanged_vec_5 = store.l2_index.reconstruct(5).copy()
+
         # Change one chunk
         new_content = "def func_0():\n    return 999\n"
         new_hash = _md5(new_content)
-        old_hash = _md5(contents[0])
 
-        # Build the full new document set
         new_docs = list(docs)
         new_embeddings = [
             np.array(
@@ -118,14 +121,30 @@ class TestDeltaUpdate:
             store.embedding.embed_documents([new_content])[0], dtype=np.float32
         )
 
-        changed_hashes = {old_hash, new_hash}
+        # 1 / 10 = 10% changed, threshold 50% → delta path taken
+        changed_hashes = {new_hash}
         store.delta_update(
             new_docs, new_embeddings, changed_hashes, level="l2", threshold=0.5
         )
 
-        # Verify the documents list was updated
+        # Identity of the FAISS index must be preserved — a silent fallback
+        # to rebuild_from_embeddings would replace store.l2_index.
+        assert (
+            store.l2_index is original_index
+        ), "delta_update silently fell back to full rebuild (index replaced)"
+        assert store.l2_index.ntotal == 10
         assert len(store.l2_documents) == 10
-        assert store.l2_documents[0].page_content == new_content
+
+        # Unchanged row vector must still be present somewhere in the index.
+        reconstructed = [
+            store.l2_index.reconstruct(i) for i in range(store.l2_index.ntotal)
+        ]
+        assert any(
+            np.allclose(v, unchanged_vec_5, atol=1e-6) for v in reconstructed
+        ), "unchanged vector disappeared — delta path is corrupting survivors"
+
+        # The new content must be reflected in the docs list.
+        assert any(d.page_content == new_content for d in store.l2_documents)
 
     def test_large_delta_triggers_full_rebuild(self):
         """When > threshold fraction changed, full rebuild should happen."""
@@ -212,6 +231,8 @@ class TestDeltaUpdate:
 
         Regression: without content_hash on seed-time vectors, the
         delta path cannot identify stale vectors and they accumulate.
+        This test drives the *delta* path (not a silent rebuild fallback)
+        by keeping the change ratio below the threshold.
         """
         embedding = _mock_embedding()
         store = CodeVectorStore.__new__(CodeVectorStore)
@@ -229,7 +250,8 @@ class TestDeltaUpdate:
         store.l2_index = faiss.IndexFlatIP(DIM)
         store.l2_documents = []
 
-        # Simulate initial build via add_code_chunks
+        # Seed three chunks; we'll replace only foo, keeping the change
+        # ratio at 1/3 ≈ 0.33 < threshold 0.5 so the delta path runs.
         store.add_code_chunks(
             [
                 {
@@ -242,22 +264,27 @@ class TestDeltaUpdate:
                     "name": "bar",
                     "file": "a.py",
                 },
+                {
+                    "content": "def baz():\n    return 3\n",
+                    "name": "baz",
+                    "file": "a.py",
+                },
             ],
             level="l2",
         )
 
-        # Verify every seeded document carries a content_hash
         for doc in store.l2_documents:
             assert "content_hash" in doc.metadata, (
                 "Seed-time document missing content_hash — delta_update "
                 "will not be able to prune stale vectors"
             )
 
-        # Now do a delta_update that replaces foo — bar should survive,
-        # and the OLD foo vector must be removed (not left as a ghost).
-        old_foo_hash = _md5("def foo():\n    return 1\n")
+        original_index = store.l2_index
+
         new_foo = "def foo():\n    return 99\n"
         new_foo_hash = _md5(new_foo)
+        bar_hash = _md5("def bar():\n    return 2\n")
+        baz_hash = _md5("def baz():\n    return 3\n")
 
         all_docs = [
             _Document(
@@ -270,23 +297,34 @@ class TestDeltaUpdate:
             ),
             _Document(
                 page_content="def bar():\n    return 2\n",
-                metadata={
-                    "content_hash": _md5("def bar():\n    return 2\n"),
-                    "name": "bar",
-                    "file": "a.py",
-                },
+                metadata={"content_hash": bar_hash, "name": "bar", "file": "a.py"},
+            ),
+            _Document(
+                page_content="def baz():\n    return 3\n",
+                metadata={"content_hash": baz_hash, "name": "baz", "file": "a.py"},
             ),
         ]
         all_embs = [
             np.array(embedding.embed_documents([d.page_content])[0], dtype=np.float32)
             for d in all_docs
         ]
-        changed = {old_foo_hash, new_foo_hash}
 
-        store.delta_update(all_docs, all_embs, changed, level="l2", threshold=0.5)
+        # changed set = just the new hash (what index_updater actually passes:
+        # it's the set of cache misses). Size 1 / total 3 = 33% < threshold.
+        store.delta_update(
+            all_docs, all_embs, {new_foo_hash}, level="l2", threshold=0.5
+        )
 
-        # The index should have exactly 2 vectors, not 3
-        assert store.l2_index.ntotal == 2, (
-            f"Expected 2 vectors after delta, got {store.l2_index.ntotal} — "
+        # The delta path must have run (identity preserved), and the stale
+        # foo vector must have been pruned — not left as a ghost.
+        assert store.l2_index is original_index, (
+            "delta_update fell back to full rebuild — regression test is "
+            "no longer exercising the delta path"
+        )
+        assert store.l2_index.ntotal == 3, (
+            f"Expected 3 vectors after delta, got {store.l2_index.ntotal} — "
             "stale seed-time vector was not removed"
         )
+        # All three target hashes must be present among the docs.
+        present = {d.metadata["content_hash"] for d in store.l2_documents}
+        assert present == {new_foo_hash, bar_hash, baz_hash}
