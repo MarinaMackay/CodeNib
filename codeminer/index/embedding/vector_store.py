@@ -1151,10 +1151,19 @@ class CodeVectorStore:
         if rows_to_remove:
             selector = faiss.IDSelectorBatch(np.array(rows_to_remove, dtype=np.int64))
             index.remove_ids(selector)
-            keep_set = set(rows_to_remove)
-            new_docs_list = [d for i, d in enumerate(current_docs) if i not in keep_set]
-        else:
-            new_docs_list = list(current_docs)
+
+        # Survivors: prefer the fresh target doc (same content_hash) so that
+        # pure metadata changes — file rename, start_line shift, name edit —
+        # are reflected without requiring a full rebuild.  The vector is
+        # identical because content_hash is identical, so no FAISS op needed.
+        remove_set = set(rows_to_remove)
+        new_docs_list: List[_Document] = []
+        for i, d in enumerate(current_docs):
+            if i in remove_set:
+                continue
+            h = current_hashes[i]
+            fresh = target_by_hash.get(h)
+            new_docs_list.append(_to_document(fresh[0]) if fresh is not None else d)
 
         if docs_to_add:
             add_vectors = np.array(

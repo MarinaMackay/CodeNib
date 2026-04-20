@@ -146,6 +146,67 @@ class TestDeltaUpdate:
         # The new content must be reflected in the docs list.
         assert any(d.page_content == new_content for d in store.l2_documents)
 
+    def test_metadata_only_change_updates_docs(self):
+        """
+        When a chunk's content is unchanged but its metadata changes
+        (e.g. the file was renamed or the chunk moved within the file),
+        delta_update must refresh the doc entry so search results don't
+        point at the stale path/line.  The FAISS vector stays the same
+        because the content_hash is identical.
+        """
+        contents = [f"def fn_{i}():\n    return {i}\n" for i in range(6)]
+        store, docs, _ = _build_store_with_docs(contents)
+
+        original_index = store.l2_index
+
+        # Same contents, same hashes — but fn_0's file moved and its
+        # start_line shifted.  Nothing is in changed_content_hashes.
+        new_docs = [
+            _Document(
+                page_content=d.page_content,
+                metadata={**d.metadata},
+            )
+            for d in docs
+        ]
+        new_docs[0] = _Document(
+            page_content=docs[0].page_content,
+            metadata={
+                **docs[0].metadata,
+                "file": "renamed.py",
+                "start_line": 42,
+                "end_line": 44,
+                "node_id": "renamed.py:func_0()",
+            },
+        )
+        new_embeddings = [
+            np.array(
+                store.embedding.embed_documents([d.page_content])[0], dtype=np.float32
+            )
+            for d in new_docs
+        ]
+
+        store.delta_update(new_docs, new_embeddings, set(), level="l2", threshold=0.5)
+
+        # Delta path must have run (empty changed set + non-empty index).
+        assert (
+            store.l2_index is original_index
+        ), "delta_update fell back to full rebuild on metadata-only change"
+        assert store.l2_index.ntotal == 6
+
+        # Look up the doc corresponding to fn_0's content_hash and verify
+        # its metadata reflects the rename, not the stale seed values.
+        target_hash = docs[0].metadata["content_hash"]
+        matches = [
+            d
+            for d in store.l2_documents
+            if d.metadata.get("content_hash") == target_hash
+        ]
+        assert len(matches) == 1, "survivor doc was duplicated or dropped"
+        assert (
+            matches[0].metadata["file"] == "renamed.py"
+        ), "survivor doc kept stale file path — metadata-only change ignored"
+        assert matches[0].metadata["start_line"] == 42
+
     def test_large_delta_triggers_full_rebuild(self):
         """When > threshold fraction changed, full rebuild should happen."""
         contents = [f"def f_{i}():\n    return {i}\n" for i in range(5)]
