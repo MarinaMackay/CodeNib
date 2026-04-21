@@ -56,8 +56,12 @@ class IncrementalState:
             # Clean up the temp file on failure
             try:
                 os.unlink(tmp_path)
-            except OSError:
-                pass
+            except OSError as cleanup_err:
+                logger.debug(
+                    "Failed to remove temporary state file %s during error handling: %s",
+                    tmp_path,
+                    cleanup_err,
+                )
             raise
         logger.debug("IncrementalState saved → %s", state_path)
         return state_path
