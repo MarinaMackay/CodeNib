@@ -119,7 +119,6 @@ class VectorIndexBuilder:
 
         from pathlib import Path
 
-        from ..code_chunker import CodeChunker, RepoChunkingConfig
         from ..incremental import (
             EmbeddingsCache,
             IncrementalChunkStore,
@@ -259,7 +258,6 @@ class VectorIndexBuilder:
         Falls back to a full ``build()`` call when incremental state files are
         missing (i.e. on first run or after a manual cache wipe).
         """
-        import os
         from pathlib import Path
 
         from ..code_chunker import CodeChunker, RepoChunkingConfig
@@ -284,8 +282,18 @@ class VectorIndexBuilder:
         chunk_store_path = Path(output_dir) / "chunk_store.pkl"
         embeddings_cache_path = Path(output_dir) / "embeddings_cache.pkl"
 
+        # Check both JSON and pickle formats (JSON+NPZ is the new default)
+        chunk_store_json = chunk_store_path.with_suffix(".json")
+        emb_cache_json = embeddings_cache_path.with_suffix(".json")
+        emb_cache_npz = embeddings_cache_path.with_suffix(".npz")
+
+        has_chunk_store = chunk_store_json.exists() or chunk_store_path.exists()
+        has_emb_cache = (
+            emb_cache_json.exists() and emb_cache_npz.exists()
+        ) or embeddings_cache_path.exists()
+
         # Fall back to full build when incremental state is missing
-        if not chunk_store_path.exists() or not embeddings_cache_path.exists():
+        if not has_chunk_store or not has_emb_cache:
             logger.info(
                 "Incremental state not found in %s; falling back to full build.",
                 output_dir,

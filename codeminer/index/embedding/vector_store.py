@@ -1120,7 +1120,11 @@ class CodeVectorStore:
             return
 
         # --- Delta path: in-place patch -------------------------------
-        target_by_hash: Dict[str, Tuple[object, np.ndarray]] = {}
+        # Use a list per hash so duplicate-content docs (same code in
+        # different files) are all preserved.
+        from collections import defaultdict
+
+        target_by_hash: Dict[str, List[Tuple[object, np.ndarray]]] = defaultdict(list)
         for doc, emb in zip(all_documents, all_embeddings, strict=True):
             ch = doc.metadata.get("content_hash")
             if ch is None:
@@ -1130,23 +1134,30 @@ class CodeVectorStore:
                 )
                 self.rebuild_from_embeddings(all_documents, all_embeddings, level=level)
                 return
-            target_by_hash[ch] = (doc, emb)
+            target_by_hash[ch].append((doc, emb))
 
         current_hashes = [d.metadata.get("content_hash") for d in current_docs]
-        rows_to_remove = [
-            i
-            for i, h in enumerate(current_hashes)
-            if h is None or h not in target_by_hash or h in changed_content_hashes
-        ]
 
-        surviving_hashes = {
-            h
-            for i, h in enumerate(current_hashes)
-            if i not in set(rows_to_remove) and h is not None
-        }
-        docs_to_add = [
-            target_by_hash[h] for h in target_by_hash if h not in surviving_hashes
-        ]
+        # For each hash, allow at most target-count survivors (handles
+        # both duplicate-content additions and removals correctly).
+        target_avail: Dict[str, int] = {h: len(v) for h, v in target_by_hash.items()}
+        rows_to_remove: List[int] = []
+        for i, h in enumerate(current_hashes):
+            if (
+                h is None
+                or h not in target_avail
+                or h in changed_content_hashes
+                or target_avail[h] <= 0
+            ):
+                rows_to_remove.append(i)
+            else:
+                target_avail[h] -= 1
+
+        # Unclaimed target entries become additions.
+        docs_to_add: List[Tuple[object, np.ndarray]] = []
+        for h, entries in target_by_hash.items():
+            claimed = len(entries) - target_avail.get(h, 0)
+            docs_to_add.extend(entries[claimed:])
 
         if rows_to_remove:
             selector = faiss.IDSelectorBatch(np.array(rows_to_remove, dtype=np.int64))
@@ -1157,13 +1168,19 @@ class CodeVectorStore:
         # are reflected without requiring a full rebuild.  The vector is
         # identical because content_hash is identical, so no FAISS op needed.
         remove_set = set(rows_to_remove)
+        survivor_idx: Dict[str, int] = {}
         new_docs_list: List[_Document] = []
         for i, d in enumerate(current_docs):
             if i in remove_set:
                 continue
             h = current_hashes[i]
-            fresh = target_by_hash.get(h)
-            new_docs_list.append(_to_document(fresh[0]) if fresh is not None else d)
+            idx = survivor_idx.get(h, 0)
+            survivor_idx[h] = idx + 1
+            entries = target_by_hash.get(h)
+            if entries and idx < len(entries):
+                new_docs_list.append(_to_document(entries[idx][0]))
+            else:
+                new_docs_list.append(d)
 
         if docs_to_add:
             add_vectors = np.array(

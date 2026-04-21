@@ -159,8 +159,12 @@ class IncrementalIndexUpdater:
                         file_path, skeleton_mode=True
                     )
                 except Exception as exc:
-                    logger.warning("Failed to L0-chunk %s: %s", file_path, exc)
-                    l0_chunks = []
+                    logger.warning(
+                        "Failed to L0-chunk %s: %s — keeping previous L0 data",
+                        file_path,
+                        exc,
+                    )
+                    continue
                 chunk_store.update_file(
                     file_path, l0_chunks, changes.new_commit, level="l0"
                 )

@@ -152,6 +152,11 @@ class EmbeddingsCache:
                 hashes = json.load(f)
             data = np.load(npz_path)
             vectors = data["vectors"]
+            if len(hashes) != vectors.shape[0]:
+                raise ValueError(
+                    f"EmbeddingsCache corrupted: {len(hashes)} hashes "
+                    f"but {vectors.shape[0]} vectors in {json_path}"
+                )
             for i, h in enumerate(hashes):
                 cache._cache[h] = vectors[i].astype(np.float32)
             logger.debug(

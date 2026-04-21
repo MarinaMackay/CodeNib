@@ -9,6 +9,8 @@ this bookkeeping externally.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -35,12 +37,28 @@ class IncrementalState:
     # ------------------------------------------------------------------
 
     def save(self, output_dir: Path) -> Path:
-        """Write state as JSON to *output_dir*/:data:`_STATE_FILENAME`."""
+        """Write state as JSON to *output_dir*/:data:`_STATE_FILENAME`.
+
+        Uses atomic write (write to temp file then rename) to avoid
+        corruption if the process is interrupted mid-write.
+        """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         state_path = output_dir / _STATE_FILENAME
-        with open(state_path, "w") as f:
-            json.dump(asdict(self), f, indent=2)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(output_dir), suffix=".tmp", prefix=".state_"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(asdict(self), f, indent=2)
+            os.replace(tmp_path, state_path)
+        except BaseException:
+            # Clean up the temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
         logger.debug("IncrementalState saved → %s", state_path)
         return state_path
 

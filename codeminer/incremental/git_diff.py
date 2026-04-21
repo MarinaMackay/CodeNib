@@ -7,6 +7,7 @@ so the incremental pipeline can rechunk and re-embed only the affected files.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -127,6 +128,13 @@ class GitDiffDetector:
             )
             return self._all_files_as_added(repo_path, new_commit)
 
+        # Validate commit SHA to prevent argument injection
+        if not re.fullmatch(r"[0-9a-fA-F]{4,40}", since_commit):
+            raise ValueError(
+                f"Invalid commit SHA: {since_commit!r} — "
+                "expected 4-40 hex characters"
+            )
+
         if since_commit == new_commit:
             logger.debug("No commits since last index build (%s).", since_commit)
             return RepoChanges(old_commit=since_commit, new_commit=new_commit)
@@ -193,11 +201,29 @@ class GitDiffDetector:
     def _is_supported(self, path: str) -> bool:
         return Path(path).suffix in self._extensions
 
+    # Directories to skip when walking the repo for the first-time fallback.
+    _SKIP_DIRS = frozenset(
+        {
+            ".git",
+            "node_modules",
+            "__pycache__",
+            ".tox",
+            ".mypy_cache",
+            ".pytest_cache",
+            "vendor",
+            "third_party",
+            ".venv",
+            "venv",
+        }
+    )
+
     def _all_files_as_added(self, repo_path: str, new_commit: str) -> RepoChanges:
         """Fallback: walk the repo and treat every supported file as added."""
         changes = RepoChanges(old_commit="", new_commit=new_commit)
         repo_root = Path(repo_path).resolve()
         for p in repo_root.rglob("*"):
+            if any(part in self._SKIP_DIRS for part in p.relative_to(repo_root).parts):
+                continue
             if p.is_file() and self._is_supported(str(p)):
                 changes.added.append(str(p))
         return changes
