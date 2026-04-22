@@ -135,7 +135,7 @@ class SCIPGoGraphDecoder:
                 for line in f:
                     line = line.strip()
                     if line.startswith("module "):
-                        module_path = line[len("module "):].strip()
+                        module_path = line[len("module ") :].strip()
                         self.logger.info(f"Loaded Go module path: {module_path}")
                         return module_path
         except Exception as e:
@@ -192,9 +192,7 @@ class SCIPGoGraphDecoder:
         enclosing_ranges = re.findall(r"enclosing_range:\s*(\d+)", occurrence_text)
 
         # Process the symbol
-        self._process_symbol(
-            symbol, file_path, line, symbol_roles, enclosing_ranges
-        )
+        self._process_symbol(symbol, file_path, line, symbol_roles, enclosing_ranges)
 
     def _make_symbol_key(self, symbol):
         """
@@ -236,7 +234,7 @@ class SCIPGoGraphDecoder:
 
         # Compute relative package path by stripping internal_module prefix
         if self.internal_module and full_pkg_path.startswith(self.internal_module):
-            rel_pkg = full_pkg_path[len(self.internal_module):].lstrip("/")
+            rel_pkg = full_pkg_path[len(self.internal_module) :].lstrip("/")
         else:
             rel_pkg = ""
 
@@ -347,9 +345,7 @@ class SCIPGoGraphDecoder:
                 self._get_unified_name(symbol_key, file_path, symbol_type)
             )
 
-    def _process_symbol(
-        self, symbol, file_path, line, symbol_roles, enclosing_ranges
-    ):
+    def _process_symbol(self, symbol, file_path, line, symbol_roles, enclosing_ranges):
         """Process a symbol occurrence and add it to the graph."""
         self.logger.scip_debug(
             f"Processing Go symbol: {symbol} at {file_path}:{line}, roles: {symbol_roles}"
@@ -385,7 +381,11 @@ class SCIPGoGraphDecoder:
                 self._set_unified_name(symbol_key, file_path, symbol_type)
                 self.code_graph.add_containment_edge(symbol_key)
 
-                if symbol_type in [NODE_TYPE_CLASS, NODE_TYPE_FUNCTION, NODE_TYPE_METHOD]:
+                if symbol_type in [
+                    NODE_TYPE_CLASS,
+                    NODE_TYPE_FUNCTION,
+                    NODE_TYPE_METHOD,
+                ]:
                     self.code_graph.update_current_scope(
                         symbol_key, scope_start_line, scope_end_line
                     )

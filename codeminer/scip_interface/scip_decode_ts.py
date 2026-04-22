@@ -211,7 +211,10 @@ class SCIPTypeScriptGraphDecoder:
         symbol_display = self._extract_symbol_display(unified_symbol)
 
         # Add () suffix for methods/functions
-        if symbol_type in (NODE_TYPE_METHOD, NODE_TYPE_FUNCTION) and not symbol_display.endswith("()"):
+        if symbol_type in (
+            NODE_TYPE_METHOD,
+            NODE_TYPE_FUNCTION,
+        ) and not symbol_display.endswith("()"):
             symbol_display = f"{symbol_display}()"
 
         if file_path and symbol_display:

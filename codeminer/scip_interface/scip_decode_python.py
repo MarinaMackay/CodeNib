@@ -350,9 +350,7 @@ class SCIPPythonGraphDecoder:
                         unified_symbol, scope_start_line, scope_end_line
                     )
                 except Exception as e:
-                    self.logger.error(
-                        f"Error updating scope for {unified_symbol}: {e}"
-                    )
+                    self.logger.error(f"Error updating scope for {unified_symbol}: {e}")
                     raise
 
         # Handle definition with no enclosing range
