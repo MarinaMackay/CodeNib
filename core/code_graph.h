@@ -30,6 +30,10 @@ public:
     std::optional<std::string> file;
     std::optional<int> start_line;
     std::optional<int> end_line;
+    // Cross-language display path: usually `{file}:{SymbolDisplay}`.
+    // Matches the `unified_name` vertex attribute produced by the
+    // Python-side decoders in codeminer/scip_interface/.
+    std::optional<std::string> unified_name;
   };
 
   struct EdgeData {
@@ -79,6 +83,22 @@ public:
   std::optional<VertexData>
   get_node_info_by_name(const std::string &node_name) const;
   std::optional<VertexData> get_node_info_by_id(VertexId vertex_id) const;
+
+  // Lookup the vertex id by name (nullopt if absent).
+  std::optional<VertexId> get_vertex_id(const std::string &name) const;
+
+  // Set unified_name attribute on a vertex (language-specific decoders
+  // compute this; Python decoders store it as a vertex attribute).
+  void set_unified_name(VertexId vertex_id, const std::string &value);
+
+  // Direct access to vertex data — used by language-specific post-pass
+  // (e.g. Python `_fix_unified_names`).
+  const std::vector<VertexData> &vertices() const { return vertices_; }
+  std::vector<VertexData> &mutable_vertices() { return vertices_; }
+
+  // Direct access to edges (source/target/type). Parallel to `graph()`'s
+  // igraph structure so edges[i] describes the i-th edge in the igraph.
+  const std::vector<EdgeData> &edges() const { return edges_; }
 
   std::vector<VertexId> get_neighbors(const std::string &node_name) const;
   std::string get_node_content(VertexId vertex_id) const;

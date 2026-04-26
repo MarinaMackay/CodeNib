@@ -3,7 +3,6 @@
 SCIP indexer for TypeScript and JavaScript projects using scip-typescript.
 """
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -30,15 +29,18 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
         output_dir: Optional[Union[str, Path]] = None,
         exclude_patterns: Optional[List] = None,
         profiler: Optional[Profiler] = None,
+        decoder_backend: Optional[str] = None,
     ):
         """
         Initialize the TypeScript SCIP indexer.
 
         Args:
             project_root: Root directory of the TypeScript/JavaScript project
-            output_dir: Directory to store output files (defaults to ~/.codeminer/{project_name})
+            output_dir: Directory to store output files
+                (defaults to ~/.codeminer/{project_name})
             exclude_patterns: List of patterns to exclude from indexing
             profiler: Profiler instance for performance tracking
+            decoder_backend: ``"serial"`` (default) or ``"core"``.
         """
         super().__init__(
             project_root=project_root,
@@ -46,6 +48,7 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
             exclude_patterns=exclude_patterns,
             profiler=profiler,
             language="typescript",
+            decoder_backend=decoder_backend,
         )
 
     def _check_indexer_available(self) -> bool:
@@ -86,7 +89,8 @@ class SCIPTypeScriptIndexer(SCIPIndexerBase):
 
         Args:
             project_name: Project name (not used by scip-typescript, kept for compatibility)
-            infer_tsconfig: Infer tsconfig for JavaScript projects without tsconfig.json and jsconfig.json
+            infer_tsconfig: Infer tsconfig for JavaScript projects
+                without tsconfig.json and jsconfig.json
             yarn_workspaces: Enable Yarn workspaces support
             pnpm_workspaces: Enable pnpm workspaces support
             npm_workspaces: Enable npm workspaces support

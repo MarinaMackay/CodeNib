@@ -153,6 +153,26 @@ CodeGraph::VertexId CodeGraph::ensure_vertex(const std::string &name) {
   return vertex_id;
 }
 
+std::optional<CodeGraph::VertexId>
+CodeGraph::get_vertex_id(const std::string &name) const {
+  auto it = name_to_vertex_.find(name);
+  if (it == name_to_vertex_.end())
+    return std::nullopt;
+  return it->second;
+}
+
+void CodeGraph::set_unified_name(VertexId vertex_id, const std::string &value) {
+  if (vertex_id < 0 ||
+      static_cast<std::size_t>(vertex_id) >= vertices_.size()) {
+    throw std::out_of_range("Vertex id out of range when setting unified_name");
+  }
+  if (value.empty()) {
+    vertices_[vertex_id].unified_name.reset();
+  } else {
+    vertices_[vertex_id].unified_name = value;
+  }
+}
+
 void CodeGraph::apply_vertex_update(VertexId vertex_id,
                                     const std::optional<std::string> &type,
                                     const std::optional<std::string> &file,
@@ -349,6 +369,9 @@ void CodeGraph::batch_upsert_nodes(const std::vector<VertexData> &nodes) {
       // Update vertex attributes
       apply_vertex_update(vertex_id, std::make_optional<std::string>(data.type),
                           data.file, data.start_line, data.end_line);
+      if (data.unified_name.has_value()) {
+        vertices_[vertex_id].unified_name = data.unified_name;
+      }
 
       if (data.start_line.has_value() && data.end_line.has_value()) {
         symbol_ranges_[data.name] =
@@ -595,6 +618,13 @@ void CodeGraph::save_graph(const std::string &output_path) const {
     out << "      \"end_line\": ";
     if (v.end_line.has_value()) {
       out << *v.end_line;
+    } else {
+      out << "null";
+    }
+    out << ",\n";
+    out << "      \"unified_name\": ";
+    if (v.unified_name.has_value()) {
+      out << escape_json(*v.unified_name);
     } else {
       out << "null";
     }

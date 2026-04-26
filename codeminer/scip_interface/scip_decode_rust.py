@@ -20,13 +20,13 @@ from ..graph.code_graph import CodeGraph
 from ..log_utils import get_logger, register_scip_logger
 from ..types import (
     EDGE_TYPE_CONTAIN,
-    EDGE_TYPE_REFERENCE,
     NODE_TYPE_CLASS,
     NODE_TYPE_FIELD,
     NODE_TYPE_FUNCTION,
     NODE_TYPE_METHOD,
     ROOT_NODE,
 )
+from .scip_indexer_base import extract_scip_blocks, extract_symbol
 
 
 class SCIPRustGraphDecoder:
@@ -133,7 +133,9 @@ class SCIPRustGraphDecoder:
             self.internal_crates = self._load_workspace_crates()
 
         # Process occurrences
-        occurrences = re.findall(r"occurrences\s*{(.*?)}", document_text, re.DOTALL)
+        # Brace-balanced: see extract_scip_blocks docstring (regex truncates
+        # on symbols containing literal "{" / "}").
+        occurrences = extract_scip_blocks(document_text, "occurrences")
         for occurrence in occurrences:
             self._process_occurrence(occurrence, file_path)
 
@@ -214,12 +216,10 @@ class SCIPRustGraphDecoder:
         col_start = int(ranges[1])
         col_end = int(ranges[2])
 
-        # Extract symbol
-        symbol_match = re.search(r'symbol:\s*"([^"]+)"', occurrence_text)
-        if not symbol_match:
+        # Extract symbol (unescape-aware; see extract_symbol docstring).
+        symbol = extract_symbol(occurrence_text)
+        if not symbol:
             return
-
-        symbol = symbol_match.group(1)
 
         # Skip local symbols (anonymous/unnamed)
         if "local " in symbol:
@@ -388,7 +388,8 @@ class SCIPRustGraphDecoder:
             file_path: File path where the symbol was found (stored as node attribute)
 
         Returns:
-            Unified symbol name in SCIP format (crate/module/Type#method or crate/module/function)
+            Unified symbol name in SCIP format
+            (``crate/module/Type#method`` or ``crate/module/function``)
         """
         # Extract the actual symbol part (after version or URL)
         # Format: "rust-analyzer cargo <crate_name> <version> <symbol_path>"

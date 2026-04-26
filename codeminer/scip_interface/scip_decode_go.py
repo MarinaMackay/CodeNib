@@ -26,6 +26,7 @@ from ..types import (
     NODE_TYPE_METHOD,
     ROOT_NODE,
 )
+from .scip_indexer_base import extract_scip_blocks, extract_symbol
 
 
 class SCIPGoGraphDecoder:
@@ -117,7 +118,9 @@ class SCIPGoGraphDecoder:
             self.internal_module = self._load_internal_module()
 
         # Process occurrences
-        occurrences = re.findall(r"occurrences\s*{(.*?)}", document_text, re.DOTALL)
+        # Brace-balanced: see extract_scip_blocks docstring (regex truncates
+        # on symbols containing literal "{" / "}").
+        occurrences = extract_scip_blocks(document_text, "occurrences")
         for occurrence in occurrences:
             self._process_occurrence(occurrence, file_path)
 
@@ -152,12 +155,10 @@ class SCIPGoGraphDecoder:
 
         line = int(ranges[0])
 
-        # Extract symbol
-        symbol_match = re.search(r'symbol:\s*"([^"]+)"', occurrence_text)
-        if not symbol_match:
+        # Extract symbol (unescape-aware; see extract_symbol docstring).
+        symbol = extract_symbol(occurrence_text)
+        if not symbol:
             return
-
-        symbol = symbol_match.group(1)
 
         # Skip local symbols
         if symbol.startswith("local "):
@@ -212,7 +213,8 @@ class SCIPGoGraphDecoder:
             scip-go gomod github.com/user/proj abc `github.com/user/proj`/Calculator#
             -> Calculator
 
-            scip-go gomod github.com/user/proj abc `github.com/user/proj/calc`/Calculator#History.
+            scip-go gomod github.com/user/proj abc
+              `github.com/user/proj/calc`/Calculator#History.
             -> calc/Calculator#History
 
         Returns:
