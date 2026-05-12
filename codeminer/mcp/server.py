@@ -1,5 +1,8 @@
 """CodeMiner MCP server - stdio transport.
 
+Exposes vector (semantic), BM25, regex, and Zoekt trigram search over a
+pre-built CodeMiner index via the Model Context Protocol.
+
 Usage::
 
     codeminer-mcp --manifest /path/to/repo_manifest.json
@@ -15,26 +18,38 @@ import argparse
 import asyncio
 import logging
 import sys
+from pathlib import Path
 from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from .context import ServerContext
 from .prompts import CODEMINER_GUIDE
-from .tools.search import search_bm25_impl, search_regex_impl, search_zoekt_impl
+from .tools.search import search_bm25_impl, search_regex_impl
+from .tools.search import search_semantic as _search_semantic_impl
+from .tools.search import search_zoekt_impl
 
 logger = logging.getLogger(__name__)
 
 # Global context is set once at startup before the event loop runs tools.
 _ctx: Optional[ServerContext] = None
 
+
+def get_context() -> ServerContext:
+    """Return the loaded ServerContext or raise if uninitialized."""
+    if _ctx is None:
+        raise RuntimeError("ServerContext not initialized. Call init_server() first.")
+    return _ctx
+
+
 mcp = FastMCP(
     "codeminer",
     instructions=(
-        "CodeMiner provides semantic code search over pre-built indexes. "
-        "Use search_bm25 for keyword lookups, search_regex for symbol-level "
-        "pattern matching, and search_zoekt for fast trigram-based substring/"
-        "regex search across raw file contents."
+        "CodeMiner provides code search over pre-built indexes. "
+        "Use search_semantic for vector/embedding similarity, "
+        "search_bm25 for keyword lookups, search_regex for symbol-level "
+        "pattern matching, and search_zoekt for fast trigram-based "
+        "substring/regex search across raw file contents."
     ),
 )
 
@@ -42,6 +57,36 @@ mcp = FastMCP(
 # ------------------------------------------------------------------
 # Tools
 # ------------------------------------------------------------------
+
+
+@mcp.tool(
+    name="search_semantic",
+    description=(
+        "Search codebase semantically using vector embeddings. "
+        "Returns functions, classes, and methods ranked by semantic similarity. "
+        "Best for natural language queries describing functionality or code snippets."
+    ),
+)
+async def semantic_search(
+    query: str,
+    top_k: int = 10,
+    level: str = "l2",
+    score_threshold: float = 0.0,
+) -> list[dict[str, Any]] | dict[str, str]:
+    """Semantic search over indexed code using vector embeddings.
+
+    Returns a list of code-node dicts; on missing vector index, returns
+    ``{"error": ...}`` so callers can recover gracefully.
+    """
+    if _ctx is None:
+        raise RuntimeError("Server not initialized")
+    return await _search_semantic_impl(
+        ctx=_ctx,
+        query=query,
+        top_k=top_k,
+        level=level if level else "l2",
+        score_threshold=score_threshold if score_threshold > 0 else None,
+    )
 
 
 @mcp.tool(
@@ -62,10 +107,7 @@ async def search_bm25(
     """BM25 keyword search over indexed code symbols."""
     if _ctx is None:
         raise RuntimeError("Server not initialized")
-    results = await asyncio.to_thread(
-        search_bm25_impl, _ctx, query, top_k, filter_test
-    )
-    return results
+    return await asyncio.to_thread(search_bm25_impl, _ctx, query, top_k, filter_test)
 
 
 @mcp.tool(
@@ -89,7 +131,7 @@ async def search_regex(
     """Regex pattern search over code graph nodes."""
     if _ctx is None:
         raise RuntimeError("Server not initialized")
-    results = await asyncio.to_thread(
+    return await asyncio.to_thread(
         search_regex_impl,
         _ctx,
         pattern,
@@ -98,7 +140,6 @@ async def search_regex(
         node_type or None,
         case_sensitive,
     )
-    return results
 
 
 @mcp.tool(
@@ -120,14 +161,13 @@ async def search_zoekt(
     """Trigram-based search over raw repository contents."""
     if _ctx is None:
         raise RuntimeError("Server not initialized")
-    results = await asyncio.to_thread(
+    return await asyncio.to_thread(
         search_zoekt_impl,
         _ctx,
         query,
         top_k,
         file_filter or None,
     )
-    return results
 
 
 @mcp.tool(
@@ -137,8 +177,8 @@ async def search_zoekt(
         "languages, available indexes, and capabilities."
     ),
 )
-async def get_manifest() -> str:
-    """Return the repo manifest as JSON."""
+async def get_manifest() -> dict[str, Any]:
+    """Return the repo manifest as a dict."""
     if _ctx is None:
         raise RuntimeError("Server not initialized")
     return _ctx.manifest.to_dict()
@@ -155,6 +195,52 @@ async def get_manifest() -> str:
 )
 async def codeminer_guide() -> str:
     return CODEMINER_GUIDE
+
+
+# ------------------------------------------------------------------
+# Status (non-tool helper, used by tests and debugging)
+# ------------------------------------------------------------------
+
+
+def server_status() -> str:
+    """Get server status and loaded indexes as readable text."""
+    try:
+        ctx = get_context()
+        lines = [
+            f"Repo: {ctx.manifest.repo_path}",
+            f"Commit: {(ctx.manifest.commit or '')[:8]}",
+            f"Languages: {', '.join(ctx.manifest.languages)}",
+            "",
+            "Indexes:",
+        ]
+
+        if ctx.vector is not None:
+            stats = ctx.vector.get_stats()
+            lines.append(
+                f"  ✓ vector: {ctx.vector.embedding_model} "
+                f"({stats['total_documents']} docs)"
+            )
+        else:
+            lines.append("  ✗ vector: not_loaded")
+
+        if ctx.bm25 is not None:
+            lines.append("  ✓ bm25: loaded")
+        else:
+            lines.append("  ✗ bm25: not_loaded")
+
+        if ctx.symbol_graph is not None:
+            lines.append("  ✓ symbol_graph: loaded")
+        else:
+            lines.append("  ✗ symbol_graph: not_loaded")
+
+        if ctx.zoekt is not None:
+            lines.append(f"  ✓ zoekt: port={ctx.zoekt.port}")
+        else:
+            lines.append("  ✗ zoekt: not_loaded")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error getting status: {e}"
 
 
 # ------------------------------------------------------------------
@@ -190,13 +276,33 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
-    """CLI entry point: ``codeminer-mcp --manifest <manifest_path>``."""
+def init_server(manifest_path: str | Path) -> None:
+    """Initialize the global ServerContext from a manifest file.
+
+    Loads the manifest and hydrates all available indexes into the
+    module-level ``_ctx``. Safe to call from tests with a temporary
+    manifest path.
+
+    Raises:
+        FileNotFoundError: if ``manifest_path`` does not exist.
+    """
     global _ctx
+    resolved = Path(manifest_path).resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"Manifest not found: {resolved}")
+    logger.info("Loading manifest from %s", resolved)
+    _ctx = ServerContext.load(resolved)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """CLI entry point: ``codeminer-mcp <manifest>``."""
     args = _parse_args(argv)
     manifest_path = args.manifest_flag or args.manifest
-    if manifest_path is None:
-        raise SystemExit("manifest path is required (use --manifest <path>)")
+    if not manifest_path:
+        logger.error(
+            "No manifest provided. Use: codeminer-mcp <manifest> or --manifest <path>"
+        )
+        sys.exit(1)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -204,11 +310,16 @@ def main(argv: list[str] | None = None) -> None:
         stream=sys.stderr,
     )
 
-    logger.info("Loading manifest from %s", manifest_path)
-    _ctx = ServerContext.load(manifest_path)
-    logger.info("Starting MCP server (stdio)")
-
-    mcp.run(transport="stdio")
+    try:
+        init_server(manifest_path)
+        logger.info("Starting MCP server on stdio...")
+        mcp.run(transport="stdio")
+    except FileNotFoundError as exc:
+        logger.error(str(exc))
+        sys.exit(1)
+    except Exception as exc:
+        logger.error("Failed to start server: %s", exc, exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

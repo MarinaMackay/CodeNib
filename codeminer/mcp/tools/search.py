@@ -1,16 +1,72 @@
-"""Search MCP tools - BM25 and regex wrappers over backbone indexes."""
+"""Search MCP tools - vector (semantic), BM25, regex, and Zoekt wrappers
+over backbone indexes."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from ...types import NodeInfo
+from ..context import ServerContext
 
 
 def _node_to_dict(node: NodeInfo) -> Dict[str, Any]:
     """Serialize a NodeInfo to a JSON-friendly dict, dropping None fields."""
-    d = node.model_dump(exclude_none=True)
-    return d
+    return node.model_dump(exclude_none=True)
+
+
+# ------------------------------------------------------------------
+# search_semantic (vector embedding)
+# ------------------------------------------------------------------
+
+
+async def search_semantic(
+    ctx: ServerContext,
+    query: str,
+    top_k: int = 10,
+    level: Optional[str] = None,
+    score_threshold: Optional[float] = None,
+    transform: Optional[str] = None,  # reserved for Phase 3 HyDE/expand
+) -> list[dict]:
+    """Semantic code search using vector embeddings.
+
+    Args:
+        ctx: ServerContext with loaded indexes
+        query: Natural language or code query
+        top_k: Number of results to return (default 10)
+        level: Index level - "l0" (file) or "l2" (function), default "l2"
+        score_threshold: Minimum similarity score (optional)
+        transform: Reserved for query transformation (HyDE/expand), no-op for now
+
+    Returns:
+        List of NodeInfo dicts with scores and content. On missing index,
+        returns ``{"error": ...}`` so callers can handle gracefully.
+    """
+    if ctx.vector is None:
+        return {
+            "error": "Vector index not loaded. Re-run indexing with embedding enabled."
+        }
+
+    if level is None:
+        level = "l2"
+
+    results = await asyncio.to_thread(
+        ctx.vector.search_with_content,
+        query=query,
+        top_k=top_k,
+        level=level,
+        score_threshold=score_threshold,
+    )
+
+    result_dicts = []
+    for node in results:
+        node_dict = node.model_dump()
+        if hasattr(node_dict.get("score"), "item"):
+            node_dict["score"] = float(node_dict["score"].item())
+        elif isinstance(node_dict.get("score"), (int, float)):
+            node_dict["score"] = float(node_dict["score"])
+        result_dicts.append(node_dict)
+    return result_dicts
 
 
 # ------------------------------------------------------------------
@@ -84,7 +140,8 @@ def search_regex_impl(
             "Regex index is not available. "
             + ctx.errors.get(
                 "regex_index",
-                "Requires a loaded symbol_graph (no 'symbol_graph' entry in manifest or load failed).",
+                "Requires a loaded symbol_graph (no 'symbol_graph' entry "
+                "in manifest or load failed).",
             )
         )
 

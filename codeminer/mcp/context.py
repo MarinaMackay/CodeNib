@@ -1,4 +1,10 @@
-"""ServerContext - loads a RepoManifest and hydrates index objects from disk."""
+"""ServerContext - loads a RepoManifest and hydrates index objects from disk.
+
+Holds vector, symbol_graph, BM25, regex, and Zoekt indexes. Each loads
+independently; failures land in ``ctx.errors`` and the corresponding
+attribute stays ``None`` so tools can surface a clear error at call time
+rather than blocking server startup.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +15,7 @@ from typing import Dict, Optional
 
 from ..compiler.manifest import RepoManifest
 from ..graph.code_graph import CodeGraph
+from ..index.embedding.vector_store import CodeVectorStore
 from ..index.regex_idx import RegexNodeIndex
 from ..index.sparse_idx import BM25CodeIndexer
 from ..index.trigram import ZoektSearcher, ZoektUnavailableError
@@ -20,7 +27,7 @@ logger = logging.getLogger(__name__)
 class ServerContext:
     """Runtime context for the MCP server.
 
-    Holds the loaded manifest and hydrated index objects.  Missing or
+    Holds the loaded manifest and hydrated index objects. Missing or
     failed indexes stay ``None``; tools check at call time and return
     descriptive errors.
     """
@@ -30,7 +37,7 @@ class ServerContext:
     bm25: Optional[BM25CodeIndexer] = None
     regex_index: Optional[RegexNodeIndex] = None
     zoekt: Optional[ZoektSearcher] = None
-    # ROISubgraph and vector store will be added by graph / vector tool phases.
+    vector: Optional[CodeVectorStore] = None
     errors: Dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -38,7 +45,7 @@ class ServerContext:
         """Load a manifest and hydrate all available indexes.
 
         Each index is loaded independently; a failure in one does not
-        block the others.  Failed indexes are recorded in ``errors``.
+        block the others. Failed indexes are recorded in ``errors``.
         """
         manifest = RepoManifest.load(manifest_path)
         ctx = cls(manifest=manifest)
@@ -47,6 +54,7 @@ class ServerContext:
         ctx._load_bm25()
         ctx._load_regex_index()
         ctx._load_zoekt()
+        ctx._load_vector()
 
         cap_summary = {k: v for k, v in manifest.capabilities.items() if v}
         logger.info(
@@ -102,7 +110,7 @@ class ServerContext:
     def _load_zoekt(self) -> None:
         """Spawn a ``zoekt-webserver`` against the indexed shard directory.
 
-        The Zoekt binary is a soft dependency.  When the binary is missing
+        The Zoekt binary is a soft dependency. When the binary is missing
         or the webserver fails to come up, the failure is recorded in
         :attr:`errors` and ``self.zoekt`` stays ``None`` so the
         ``search_zoekt`` MCP tool can return a clear error.
@@ -125,3 +133,46 @@ class ServerContext:
         except Exception as exc:
             self.errors["zoekt"] = str(exc)
             logger.warning("Failed to start zoekt-webserver: %s", exc)
+
+    def _load_vector(self) -> None:
+        """Load vector embedding index if available."""
+        entry = self.manifest.indexes.get("vector")
+        if not entry or entry.status != "fresh":
+            return
+
+        try:
+            cfg = entry.config
+
+            # Create CodeVectorStore with embedding model from manifest
+            self.vector = CodeVectorStore(
+                embedding_model=cfg["embedding_model"],
+                embedding_provider=cfg["embedding_provider"],
+                dimension=cfg.get("dimension"),
+                index_metric=cfg.get("index_metric", "ip"),
+                store_path=entry.path,
+            )
+
+            # Load FAISS index from disk
+            self.vector.load()
+
+            # Validate model consistency
+            loaded_model = self.vector.embedding_model
+            manifest_model = cfg["embedding_model"]
+            if loaded_model != manifest_model:
+                raise RuntimeError(
+                    f"Embedding model mismatch: manifest specifies "
+                    f"{manifest_model!r}, but loaded store has {loaded_model!r}. "
+                    f"Re-run indexing with the correct model."
+                )
+
+            stats = self.vector.get_stats()
+            logger.info(
+                "Loaded vector index from %s (%d docs, model=%s)",
+                entry.path,
+                stats["total_documents"],
+                cfg["embedding_model"],
+            )
+        except Exception as exc:
+            self.vector = None
+            self.errors["vector"] = str(exc)
+            logger.warning("Failed to load vector index: %s", exc)
