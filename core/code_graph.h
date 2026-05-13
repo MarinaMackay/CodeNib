@@ -40,6 +40,11 @@ public:
     VertexId source;
     VertexId target;
     std::string type;
+    // Optional call-site location (LSP-aligned line-range query support).
+    // Set for reference edges that carry `occurrence.range` info; nullopt
+    // for structural edges (file/dir containment, inheritance).
+    std::optional<std::string> anchor_file;
+    std::optional<int> anchor_line;
   };
 
   CodeGraph();
@@ -63,22 +68,40 @@ public:
   void add_symbol_reference(
       const std::string &symbol,
       const std::optional<std::string> &module_path = std::nullopt,
-      const std::string &symbol_type = NODE_TYPE_SYMBOL);
+      const std::string &symbol_type = NODE_TYPE_SYMBOL,
+      std::optional<std::string> anchor_file = std::nullopt,
+      std::optional<int> anchor_line = std::nullopt);
 
+  // CONTAIN edges deliberately carry no anchor — containment is a structural
+  // relation, not a call/reference site. (See anchor invariant ii on
+  // CodeGraph::query_range in the Python side.)
   void add_containment_edge(const std::string &target_symbol);
   void update_current_scope(const std::string &symbol,
                             std::optional<int> start_line = std::nullopt,
                             std::optional<int> end_line = std::nullopt);
   void exit_scopes_by_line(int current_line);
 
-  igraph_integer_t add_edge(const std::string &source,
-                            const std::string &target,
-                            const std::string &edge_type);
+  // Edges between `(source, target)` collapse on the full key
+  // `(source, target, edge_type, anchor_file, anchor_line)`. Distinct
+  // anchors yield distinct multi-edges; an identical key returns the
+  // existing eid. Pass `anchor_file` / `anchor_line` to record the
+  // call-site location for range-query support.
+  igraph_integer_t
+  add_edge(const std::string &source, const std::string &target,
+           const std::string &edge_type,
+           std::optional<std::string> anchor_file = std::nullopt,
+           std::optional<int> anchor_line = std::nullopt);
 
   void batch_upsert_nodes(const std::vector<VertexData> &nodes);
+  // Each entry: (source, target, type, anchor_file, anchor_line).
+  // Identical `(source, target, type, anchor_file, anchor_line)` collapses
+  // to a single edge; multi-edges across distinct anchors are allowed.
+  // Mirrors the per-decoder ``indexed_directories`` tracking the serial
+  // Python decoders apply at decoder scope.
   void batch_add_edges(
-      const std::vector<std::tuple<std::string, std::string, std::string>>
-          &edges);
+      const std::vector<
+          std::tuple<std::string, std::string, std::string,
+                     std::optional<std::string>, std::optional<int>>> &edges);
 
   std::optional<VertexData>
   get_node_info_by_name(const std::string &node_name) const;
