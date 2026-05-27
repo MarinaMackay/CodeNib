@@ -122,6 +122,7 @@ class AgentRunner:
         session_ctx: Optional[Any] = None,
         compile_table: Optional[Any] = None,
         include_default_tools: bool = True,
+        default_tool_ids: Optional[Set[str]] = None,
     ) -> None:
         if llm is not None:
             self.llm = llm
@@ -141,11 +142,18 @@ class AgentRunner:
         # ``include_default_tools=False`` withholds them — used to force the
         # structured (retrieval + graph) path in cost-comparison experiments.
         self._include_defaults = include_default_tools
+        self._default_ids: Set[str] = set()
         if include_default_tools:
             ensure_defaults_registered(self.registry)
-        self._default_ids: Set[str] = (
-            set(DEFAULT_SKILL_IDS) if include_default_tools else set()
-        )
+            # Which of the registered defaults to actually expose. Defaults to
+            # ALL (file_read + file_search). Restricting to a subset — e.g.
+            # ``{"file_read"}`` — yields a graph-primary / LocAgent-style harness
+            # that can read code but has NO grep escape hatch, so the structured
+            # (bm25 + call-graph) tools must carry navigation.
+            allowed = set(DEFAULT_SKILL_IDS)
+            if default_tool_ids is not None:
+                allowed &= set(default_tool_ids)
+            self._default_ids = allowed
         self.max_turns = max_turns
         self.session_ctx = session_ctx
 
@@ -212,8 +220,11 @@ class AgentRunner:
                 entries.append(child.name + ("/" if child.is_dir() else ""))
             if entries:
                 lines.append("top-level entries: " + ", ".join(entries[:40]))
-        except OSError:
-            pass
+        except OSError as exc:
+            # Top-level listing is best-effort context; skip it if the repo dir
+            # can't be read (missing / perms). The environment block is still
+            # returned without it.
+            logger.debug("env block: could not list %s: %s", repo_path, exc)
         lines.append("</environment>")
         return "\n".join(lines)
 

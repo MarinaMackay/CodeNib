@@ -15,14 +15,16 @@ cell. For each instance it reduces the reps to:
 
 The headline is a PAIRED comparison across instances: per-instance token delta
 % = (treat_median - base_median) / base_median, then the mean delta with a
-Student-t 95% CI over the N instances. Accuracy parity is checked first and
+95% confidence interval (CI — *confidence interval*, not continuous integration;
+Student-t, appropriate for the small N) over the N instances. Accuracy parity is
+checked first and
 any per-instance regression (treatment mean files@5 < baseline) is flagged —
 a token win at the cost of accuracy is NOT a win.
 
 Usage:
-    python -m scripts.agent_compile.aggregate_proof \
+    python -m scripts.agent_compile.compare_harnesses \
         --baseline results/agent_compile/proof_grep \
-        --treatment results/agent_compile/proof_ctx \
+        --treatment results/agent_compile/proof_locagent_faithful \
         --k 5
 """
 
@@ -72,7 +74,8 @@ def _load_cells(out_dir: Path) -> Dict[str, List[Dict[str, Any]]]:
     """instance_id -> list of rep cells."""
     by_inst: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for p in sorted((out_dir / "cells").glob("*.json")):
-        c = json.load(open(p))
+        with p.open("r", encoding="utf-8") as f:
+            c = json.load(f)
         by_inst[c["instance_id"]].append(c)
     return by_inst
 
@@ -157,7 +160,7 @@ def render(report: Dict[str, Any]) -> str:
         )
     lines.append("-" * 92)
     ci = report["ci95"]
-    ci_s = f" 95% CI [{ci[0]:+.0f}%, {ci[1]:+.0f}%]" if ci else ""
+    ci_s = f" 95% confidence interval [{ci[0]:+.0f}%, {ci[1]:+.0f}%]" if ci else ""
     lines.append(
         f"mean token delta (paired, median-of-reps): "
         f"{report['mean_dtok_pct']:+.0f}%{ci_s}  "

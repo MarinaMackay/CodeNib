@@ -15,7 +15,7 @@ the metrics, and the analysis methodology end-to-end — **not** the full
 Reproduce:
 
 ```bash
-python scripts/agent_compile/run_sample_sweep.py \
+python scripts/agent_compile/run_agent_sweep.py \
     --config configs/agent_compile/sample.yaml \
     --output-dir results/agent_compile/sample
 python scripts/agent_compile/aggregate_phase2.py \
@@ -677,6 +677,123 @@ these mostly single-file SWE-bench fixes, so multi-hop call-graph traversal has
 little to add and only adds cost. The graph's hypothesized value — reaching
 files/symbols search *misses* via cross-file causal tracing — is not exercised
 by this task distribution.
+
+# LocAgent-style graph-primary harness (bm25 + call-graph, NO grep)
+
+Tests the natural objection: maybe graph only saves tokens once you remove the
+grep escape hatch (the LocAgent regime — graph as the navigation spine). Arm:
+`file_read` only (no `file_search`), tools = bm25 + find_callers / find_callees /
+trace / impact_analysis. reps=3, N=8, vs the grep/read baseline (`cost_grep`).
+
+| instance (lang) | GREP f@5 / tok | LocAgent f@5 / tok | Δtok |
+|---|---|---|---|
+| tokio (Rust) | 1.0 / 110 996 | 1.0 / 50 969 | −54 % |
+| redis (C++) | 1.0 / 136 202 | 1.0 / 143 720 | +6 % |
+| terraform (Go) | 1.0 / 204 862 | 1.0 / 270 039 | +32 % |
+| docusaurus (TS) | 1.0 / 213 827 | 1.0 / 379 622 | +78 % |
+| axios (TS) | 1.0 / 127 673 | 1.0 / 246 011 | +93 % |
+| caddy (Go) | 1.0 / 127 103 | 1.0 / 317 414 | +150 % |
+| sympy (Py) | 0.0 / 118 694 | **1.0** / 430 115 | +262 % |
+| xarray (Py) | 1.0 / 123 925 | 1.0 / 545 293 | +340 % |
+
+**Two findings, both decisive:**
+
+1. **Zero graph-tool adoption.** Across all 24 cells the agent called
+   `bm25_search` (7.6/cell) + `file_read` (4.9/cell) and the call-graph verbs
+   (`find_callers`/`find_callees`/`trace`/`impact_analysis`) **0 times** — even
+   though grep was removed and the graph was the *only* structured navigation
+   tool. The model reaches for the primitives it was pretrained on (search +
+   read), not bespoke graph tools, regardless of what's on offer.
+2. **Removing grep costs +113 % tokens [95 % CI +2 %, +224 %]**, not less.
+   Without grep the agent fans out with bm25 + read, a worse substitute. files@5
+   held (and sympy went 0→1.0 — but via bm25+read, *not* the graph: 0 graph
+   calls).
+
+## Strict LocAgent: ban file_read too (read code ONLY by symbol)
+
+The purest graph-primary regime — `include_default_tools: false` (no grep, no
+file_read); the agent reads code only via `read_code_block(symbol)` (resolve →
+node span). reps=3, N=8.
+
+| metric | result |
+|---|---|
+| tool use | bm25_search 8.8/cell, read_code_block 3.2/cell, **graph verbs ~0.25/cell (6 calls / 24)** |
+| tokens vs grep/read | **+77 % [95 % CI +6 %, +148 %]** |
+| accuracy | files@5 **regressed** on docusaurus (1.0→0.67); rest parity, sympy still 0 |
+
+Removing the filesystem entirely is *worse*: still essentially no graph
+navigation, +77 % tokens, and an accuracy regression (read-by-symbol gives only
+the node span, so the agent can't browse surrounding context). Across **four**
+harness designs now — additive composer, free-choice verbs, graph-primary
+(no grep, +113 %), strict (no filesystem, +77 %) — the call-graph tools are used
+0–0.25×/cell and removing filesystem primitives only raises cost (and can hurt
+accuracy). The agent's preferred primitives are search + read, full stop.
+
+## Faithful LocAgent: bm25 returns NAME TAGS only (the proper setup)
+
+The arms above had a flaw: `bm25_search` returned full code bodies
+(`return_content: true`), which both ballooned tokens (the bodies re-accumulate
+in the re-sent transcript) AND handed the agent the code directly, so it never
+needed to traverse. The faithful fix (`bm25_names`: name + file:line, NO bodies)
+forces navigation by name and read-by-symbol. reps=3, N=8.
+
+| metric | content-bm25 LocAgent | **faithful (names-only)** |
+|---|---|---|
+| graph-tool use | 0 / 24 cells | **18 / 24 cells** (≥1 call) |
+| graph verbs / cell | 0 | ~1.6 (vs bm25_names 10.9 + read_code_block 6.3) |
+| tokens vs grep/read | +113 % | **+43 % [95 % CI +4 %, +83 %]** |
+| accuracy | files@5 parity | **regresses 3/8** (axios, docusaurus 1.0→0.0; redis 1.0→0.67) |
+
+**The fix worked as predicted and sharpens — not overturns — the conclusion.**
+Names-only bm25 (a) halved the token penalty (the bodies *were* the bloat) and
+(b) finally triggered graph use (18/24 cells). But the harness is still **worse
+than grep/read on both axes**: +43 % tokens *and* accuracy regressions, because
+reading a bare symbol span (no grep, no surrounding-file context) makes the
+agent miss. And even with names-only, graph navigation is a small minority of
+actions (~1.6/cell vs ~17 search+read) — the agent reads the *named* candidate
+directly rather than traversing to it, since for localization search already
+names the target.
+
+**Five harness designs** (vs the grep/read agent). The **"graph used"** column is
+critical: several arms *offered* the graph tools but the agent barely touched
+them, so they are NOT tests of the graph — read them as "search+read without
+grep."
+
+| harness | graph used (cells / total calls) | tokens | accuracy | tests the graph? |
+|---|---|---|---|---|
+| search-only composer (+grep/read) | — | **−19 %** | parity+ | no (search seeds) |
+| additive composer (+graph, +grep/read) | deterministic, 1×/cell | +18 % | parity | **yes (forced)** |
+| LocAgent (content-bm25, no grep) | **0/24, 0 calls** | +113 % | parity | **NO — graph unused** |
+| strict (no fs, read_code_block) | 5/24, 6 calls | +77 % | −1 regression | barely |
+| faithful (names-bm25, no fs) | **18/24, 39 calls** | +43 % | −3 regressions | **yes (agent-chosen)** |
+
+So only **two** rows actually exercise the call-graph:
+
+1. **additive composer** — the graph is expanded *deterministically* (not by
+   agent choice); the ablation C−B isolates it at **+18 % tokens, no accuracy
+   gain** at any k.
+2. **faithful LocAgent** — the agent *chooses* to traverse (18/24 cells, 39
+   calls), at **+43 % tokens and 3 accuracy regressions**.
+
+The `content-bm25 LocAgent` (+113 %) and `strict` (+77 %) rows are **not** graph
+results — the agent used ~0 graph calls; they only show that removing grep and
+leaning on bm25+read is expensive. The honest conclusion stands on the two rows
+that *do* test the graph: whether forced (deterministic, +18 %/no gain) or
+chosen (faithful, +43 %/−3 acc), **the call-graph does not help in the agent
+loop on localization.** The only config that beats grep/read is **search seeds
+*added to* grep/read** (−19 %). The graph's value is offline — the
+dependency-analysis plugin.
+
+**The LocAgent token-savings thesis does not replicate here.** Likely because
+LocAgent uses a graph-*native* agent (trained/forced to navigate the graph) vs
+a weak baseline; our zero-shot model, given strong search + read, ignores the
+graph interface and grep is simply an efficient localization primitive that the
+graph-primary harness removes. Consistent across all three harness designs we
+measured: prefetch composer (additive overhead), free-choice graph verbs (~0
+adoption), and graph-primary/no-grep (0 adoption + +113 % tokens). For this
+model on localization, **search + grep/read is the efficient frontier; the
+call-graph does not earn its keep in the agent loop** — only offline, as the
+dependency-analysis plugin.
 
 **Decisions this supports:**
 1. **Ship the retrieval composer with graph expansion OFF by default** for
