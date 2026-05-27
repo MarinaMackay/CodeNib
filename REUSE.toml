@@ -29,6 +29,14 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "CodeMiner Contributors"
 SPDX-License-Identifier = "Apache-2.0"
 
+# Generated experiment artifacts (reports / metrics / derived tables) — data
+# files that cannot carry inline SPDX headers.
+[[annotations]]
+path = "results/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "CodeMiner Contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
 # Demo frontend (Next.js scaffold + lockfiles); SPDX comments are awkward
 # in JSON / .css and get clobbered by tooling-regenerated files.
 [[annotations]]
