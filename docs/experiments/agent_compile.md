@@ -899,3 +899,82 @@ context is not more localized truth; distractors cost both tokens and accuracy.
    fan-out rather than adding to it — the additive setup measured here shows the
    agent double-dips (1 composer call but still 5 greps + 7 reads/cell), so graph
    context is read-once overhead, not a replacement.
+
+---
+
+# GraphRAG as a *retriever* (recall@k, not the agent loop) — #24
+
+The graph fails in the agent loop but the composer (search seeds → call-graph
+expansion) is a legitimate **retrieval pipeline**. Evaluated as a retriever
+(`scripts/agent_compile/graphrag_retrieve.py`, files@k recall vs ground truth,
+no LLM) over all **100 codeminer-base** instances:
+
+| recall@k | search-only | GraphRAG (search+graph) | GraphRAG + identifier seeding |
+|---|---|---|---|
+| files@1 | 10 % | 10 % | **23 %** |
+| files@5 | 47 % | 48 % | 49 % |
+| files@10 | 47 % | **52 %** | 52 % |
+
+Two distinct, honest wins:
+
+1. **Graph expansion is a strictly-additive recall booster: files@10 47 %→52 %
+   (+5 instances, ZERO regressions).** It appends caller/callee neighbors to the
+   search seeds, so it can only add the right file, never drop it — the opposite
+   of its net-negative behavior as an agent tool. The lift sits at @10 (not @5)
+   because neighbors land in ranks 6–30; the budget squeezes them out of top-5.
+
+2. **Identifier seeding doubles top-1 precision: files@1 10 %→23 %.** This is a
+   *seeding-stage* improvement (independent of graph expansion): extract the
+   code symbols the user named in the query (backtick-quoted, camelCase,
+   ALL_CAPS commands like `LPOP`, snake_case; minus bug-report noise) and
+   bm25-search each as a leading interleaved seed source. Fixes the redis-class
+   miss where NL prose ("null array") misleads full-text bm25 but the named
+   command (`LPOP`→`lpopCommand`) seeds from the right place. Its gain is
+   concentrated at @1; @5/@10 show minor churn (+4/−3, +5/−5) as identifier hits
+   reshuffle the budget — net @5 +1, @10 ±0.
+
+**Takeaway:** the call-graph and query-identifier signals both help *retrieval*
+(graph: +5 @10 additive; identifiers: 2× @1) even though neither helps the agent
+loop. This is the graph's real home — a recall-boosting retrieval pipeline, run
+from scripts, not an in-loop agent tool. (Caveat: identifier seeding would also
+lift a search-only baseline — it's a seeding gain, not a graph gain; the graph's
+own contribution is the strictly-additive +5 @10.)
+
+---
+
+# Fair index comparison: flat vs IVF vs graph-scoped (#25)
+
+Our vector store is `IndexFlatIP` (exhaustive). To judge the graph's retrieval
+value fairly you must control for the index — an IVF/ANN index speeds up flat
+search with NO graph. `index_compare.py`, recall@k + query latency over 100
+codeminer-base instances (no LLM):
+
+| method | median ms | p90 ms | files@1 | files@5 | files@10 |
+|---|---|---|---|---|---|
+| flat (exact) | 1.22 | 3.82 | 34 | 49 | 56 |
+| IVF (approx) | **0.29** | **0.65** | 33 | 49 | 55 |
+| graph-scoped (PPR) | 7.20 | 29.48 | **26** | **33** | **36** |
+
+1. **IVF: ~4× faster than flat at identical recall** (33/49/55 ≈ 34/49/56). The
+   speed comes from the ANN index, not the graph — so "the graph makes retrieval
+   faster" is unsupported; a plain IVF index gets it with zero graph.
+2. **Graph-scoping is strictly worse on both axes**: 6× slower than flat (PPR
+   compute) AND much lower recall (26/33/36). Restricting candidates to the
+   call-graph subgraph *excludes relevant files* — refutes "scope the query to a
+   subgraph helps" for this variant. (Seeds resolved on 77/100; the other 23 had
+   no graph-resolvable seed → empty scoped result, part of the recall drop.)
+
+**Caveat — what was tested:** the scoped arm RANKS the PPR subgraph (graph-only
+ranking from flat-top-5 seeds), it does NOT do embedding search *restricted to*
+the subgraph's vectors (the literal "limit the query in a subgraph" idea). That
+faithful variant is untested — it needs a subgraph-node → vector-row map
+(fragile under C/C++ hash-vs-readable naming). But since PPR-scoping already
+loses recall by excluding relevant files, embedding-within-subgraph faces the
+same risk: the target file must be inside the chosen subgraph.
+
+**Verdict on GraphRAG's retrieval value:** the only positive is the *additive*
+expansion (+5 files@10, zero regressions; earlier section). Graph does NOT win
+speed (IVF does) and does NOT win via scoping (hurts). For retrieval at this
+scale, **IVF is the win** (4× faster, same recall); the call-graph's real value
+remains offline structural/impact analysis (the dependency_subgraph tool), not
+faster or more-accurate flat retrieval.
