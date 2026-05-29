@@ -22,14 +22,14 @@ from ..llm.litellm_chat import LiteLLMChat
 from ..llm.usage import UsageTracker
 from ..log_utils import get_logger
 from .agent_types import AgentResult, ToolCallRecord
-from .skills.defaults import (
+from .skills.loader import SkillLoader
+from .skills.registry import SkillRegistry
+from .tool_schema import registry_to_tools
+from .tools.defaults import (
     _SKIP_DIR_PREFIXES,
     DEFAULT_SKILL_IDS,
     ensure_defaults_registered,
 )
-from .skills.loader import SkillLoader
-from .skills.registry import SkillRegistry
-from .tool_schema import registry_to_tools
 
 logger = get_logger(__name__)
 
@@ -366,14 +366,42 @@ class AgentRunner:
                     }
                 )
 
-        # Max turns exhausted — return whatever we have
-        elapsed = (time.monotonic() - start) * 1000
+        # Max turns exhausted. Prefer the last textual assistant message.
         last_content = ""
         for msg in reversed(messages):
             if msg.get("role") == "assistant" and msg.get("content"):
                 last_content = msg["content"]
                 break
 
+        # If the model spent every turn calling tools and never wrote prose,
+        # force one final tool-free turn so the agent still returns its best
+        # answer instead of an empty string — a budget-bound run that did real
+        # work should not report nothing. Best-effort: never crash on the
+        # summary call.
+        if not last_content and all_tool_calls:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "You have reached the tool-call budget. Do not call any "
+                        "more tools. Based on what you have found so far, give "
+                        "your final answer now."
+                    ),
+                }
+            )
+            try:
+                final = self.llm._call_raw(
+                    messages,
+                    usage_tracker=usage_tracker,
+                    usage_turn=max_turns + 1,
+                )
+                forced_msg = final.choices[0].message
+                messages.append(_message_to_dict(forced_msg))
+                last_content = getattr(forced_msg, "content", None) or ""
+            except Exception as exc:  # best-effort summary; keep the partial run
+                logger.warning("forced final-answer turn failed: %s", exc)
+
+        elapsed = (time.monotonic() - start) * 1000
         return AgentResult(
             answer=last_content,
             tool_calls=all_tool_calls,
