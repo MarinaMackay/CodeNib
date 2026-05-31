@@ -10,6 +10,7 @@ flat, UI-friendly ``ChatResponse`` the Next.js frontend renders.
 
 from __future__ import annotations
 
+import os
 from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
@@ -28,6 +29,7 @@ class RepoInfo(BaseModel):
     base_commit: str = ""
     commit_short: str = ""
     language: str = ""
+    description: str = ""  # repo purpose (README-derived), not the issue text
     problem_statement: str = ""
     languages: List[str] = Field(default_factory=list)
     file_count: int = 0
@@ -67,7 +69,35 @@ class ChatResponse(BaseModel):
     total_duration_ms: float = 0.0
 
 
-def _node_to_citation(node: Any) -> Optional[Citation]:
+def _repo_relative(path: Optional[str], repo_path: str = "") -> Optional[str]:
+    """Make a source path repo-relative for display + ``/source`` lookup.
+
+    Indexes store build-machine-absolute paths under arbitrary roots
+    (``/mnt/.../repo/...``, ``/home/.../.codeminer/<repo>/...``). The robust
+    rule (mirrors ``WikiBuilder._index_root``): the repo-relative path is the
+    longest suffix of *path* that actually exists under *repo_path*. Falls back
+    to stripping the repo root / a ``/repo/`` ancestor / a leading slash.
+    """
+    if not path:
+        return path
+    p = path.replace("\\", "/")
+    if repo_path:
+        root = repo_path.replace("\\", "/").rstrip("/") + "/"
+        if p.startswith(root):
+            return p[len(root) :]
+        parts = [x for x in p.split("/") if x]
+        for i in range(len(parts)):
+            rel = "/".join(parts[i:])
+            if os.path.exists(os.path.join(repo_path, rel)):
+                return rel
+    marker = "/repo/"
+    idx = p.rfind(marker)
+    if idx != -1:
+        return p[idx + len(marker) :]
+    return p.lstrip("/")
+
+
+def _node_to_citation(node: Any, repo_path: str = "") -> Optional[Citation]:
     """Coerce a single retrieval result (QueriedNode / dict) into a Citation."""
     if hasattr(node, "model_dump"):
         data = node.model_dump()
@@ -81,7 +111,7 @@ def _node_to_citation(node: Any) -> Optional[Citation]:
     if isinstance(content, str) and len(content) > 2000:
         content = content[:2000] + "\n... (truncated)"
     return Citation(
-        file=data.get("file"),
+        file=_repo_relative(data.get("file"), repo_path),
         start_line=data.get("start_line"),
         end_line=data.get("end_line"),
         node_name=data.get("node_name") or data.get("name") or "",
@@ -91,11 +121,12 @@ def _node_to_citation(node: Any) -> Optional[Citation]:
     )
 
 
-def agent_result_to_response(result: Any) -> ChatResponse:
+def agent_result_to_response(result: Any, repo_path: str = "") -> ChatResponse:
     """Flatten an ``AgentResult`` into the API response.
 
     Citations are de-duplicated across all tool calls by (file, start_line,
-    end_line) so a node retrieved by several searches appears once.
+    end_line) so a node retrieved by several searches appears once. ``repo_path``
+    (when given) makes citation file paths repo-relative.
     """
     tool_calls: List[ToolCallInfo] = []
     citations: List[Citation] = []
@@ -113,7 +144,7 @@ def agent_result_to_response(result: Any) -> ChatResponse:
             )
         )
         for node in nodes:
-            cit = _node_to_citation(node)
+            cit = _node_to_citation(node, repo_path)
             if cit is None:
                 continue
             key = (cit.file, cit.start_line, cit.end_line)
