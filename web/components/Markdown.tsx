@@ -1,12 +1,16 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
+import dynamic from "next/dynamic";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github.css";
-import Mermaid from "./Mermaid";
+
+// Mermaid (~1MB) is only needed when a diagram actually appears; load it on
+// demand so it never weighs down pages that have none (wiki strips diagrams).
+const Mermaid = dynamic(() => import("./Mermaid"), { ssr: false });
 
 // Recursively collect plain text from React children (to recover raw code).
 function nodeText(n: ReactNode): string {
@@ -51,10 +55,10 @@ export default function Markdown({ children }: { children: string }) {
         rehypePlugins={[rehypeSlug, [rehypeHighlight, { ignoreMissing: true }]]}
         components={{
           pre({ children }) {
-            const codeEl = Array.isArray(children) ? children[0] : children;
-            // @ts-expect-error - element prop access
-            const className: string = codeEl?.props?.className || "";
-            // @ts-expect-error - element prop access
+            const codeEl = (Array.isArray(children) ? children[0] : children) as
+              | ReactElement<{ className?: string; children?: ReactNode }>
+              | undefined;
+            const className = codeEl?.props?.className || "";
             const text = nodeText(codeEl?.props?.children);
             if (/language-mermaid/.test(className)) {
               return <Mermaid chart={text} />;

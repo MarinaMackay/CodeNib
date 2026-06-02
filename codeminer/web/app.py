@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..log_utils import get_logger
 from ..wiki import WikiBuilder
 from ..wiki.narrator import Narrator
-from .codemap import build_codemap
+from .codemap import build_codemap, build_page_subgraph
 from .config import load_config
 from .repo_registry import RepoRegistry
 from .schemas import ChatRequest, ChatResponse, RepoInfo, agent_result_to_response
@@ -128,6 +128,26 @@ async def wiki_page(repo_id: str, page_id: str) -> dict:
     return page
 
 
+@app.get("/api/repos/{repo_id}/wiki/{page_id}/graph")
+async def wiki_page_graph(repo_id: str, page_id: str) -> dict:
+    """Induced dependency subgraph over a wiki page's cited symbols.
+
+    Lets a wiki page render as a *view over the graph* (subsystem symbols + how
+    they connect), using the same ``{nodes, edges}`` payload as ``/codemap``.
+    """
+    page = _wiki(repo_id).page(page_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail=f"Unknown wiki page: {page_id!r}")
+    bundle = _bundle(repo_id)
+    graph = await asyncio.to_thread(bundle.code_graph)
+    if graph is None:
+        return {"available": False, "nodes": [], "edges": [], "mermaid": ""}
+    citations = page.get("citations", []) if isinstance(page, dict) else []
+    return await asyncio.to_thread(
+        build_page_subgraph, graph, citations, repo_dir=bundle.entry.repo_dir
+    )
+
+
 @app.get("/api/repos/{repo_id}/source")
 async def source(
     repo_id: str, file: str, start: int | None = None, end: int | None = None
@@ -162,7 +182,13 @@ async def codemap(
             "note": "This repo has no symbol graph.",
         }
     return await asyncio.to_thread(
-        build_codemap, graph, symbol, direction, depth, max_nodes
+        build_codemap,
+        graph,
+        symbol,
+        direction,
+        depth,
+        max_nodes,
+        repo_dir=bundle.entry.repo_dir,
     )
 
 
