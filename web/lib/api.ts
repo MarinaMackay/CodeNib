@@ -135,10 +135,16 @@ export interface CodemapNode {
   short: string;
   file: string | null;
   line: number | null;
+  end_line?: number | null; // 1-based end of the symbol's definition (for the code drawer)
   kind: string;
   depth: number;
   is_root: boolean;
   external?: boolean; // no openable in-repo source (external dep / file node)
+  importance?: number; // PageRank rank-percentile in [0,1] — drives node size
+  community?: number; // detected cluster id — drives node colour
+  ref_count?: number; // in-degree: how many symbols reference this one
+  entry_score?: number; // out/(in+out) in [0,1] — high for drivers / entry points
+  hidden_callees?: number; // out-edges folded away when this hub exceeded the cap
 }
 
 export interface CallSite {
@@ -152,6 +158,7 @@ export interface CodemapEdge {
   // Exact LSP/SCIP reference (call) site(s) for this edge — the caller file +
   // line where the call happens. Lets the UI jump an edge to its source.
   anchors?: CallSite[];
+  weight?: number; // count of distinct call sites (= anchors.length) — drives edge width
 }
 
 export interface CodemapResponse {
