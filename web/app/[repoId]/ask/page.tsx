@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Header from "@/components/Header";
@@ -8,6 +8,10 @@ import Markdown from "@/components/Markdown";
 import AskBar from "@/components/AskBar";
 import CodePanel from "@/components/CodePanel";
 import { askQuestion, fetchRepos, type ChatResponse, type RepoInfo } from "@/lib/api";
+import { codeRefs } from "@/lib/citations";
+
+// DeepWiki clamps the question to ~200 chars before "Show full text".
+const Q_TRUNCATE = 200;
 
 function AskAnswer() {
   const params = useParams<{ repoId: string }>();
@@ -45,7 +49,22 @@ function AskAnswer() {
   }, [repoId, q]);
 
   const repoName = repo ? repo.repo : repoId;
-  const citations = resp?.citations ?? [];
+  // Shared list so a chip's index lines up with the code pane's fragments.
+  const refs = useMemo(() => codeRefs(resp?.citations ?? []), [resp]);
+  const [active, setActive] = useState(0);
+  const [scrollSignal, setScrollSignal] = useState(0);
+  useEffect(() => setActive(0), [resp]);
+  // Select a citation: highlight it and (re-)scroll the code pane to it.
+  const selectCitation = (i: number) => {
+    setActive(i);
+    setScrollSignal((s) => s + 1);
+  };
+
+  // Truncate a long question to a fixed length with a "Show full text" toggle.
+  const [qExpanded, setQExpanded] = useState(false);
+  useEffect(() => setQExpanded(false), [q]);
+  const qLong = q.length > Q_TRUNCATE;
+  const qShown = !qLong || qExpanded ? q : q.slice(0, Q_TRUNCATE).trimEnd() + "…";
 
   return (
     <div className="wiki ask-page">
@@ -67,7 +86,12 @@ function AskAnswer() {
           <Link className="ask-back" href={`/${encodeURIComponent(repoId)}`}>
             ← Back to wiki
           </Link>
-          <h1 className="ask-q">{q || "Ask a question"}</h1>
+          <h1 className="ask-q">{qShown || "Ask a question"}</h1>
+          {qLong && (
+            <button className="ask-q-toggle" onClick={() => setQExpanded((e) => !e)}>
+              {qExpanded ? "Show less" : "Show full text"}
+            </button>
+          )}
 
           {!q && <p className="muted">Type a question in the bar below.</p>}
           {loading && <p className="muted ask-thinking">Searching {repoName}…</p>}
@@ -80,11 +104,13 @@ function AskAnswer() {
           {resp && (
             <>
               <article className="ask-a">
-                <Markdown>{resp.answer || "(no answer)"}</Markdown>
+                <Markdown citations={refs} onCite={selectCitation}>
+                  {resp.answer || "(no answer)"}
+                </Markdown>
               </article>
               <div className="ask-tools muted small">
                 {resp.tool_calls.length} tool calls · {resp.total_turns} turns ·{" "}
-                {Math.round(resp.total_duration_ms)} ms · {citations.length} references
+                {Math.round(resp.total_duration_ms)} ms · {refs.length} references
               </div>
             </>
           )}
@@ -93,9 +119,12 @@ function AskAnswer() {
         <aside className="ask-code">
           <CodePanel
             repoId={repoId}
-            citations={citations}
+            citations={refs}
             repo={repo?.repo}
             commit={repo?.base_commit}
+            active={active}
+            onSelect={selectCitation}
+            scrollSignal={scrollSignal}
           />
         </aside>
       </div>
