@@ -39,6 +39,7 @@ function SourcePeek({
   onFocus?: (label: string) => void;
 }) {
   const isNode = source.kind === "node";
+  const nodeEnd = source.kind === "node" ? source.node.endLine : null;
   const sites: CallSite[] = isNode
     ? [{ file: source.node.file || "", line: source.node.line }]
     : source.anchors;
@@ -57,10 +58,15 @@ function SourcePeek({
     if (isExternal) return; // external dep — no in-repo source to fetch
     let cancelled = false;
     setState("loading");
-    // Nodes show their definition from its first line; call sites get context above.
-    const before = isNode ? 0 : 6;
-    const after = isNode ? 16 : 6;
-    fetchSource(repoId, rel, Math.max(1, line - before), line + after)
+    // A node shows its definition span [line, endLine] plus a few lines of
+    // context on each side, so even a one-line field isn't shown bare (its
+    // own lines are highlighted). A call site (a point, not a span) gets ±6
+    // lines of context. Long spans scroll in the pane (CSS max-height).
+    const PAD = 3;
+    const symEnd = nodeEnd && nodeEnd >= line ? nodeEnd : line;
+    const before = isNode ? PAD : 6;
+    const end = isNode ? symEnd + PAD : line + 6;
+    fetchSource(repoId, rel, Math.max(1, line - before), end)
       .then((s) => {
         if (cancelled) return;
         setCode(s.content || "");
@@ -71,7 +77,7 @@ function SourcePeek({
     return () => {
       cancelled = true;
     };
-  }, [repoId, rel, line, isNode, isExternal]);
+  }, [repoId, rel, line, isNode, nodeEnd, isExternal]);
 
   return (
     <div className="callsite-peek">
@@ -126,7 +132,13 @@ function SourcePeek({
       ) : state === "err" ? (
         <p className="muted callsite-msg">Source not available.</p>
       ) : (
-        <HighlightedCode code={code} file={rel} startLine={start} highlightLine={line} />
+        <HighlightedCode
+          code={code}
+          file={rel}
+          startLine={start}
+          highlightLine={line}
+          highlightEnd={isNode ? nodeEnd ?? line : undefined}
+        />
       )}
     </div>
   );
