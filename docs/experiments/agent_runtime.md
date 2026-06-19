@@ -118,4 +118,4 @@ python scripts/agent_compile/aggregate_synthesis.py \
 
 Artifacts: cells + `pareto_ci.md` + `report_by_category.md` under
 `/mnt/data/codeminer/results/runtime_probe_python/`. Design + decision:
-[`.claude/design/agent-runtime.md`](../../.claude/design/agent-runtime.md) §0.
+`.claude/design/agent-runtime.md` §0.
