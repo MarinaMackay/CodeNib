@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2025-2026 CodeMiner Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Drive codeminer-synthesis v2 (multi-repo) generation from the v2 plan.
+
+Consumes the plan from ``build_synthesis_v2_plan`` (25 repos, 5/language, one
+graph-richest instance each, 20 queries/repo) and, per instance, invokes
+``generate_codeminer_synthesis_config.py`` with that repo's per-category counts.
+Resumable (skips an instance whose per-config seed/output already exists). Then
+prints the ``rebuild_codeminer_synthesis_dataset.py`` assembly command.
+
+Generation is heavy (repo clone + LSIndexer graph build + Opus curator/judge per
+query via the Claude Agent SDK), so run it where that toolchain + auth live.
+``--dry-run`` prints the exact commands without spending anything — use it to
+review the plan before committing to the full run.
+
+Usage::
+
+    # review the commands (no cost):
+    python scripts/generate_synthesis_v2.py --output-dir gen/v2 --dry-run
+    # generate (heavy):
+    python scripts/generate_synthesis_v2.py --output-dir gen/v2 \
+        --cache-dir .cache/synth --repo-cache-dir .cache/repos
+    # then assemble (command is printed at the end)
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import List, Optional
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from scripts.build_synthesis_v2_plan import build_plan  # noqa: E402
+
+
+def _gen_env() -> dict:
+    """Env with the SCIP indexer dirs on PATH.
+
+    The graph build shells out to per-language SCIP indexers (scip-go,
+    scip-clang, scip-typescript, scip-python, rust-analyzer). ``scip-go`` lives
+    in ``~/go/bin``, which is NOT on the default conda PATH — without it the Go
+    graph build fails ("scip-go not found") and every span comes out (0,0).
+    Prepend the common toolchain dirs so all 5 languages resolve.
+    """
+    env = dict(os.environ)
+    extra = [
+        os.path.expanduser("~/go/bin"),
+        os.path.expanduser("~/.local/bin"),
+        os.path.expanduser("~/.cargo/bin"),
+        "/usr/local/bin",
+    ]
+    have = env.get("PATH", "").split(os.pathsep)
+    env["PATH"] = os.pathsep.join(
+        [d for d in extra if os.path.isdir(d) and d not in have] + have
+    )
+    return env
+
+
+def _counts_arg(counts: dict) -> str:
+    return ",".join(f"{k}={v}" for k, v in counts.items() if v)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--output-dir", required=True, type=Path, help="generation root")
+    p.add_argument("--prebuilt-dir", default="/mnt/data/codeminer")
+    p.add_argument("--repos-per-lang", type=int, default=5)
+    p.add_argument("--model-name", default="opus")
+    p.add_argument("--judge-model", default="opus")
+    p.add_argument("--cache-dir", default="")
+    p.add_argument("--repo-cache-dir", default="")
+    p.add_argument("--dry-run", action="store_true", help="print commands, run nothing")
+    p.add_argument(
+        "--regen-mixed",
+        action="store_true",
+        help=(
+            "Re-generate ONLY the mixed categories (file/module/symbol/reasoning) "
+            "in place: delete each repo's mixed_x30 + combined files and re-run "
+            "with --skip-existing so the already-good behavioral_x20 and "
+            "traversal_x10 are reused. Use after a curator/post-fix quality fix to "
+            "refresh the weak categories without paying for behavioral again."
+        ),
+    )
+    args = p.parse_args(argv)
+
+    plan = build_plan(args.prebuilt_dir, args.repos_per_lang)
+    print(
+        f"v2 generation: {len(plan)} repos, "
+        f"{sum(e['total_queries'] for e in plan)} queries"
+    )
+
+    failures: List[str] = []
+    for e in plan:
+        config = e["config"]
+        iid = e["instance_id"]
+        gen_dir = args.output_dir / config / iid
+        seed_marker = gen_dir / "behavioral_x20" / f"synthesized_queries_{iid}.json"
+        if args.regen_mixed:
+            # Drop the weak categories so they regenerate; keep behavioral +
+            # traversal (already good) for --skip-existing to reuse.
+            mixed_dir = gen_dir / "mixed_x30"
+            if mixed_dir.exists() and not args.dry_run:
+                shutil.rmtree(mixed_dir)
+            for stale in gen_dir.glob(f"{config}_combined*.json"):
+                if not args.dry_run:
+                    stale.unlink()
+        elif seed_marker.exists():
+            print(f"skip {config}/{iid} (already generated)")
+            continue
+        cmd = [
+            sys.executable,
+            "scripts/generate_codeminer_synthesis_config.py",
+            "--config",
+            config,
+            "--instance-id",
+            iid,
+            "--counts",
+            _counts_arg(e["counts"]),
+            "--output-dir",
+            str(gen_dir),
+            "--model-name",
+            args.model_name,
+            "--judge-model",
+            args.judge_model,
+        ]
+        if args.regen_mixed:
+            cmd.append("--skip-existing")
+        if args.cache_dir:
+            cmd += ["--cache-dir", args.cache_dir]
+        if args.repo_cache_dir:
+            cmd += ["--repo-cache-dir", args.repo_cache_dir]
+        print(f"\n# {config}/{iid} ({e['repo']}, graph={e['graph_symbols']})")
+        print("  " + " ".join(cmd))
+        if args.dry_run:
+            continue
+        try:
+            subprocess.run(cmd, cwd=str(_PROJECT_ROOT), check=True, env=_gen_env())
+        except subprocess.CalledProcessError as exc:
+            print(f"  FAIL {iid}: {exc}", file=sys.stderr)
+            failures.append(iid)
+
+    # assembly command (per-config replacements -> parquet)
+    print("\n# assemble (after generation):")
+    reps = " ".join(
+        f"--replacement {c}={args.output_dir}/{c}"
+        for c in sorted({e["config"] for e in plan})
+    )
+    print(
+        f"  {sys.executable} scripts/rebuild_codeminer_synthesis_dataset.py "
+        f"{reps} --output-dir {args.output_dir}/dataset"
+    )
+    if failures:
+        print(f"\n{len(failures)} instance(s) FAILED: {failures}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

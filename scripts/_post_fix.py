@@ -11,10 +11,24 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from codeminer.dataset.synthesize._agent import AgentRunner
 from codeminer.log_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def _make_agent(*, model: str, system_prompt: str):
+    # ``claude_agent_sdk`` is an optional synthesis-time dependency. Import the
+    # runner only when the post-fix loop actually needs an LLM call so tests can
+    # import the pure helpers in this module without that SDK installed.
+    from codeminer.dataset.synthesize._agent import AgentRunner
+
+    return AgentRunner(
+        model=model,
+        max_turns=1,
+        allowed_tools=[],
+        permission_mode="bypassPermissions",
+        system_prompt=system_prompt,
+    )
 
 
 JUDGE_SYSTEM_PROMPT = (
@@ -138,6 +152,7 @@ def _symbol_basename(symbol_id: str) -> str:
 
 def _build_anchor_content_lookups(
     rows: List[Dict[str, Any]],
+    anchors: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, str], Dict[Tuple[str, str], str]]:
     # Behavioral rows have content in ``gt_symbol_nodes[*].content``;
     # non-behavioral rows often have ``content=null``. The file+basename
@@ -154,6 +169,22 @@ def _build_anchor_content_lookups(
             file = n.get("file") or gt_file
             if not (sym and content):
                 continue
+            by_node_name.setdefault(sym, content)
+            base = _symbol_basename(sym)
+            if file and base:
+                by_file_basename.setdefault((file, base), content)
+    # Mixed rows (module/file/symbol/reasoning) store target_symbol_nodes with
+    # content=null, so the loop above recovers nothing for them — every flagged
+    # mixed row then hits "no anchor content" and is skipped instead of
+    # regenerated. The anchors (behavioral output) DO carry the real code, so
+    # index them too: this is what unblocks regeneration for the mixed types.
+    for a in anchors or []:
+        content = a.get("anchor_content")
+        if not content:
+            continue
+        sym = a.get("anchor_symbol") or ""
+        file = a.get("anchor_file") or (a.get("target_files") or [""])[0]
+        if sym:
             by_node_name.setdefault(sym, content)
             base = _symbol_basename(sym)
             if file and base:
@@ -214,13 +245,7 @@ async def _fix_one(
     original_query = row.get("query") or ""
     judge_reason = row.get("judge_reason") or ""
 
-    agent = AgentRunner(
-        model=model,
-        max_turns=1,
-        allowed_tools=[],
-        permission_mode="bypassPermissions",
-        system_prompt=FIX_SYSTEM_PROMPT,
-    )
+    agent = _make_agent(model=model, system_prompt=FIX_SYSTEM_PROMPT)
     snippet = (
         anchor_content if len(anchor_content) <= 1800 else anchor_content[:1800] + "..."
     )
@@ -253,13 +278,7 @@ async def _regenerate_one(
     category = row.get("category") or "behavioral"
     length_variant = row.get("length_variant") or "detailed"
 
-    agent = AgentRunner(
-        model=model,
-        max_turns=1,
-        allowed_tools=[],
-        permission_mode="bypassPermissions",
-        system_prompt=REGENERATE_SYSTEM_PROMPT,
-    )
+    agent = _make_agent(model=model, system_prompt=REGENERATE_SYSTEM_PROMPT)
     snippet = (
         anchor_content if len(anchor_content) <= 1800 else anchor_content[:1800] + "..."
     )
@@ -295,13 +314,7 @@ async def _judge_one(
             "target_code_excerpt": (anchor_content or "")[:2000],
         }
     ]
-    agent = AgentRunner(
-        model=model,
-        max_turns=1,
-        allowed_tools=[],
-        permission_mode="bypassPermissions",
-        system_prompt=JUDGE_SYSTEM_PROMPT,
-    )
+    agent = _make_agent(model=model, system_prompt=JUDGE_SYSTEM_PROMPT)
     prompt = (
         "Evaluate the following synthesized query. Reply with a JSON array of "
         "one object: "
@@ -334,14 +347,20 @@ async def post_fix_flagged(
     model: str,
     judge_model: str,
     max_retries: int = 3,
+    anchors: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Triage flagged rows, then loop fix/regenerate up to ``max_retries`` times.
+
+    ``anchors`` (the behavioral-output anchor dicts, each with ``anchor_content``)
+    let the mixed callers recover code that their own rows store as
+    ``content=null`` — without it every flagged mixed row is skipped instead of
+    regenerated.
 
     Returns the mutated rows plus a stats dict
     (``flagged`` / ``promoted_at_triage`` / ``fixed_via_fix`` /
     ``fixed_via_regenerate`` / ``still_flagged``).
     """
-    by_node_name, by_file_basename = _build_anchor_content_lookups(rows)
+    by_node_name, by_file_basename = _build_anchor_content_lookups(rows, anchors)
 
     def is_flagged(r: Dict[str, Any]) -> bool:
         # 'unknown' is included because a truncated judge-batch JSON leaves
