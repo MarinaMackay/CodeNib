@@ -240,6 +240,12 @@ def run(
                         if (ans_dedup and preload_candidates)
                         else None
                     )
+                    from codeminer.agent.runner import _has_localization_contract
+
+                    format_failed = (
+                        not _has_localization_contract(out["answer"] or "")
+                        and not answer_spans
+                    )
                     record = {
                         "cell_id": cid,
                         "instance_id": instance_id,
@@ -253,6 +259,7 @@ def run(
                         "rep": rep,
                         "language": _LANG_KEY.get(config_name, "python"),
                         "success": True,
+                        "format_failed": format_failed,
                         "metrics": metrics,
                         "metrics_meaningful": bool(target_files or gt_blocks),
                         "query": row["query"],
@@ -340,11 +347,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     p.add_argument("--reps", type=int, default=None)
     p.add_argument("--no-resume", action="store_true")
+    p.add_argument(
+        "--model",
+        default=None,
+        help="Override config model (e.g. a local openai/ vLLM model).",
+    )
     args = p.parse_args(argv)
 
     cfg = SweepConfig.from_yaml(args.config)
     if args.reps is not None:
         cfg.reps = args.reps
+    if args.model:
+        cfg.model = args.model
     configs = [c.strip() for c in args.synthesis_configs.split(",") if c.strip()]
     categories = (
         {c.strip() for c in args.categories.split(",")} if args.categories else None
