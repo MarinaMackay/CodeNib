@@ -68,6 +68,13 @@ from .promotion import (
     PromotionGateResult,
     evaluate_promotion_evidence,
 )
+from .query_sweep import (
+    filter_query_rows,
+    group_query_rows_by_instance,
+    language_key_for_query_row,
+    query_targets,
+    run_query_sweep,
+)
 from .results import summarize_agent_result
 from .scoring import AgentLocalizationEvaluation, evaluate_agent_localization
 from .sweep import (
@@ -76,8 +83,10 @@ from .sweep import (
     load_dataset_rows,
     load_full_contexts,
     run_cell,
+    run_sweep,
     scenario_for,
     slug,
+    validate_sweep_harness,
 )
 from .sweep_config import SampleConfig, SweepConfig
 from .symbols import (
@@ -144,7 +153,10 @@ __all__ = [
     "graph_verify",
     "load_graph_nav",
     "graph_compose",
+    "group_query_rows_by_instance",
     "interleave_ranked",
+    "filter_query_rows",
+    "language_key_for_query_row",
     "load_agent_skill_contexts",
     "load_cell_jsons",
     "load_dataset_rows",
@@ -158,11 +170,14 @@ __all__ = [
     "metric_at_k",
     "prepare_preload_query",
     "query_is_specific",
+    "query_targets",
     "render_expansion",
     "retrieve_candidates",
     "run_baseline_batch",
     "run_cell",
+    "run_sweep",
     "run_lsp_route_baseline",
+    "run_query_sweep",
     "run_verify_expand",
     "scatter_gather_localize",
     "safe_mean",
@@ -177,6 +192,7 @@ __all__ = [
     "symbol_leaf",
     "unique_location_files",
     "usable_cells",
+    "validate_sweep_harness",
     "verdict_is_yes",
     "verify_query",
 ]
