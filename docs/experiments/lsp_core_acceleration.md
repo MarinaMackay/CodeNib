@@ -95,6 +95,7 @@ codeminer-lsp-provider-validate \
   --project-root /path/to/repo \
   --language python \
   --requests /tmp/lsp-provider-requests.jsonl \
+  --fingerprint-mode auto \
   --output-json /tmp/lsp-provider-report.json \
   --output-markdown /tmp/lsp-provider-report.md \
   --require-promotion
@@ -107,16 +108,137 @@ every row is `equivalent_static_faster`; `--fail-on-fallback` makes unsupported
 or unavailable static rows fail instead of recording them as explicit fallback
 cases.
 
+The default `--fingerprint-mode auto` uses ordered start-location fingerprints
+for `textDocument/definition` and unordered start-location sets for
+`textDocument/references`. Live LSP servers may return references in a
+different order than CodeMiner's graph traversal, so ordered fingerprints can
+turn a valid location-set match into a false mismatch. Use
+`--fingerprint-mode ordered-start` only when provider order is part of the
+contract being tested.
+
+The CLI validates native JSON-RPC LSP only. It rejects `codeminer/lspRoute`
+before starting a language server because route is a CodeMiner extension, not a
+native LSP request.
+
 The live path requires an installed language server or an override such as
 `CODEMINER_PYTHON_LSP_CMD`. If no server command is available, use the fake
 client unit path only; do not claim live equivalence from it.
 
-Latest local smoke, using a two-file temporary Python repo and
+Provider replay benchmark:
+
+```bash
+codeminer-lsp-replay-benchmark \
+  --graph /path/to/graph.pkl \
+  --project-root /path/to/repo \
+  --language cpp \
+  --compile-db /path/to/repo/compile_commands.json \
+  --baseline-graph /path/to/previous/graph.pkl \
+  --command 'clangd' \
+  --max-per-capability 50 \
+  --warmup-reps 1 \
+  --measured-reps 5 \
+  --output-json /tmp/lsp-replay-report.json \
+  --output-markdown /tmp/lsp-replay-report.md \
+  --require-all-equivalent
+```
+
+Use `--prebuilt-root ... --instance-id ...` for prebuilt agent-runner
+artifacts. If `--requests` is omitted, the benchmark deterministically spreads
+real file-position requests across graph `reference` edges: it reads each
+`anchor_file` / `anchor_line`, places the cursor on the referenced target token,
+and emits both `textDocument/definition` and `textDocument/references` requests
+up to `--max-per-capability`. A JSON/JSONL `--requests` file can be used when
+the same request set must be replayed across commits or machines.
+
+Before starting the live language server, replay now applies the same artifact
+quality gate as the clangd indexing pipeline. For C/C++, it reports compilation
+database entries, resolved source paths, repository translation-unit coverage,
+available range/unified metadata, and graph vertex/edge ratios when
+`--baseline-graph` is supplied. The defaults require at least one compile
+command, 1% repository source coverage, 50% graph-to-compile-DB translation-unit
+coverage, and at least 50% of the baseline graph's vertices and edges.
+`--allow-low-quality-artifact` exists for diagnosis only;
+results from that mode are not valid acceleration evidence.
+
+Some older prebuilt corpora ship legacy `graph.pkl` bundles with no schema
+version and stale `project_root` values from the machine that built them. Audit
+and normalize them before large replay runs:
+
+```bash
+codeminer-prebuilt-normalize-graphs /mnt/data/codeminer --limit 20
+codeminer-prebuilt-normalize-graphs /mnt/data/codeminer \
+  --write \
+  --backup-suffix .legacy \
+  --output-json /tmp/prebuilt-graph-normalize.json
+```
+
+Normalization rewrites only the graph pickle: it loads current or legacy graph
+artifacts, rebinds `project_root` to `<prebuilt>/<instance>/repo`, rebuilds
+missing range/unified indexes, and saves the graph with the current
+`CodeGraph.save_graph` schema. It does not re-run SCIP/LSP indexing or rebuild
+vector indexes.
+
+The C/C++ indexing path writes `index_quality.json` next to `graph.pkl` and
+returns failure when the report does not pass. A failed canonical artifact is
+quarantined as `graph.rejected.pkl` so consumers cannot load it as a successful
+index. Bear candidates are compared by
+entry count instead of accepting the first non-empty JSON file. Build exit
+status is not treated as compile-command coverage: Bear may capture useful
+translation units even when a later compile or link step fails. When a Makefile
+offers conventional extra-warning variables, the indexing-only build appends
+`-Wno-error`; the selected clangd-facing compilation database also rewrites
+`-Werror` and `-Werror=<warning>` in a derived copy, leaving the repository's
+build configuration unchanged.
+
+Calibration on the 19 C/C++ instances in the 100-instance `codeminer-base`
+sample produced graphs for 19/19 and passed the quality gate for 18/19 before
+the fix. The rejected `micropython__micropython-10095` artifact had only 2
+compile commands, 1,075 vertices, and 1,484 edges, versus 8,542 vertices and
+68,792 edges in its baseline. Capturing `ports/unix` with non-fatal warnings
+recovered 286 compile commands and produced 9,151 vertices and 72,207 edges.
+Re-auditing all 19 regenerated artifacts with the default gate, substituting the
+fixed micropython graph, passed 19/19. The minimum source coverage was 3.98%,
+the minimum graph-to-compile-DB coverage was 66.1%, the minimum baseline vertex
+ratio was 0.960, and the minimum baseline edge ratio was 0.946, leaving margin
+above the defaults. The original low-coverage micropython graph represents less
+than 1% of the repaired compile DB's translation units, so it is rejected even
+when no baseline graph is supplied.
+Across the run, clangd generation and graph decode were generally seconds to
+tens of seconds; checkout, submodules, CMake, Bear, and Make dominated wall
+time.
+
+Replay is the preferred latency feedback loop for this gate because every row
+uses the same graph-facing request against both providers. Warmup repetitions
+are discarded; measured repetitions are aggregated by capability and overall.
+The markdown report shows `p50` / `p95` / `p99` static and live latency,
+median speedup, and median milliseconds saved. Setup costs are reported
+separately as graph load, static provider init, and live LSP start time. Latency
+distributions include only equivalent rows; mismatches and provider errors are
+guardrail failures, not speedup data.
+
+Latest local pilot, using a two-file temporary Python repo and
 `npx --yes --package pyright pyright-langserver --stdio`:
 
 | request | same start location | static ms | live JSON-RPC ms | saved ms | verdict |
 | --- | --- | ---: | ---: | ---: | --- |
-| `textDocument/definition` from `caller.py:3` to `callee.py:1` | yes | 0.24 | 124.21 | 123.96 | `equivalent_static_faster` |
+| `textDocument/definition` from `caller.py:4` to `callee.py:1` | yes | 0.30 | 83.17 | 82.87 | `equivalent_static_faster` |
+| `textDocument/references` with ordered start fingerprint | no | 0.49 | 3.11 | 2.63 | `mismatch` |
+| `textDocument/references` with `start-set` fingerprint | yes | 0.59 | 3.65 | 3.07 | `equivalent_static_faster` |
+| `textDocument/definition` on the same line but wrong character | n/a | 0.48 | 1.64 | 1.15 | `static_error` |
+
+The pilot exposed three experiment-design constraints:
+
+- Do not include `codeminer/lspRoute` in static-vs-live JSON-RPC equivalence
+  gates. It is a CodeMiner extension, not a native LSP request.
+- References should usually be gated by unordered start-location set equality;
+  otherwise provider ordering differences dominate the result.
+- Position-based dynamic LSP acceleration is not safe for arbitrary characters
+  yet. The static graph is line-granular today, so it can return a line anchor
+  even when live LSP returns no definition for a cursor on whitespace or a
+  keyword. Static lookups now require the source token under `character` to
+  match the indexed target symbol; when the source is unavailable or the cursor
+  misses the symbol token, the static path fails instead of claiming
+  equivalence.
 
 Each row reports static/reference provider status, result count, fingerprint,
 latency, `latency_saved_ms`, `speedup_ratio`, and one of:

@@ -13,16 +13,19 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from codeminer.graph.code_graph import CodeGraph
-
 from .live_lsp_provider import compare_static_to_live_lsp_provider
 from .lsp_provider_validation import (
+    FingerprintFn,
+    FingerprintSelector,
     LSPProviderComparison,
     LSPProviderRequest,
+    default_lsp_provider_fingerprint,
+    fingerprint_lsp_start_location_set,
+    fingerprint_lsp_start_locations,
     render_lsp_provider_validation_markdown,
     summarize_lsp_provider_validation,
 )
-from .prebuilt import load_prebuilt_code_graph, repo_path_for
+from .prebuilt import load_code_graph_artifact, load_prebuilt_code_graph, repo_path_for
 
 
 def load_lsp_provider_requests(path: str | Path) -> list[LSPProviderRequest]:
@@ -54,9 +57,12 @@ def run_lsp_provider_validation_from_args(
 ) -> list[LSPProviderComparison]:
     """Run static-vs-live validation from parsed CLI arguments."""
 
-    graph = _load_graph_from_args(args)
     project_root = _project_root_from_args(args)
+    graph = _load_graph_from_args(args, project_root=project_root)
     requests = load_lsp_provider_requests(args.requests)
+    fingerprint_fn, fingerprint_selector = _fingerprint_config_from_mode(
+        args.fingerprint_mode
+    )
     return compare_static_to_live_lsp_provider(
         requests,
         graph=graph,
@@ -64,6 +70,8 @@ def run_lsp_provider_validation_from_args(
         language=args.language,
         command=_command_from_arg(args.command),
         skip_probe=args.skip_probe,
+        fingerprint_fn=fingerprint_fn,
+        fingerprint_selector=fingerprint_selector,
     )
 
 
@@ -134,6 +142,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Pass skip_probe=True when starting the live LSP client",
     )
+    parser.add_argument(
+        "--fingerprint-mode",
+        choices=["auto", "ordered-start", "start-set"],
+        default="auto",
+        help=(
+            "Result equivalence mode. auto uses ordered-start for definitions "
+            "and start-set for references; ordered-start preserves provider "
+            "order; start-set ignores order for reference-style location sets."
+        ),
+    )
     parser.add_argument("--output-json", help="Write machine-readable report")
     parser.add_argument("--output-markdown", help="Write markdown report")
     parser.add_argument(
@@ -196,12 +214,14 @@ def _coerce_request(raw: Any) -> LSPProviderRequest:
     )
 
 
-def _load_graph_from_args(args: argparse.Namespace) -> Any:
+def _load_graph_from_args(args: argparse.Namespace, *, project_root: str) -> Any:
     if args.graph:
-        return CodeGraph.load_graph(str(args.graph))
+        return load_code_graph_artifact(str(args.graph), project_root=project_root)
     if not args.instance_id:
         raise ValueError("--instance-id is required with --prebuilt-root")
-    return load_prebuilt_code_graph(str(args.prebuilt_root), str(args.instance_id))
+    graph = load_prebuilt_code_graph(str(args.prebuilt_root), str(args.instance_id))
+    graph.project_root = str(Path(project_root).resolve())
+    return graph
 
 
 def _project_root_from_args(args: argparse.Namespace) -> str:
@@ -219,6 +239,18 @@ def _command_from_arg(command: str | None) -> list[str] | None:
     if not parsed:
         raise ValueError("--command cannot be empty")
     return parsed
+
+
+def _fingerprint_config_from_mode(
+    mode: str,
+) -> tuple[FingerprintFn | None, FingerprintSelector | None]:
+    if mode == "auto":
+        return None, default_lsp_provider_fingerprint
+    if mode == "ordered-start":
+        return fingerprint_lsp_start_locations, None
+    if mode == "start-set":
+        return fingerprint_lsp_start_location_set, None
+    raise ValueError(f"unsupported fingerprint mode: {mode}")
 
 
 def _write_text(path: str | Path, text: str) -> None:
