@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from ..scip_interface.lsp_occurrence_index import SCIPOccurrenceIndex
+from ..types import QueriedNode
 from .lsp_graph import lsp_definition, lsp_references, lsp_route
 from .route_context import fingerprint_lsp_route_nodes, summarize_lsp_route_nodes
 
@@ -31,6 +33,9 @@ _LSP_METHODS = {
     CAPABILITY_ROUTE: "codeminer/lspRoute",
 }
 _SUPPORTED_CAPABILITIES = frozenset(_LSP_METHODS)
+_GRAPH_BEHAVIOR_CONTRACT = "static_graph_lsp_v1"
+_GRAPH_POSITION_BEHAVIOR_CONTRACT = "static_symbol_graph_position_lsp_v1"
+_OCCURRENCE_BEHAVIOR_CONTRACT = "static_scip_occurrence_lsp_v1"
 
 
 @dataclass(frozen=True)
@@ -43,7 +48,7 @@ class LSPProviderMetadata:
     lsp_method: str
     index_snapshot: Optional[str] = None
     fallback_reason: Optional[str] = None
-    behavior_contract: str = "static_graph_lsp_v1"
+    behavior_contract: str = _GRAPH_BEHAVIOR_CONTRACT
     position_granularity: str = "line"
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,8 +88,17 @@ class StaticLSPProvider:
 
     provider = STATIC_LSP_PROVIDER
 
-    def __init__(self, graph: Any, *, snapshot_id: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        graph: Any,
+        *,
+        snapshot_id: Optional[str] = None,
+        occurrence_index: Optional[SCIPOccurrenceIndex] = None,
+    ) -> None:
         self.graph = graph
+        self.occurrence_index = occurrence_index or getattr(
+            graph, "lsp_occurrence_index", None
+        )
         self.snapshot_id = snapshot_id or _graph_snapshot_id(graph)
 
     def can_serve(self, capability: str) -> LSPProviderMetadata:
@@ -97,6 +111,17 @@ class StaticLSPProvider:
                 status="unsupported",
                 snapshot_id=self.snapshot_id,
                 fallback_reason="unsupported_capability",
+            )
+        if (
+            normalized in {CAPABILITY_DEFINITION, CAPABILITY_REFERENCES}
+            and self.occurrence_index is not None
+        ):
+            return _metadata(
+                normalized,
+                status="ok",
+                snapshot_id=self.snapshot_id,
+                behavior_contract=_OCCURRENCE_BEHAVIOR_CONTRACT,
+                position_granularity="character",
             )
         if self.graph is None:
             return _metadata(
@@ -119,6 +144,29 @@ class StaticLSPProvider:
         """Serve ``textDocument/definition`` from the static graph."""
 
         self._require(CAPABILITY_DEFINITION)
+        if (
+            self.occurrence_index is not None
+            and file_path is not None
+            and line is not None
+            and character is not None
+            and symbol is None
+        ):
+            try:
+                locations = self.occurrence_index.definitions(
+                    file_path=file_path,
+                    line=line,
+                    character=character,
+                    top_k=top_k,
+                )
+            except ValueError:
+                locations = []
+            if locations:
+                return self._wrap(
+                    CAPABILITY_DEFINITION,
+                    _nodes_from_locations(locations, capability=CAPABILITY_DEFINITION),
+                    behavior_contract=_OCCURRENCE_BEHAVIOR_CONTRACT,
+                    position_granularity="character",
+                )
         nodes = lsp_definition(
             self.graph,
             file_path=file_path,
@@ -127,7 +175,22 @@ class StaticLSPProvider:
             symbol=symbol,
             top_k=top_k,
         )
-        return self._wrap(CAPABILITY_DEFINITION, nodes)
+        position_query = (
+            file_path is not None
+            and line is not None
+            and character is not None
+            and symbol is None
+        )
+        return self._wrap(
+            CAPABILITY_DEFINITION,
+            nodes,
+            behavior_contract=(
+                _GRAPH_POSITION_BEHAVIOR_CONTRACT
+                if position_query
+                else _GRAPH_BEHAVIOR_CONTRACT
+            ),
+            position_granularity="character" if position_query else "line",
+        )
 
     def references(
         self,
@@ -142,6 +205,30 @@ class StaticLSPProvider:
         """Serve ``textDocument/references`` from the static graph."""
 
         self._require(CAPABILITY_REFERENCES)
+        if (
+            self.occurrence_index is not None
+            and file_path is not None
+            and line is not None
+            and character is not None
+            and symbol is None
+        ):
+            try:
+                locations = self.occurrence_index.references(
+                    file_path=file_path,
+                    line=line,
+                    character=character,
+                    include_declaration=include_declaration,
+                    top_k=top_k,
+                )
+            except ValueError:
+                locations = []
+            if locations:
+                return self._wrap(
+                    CAPABILITY_REFERENCES,
+                    _nodes_from_locations(locations, capability=CAPABILITY_REFERENCES),
+                    behavior_contract=_OCCURRENCE_BEHAVIOR_CONTRACT,
+                    position_granularity="character",
+                )
         nodes = lsp_references(
             self.graph,
             file_path=file_path,
@@ -151,7 +238,22 @@ class StaticLSPProvider:
             include_declaration=include_declaration,
             top_k=top_k,
         )
-        return self._wrap(CAPABILITY_REFERENCES, nodes)
+        position_query = (
+            file_path is not None
+            and line is not None
+            and character is not None
+            and symbol is None
+        )
+        return self._wrap(
+            CAPABILITY_REFERENCES,
+            nodes,
+            behavior_contract=(
+                _GRAPH_POSITION_BEHAVIOR_CONTRACT
+                if position_query
+                else _GRAPH_BEHAVIOR_CONTRACT
+            ),
+            position_granularity="character" if position_query else "line",
+        )
 
     def route(
         self,
@@ -186,17 +288,63 @@ class StaticLSPProvider:
         capability: str,
         nodes: Iterable[Any],
         *,
+        behavior_contract: str = _GRAPH_BEHAVIOR_CONTRACT,
         position_granularity: str = "line",
     ) -> LSPProviderNodes:
+        if capability in {CAPABILITY_DEFINITION, CAPABILITY_REFERENCES}:
+            nodes = normalize_native_lsp_nodes(nodes, capability=capability)
         return LSPProviderNodes(
             nodes,
             metadata=_metadata(
                 capability,
                 status="ok",
                 snapshot_id=self.snapshot_id,
+                behavior_contract=behavior_contract,
                 position_granularity=position_granularity,
             ),
         )
+
+
+def resolve_lsp_provider(context: Any) -> Any:
+    """Return an injected LSP provider or the default static graph provider."""
+
+    provider = getattr(context, "lsp_provider", None) if context is not None else None
+    if provider is not None:
+        return provider
+    graph = getattr(context, "code_graph", None) if context is not None else None
+    if graph is None:
+        raise RuntimeError("LSP provider and symbol graph are unavailable")
+    return StaticLSPProvider(graph)
+
+
+def normalize_native_lsp_nodes(
+    nodes: Iterable[Any], *, capability: str
+) -> list[QueriedNode]:
+    """Normalize native LSP results to a provider-independent location list."""
+
+    normalized_capability = normalize_lsp_capability(capability)
+    if normalized_capability not in {CAPABILITY_DEFINITION, CAPABILITY_REFERENCES}:
+        raise ValueError(f"unsupported native LSP capability: {capability!r}")
+
+    locations: dict[tuple[str, int], QueriedNode] = {}
+    for node in nodes:
+        file_path = _node_value(node, "file") or _node_value(node, "file_path")
+        start_line = _coerce_line(_node_value(node, "start_line"))
+        if not file_path or start_line is None:
+            continue
+        file_text = str(file_path)
+        display_line = start_line + 1
+        locations[(file_text, start_line)] = QueriedNode(
+            node_name=f"{file_text}:{display_line}",
+            type=normalized_capability,
+            file=file_text,
+            node_id=f"{file_text}:{display_line}:{normalized_capability}",
+            start_line=start_line,
+            end_line=start_line,
+            score=1.0,
+            content=f"lsp {normalized_capability}",
+        )
+    return [locations[key] for key in sorted(locations)]
 
 
 def lsp_result_metadata(result: Any) -> Optional[dict[str, Any]]:
@@ -231,6 +379,7 @@ def _metadata(
     status: str,
     snapshot_id: Optional[str],
     fallback_reason: Optional[str] = None,
+    behavior_contract: str = _GRAPH_BEHAVIOR_CONTRACT,
     position_granularity: str = "line",
 ) -> LSPProviderMetadata:
     normalized = normalize_lsp_capability(capability)
@@ -241,6 +390,7 @@ def _metadata(
         lsp_method=_LSP_METHODS.get(normalized, normalized),
         index_snapshot=snapshot_id,
         fallback_reason=fallback_reason,
+        behavior_contract=behavior_contract,
         position_granularity=position_granularity,
     )
 
@@ -280,6 +430,42 @@ def _call_int(obj: Any, method: str) -> int:
         return 0
 
 
+def _nodes_from_locations(
+    locations: Iterable[Any], *, capability: str
+) -> list[QueriedNode]:
+    nodes = []
+    for location in locations:
+        file_path = str(location.file_path)
+        start_line = int(location.start_line)
+        display_line = start_line + 1
+        nodes.append(
+            QueriedNode(
+                node_name=f"{file_path}:{display_line}",
+                type=capability,
+                file=file_path,
+                node_id=f"{file_path}:{display_line}:{capability}",
+                start_line=start_line,
+                end_line=int(location.end_line),
+                score=1.0,
+                content=f"lsp {capability}",
+            )
+        )
+    return nodes
+
+
+def _node_value(node: Any, key: str) -> Any:
+    if isinstance(node, Mapping):
+        return node.get(key)
+    return getattr(node, key, None)
+
+
+def _coerce_line(value: Any) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 __all__ = [
     "CAPABILITY_DEFINITION",
     "CAPABILITY_REFERENCES",
@@ -289,8 +475,10 @@ __all__ = [
     "LSPProviderNodes",
     "STATIC_LSP_PROVIDER",
     "StaticLSPProvider",
+    "resolve_lsp_provider",
     "fingerprint_lsp_result",
     "lsp_result_metadata",
+    "normalize_native_lsp_nodes",
     "normalize_lsp_capability",
     "preview_lsp_result",
 ]

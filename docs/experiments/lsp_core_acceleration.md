@@ -20,6 +20,13 @@ Current implementation:
 - Agent `lsp_definition`, `lsp_references`, and `lsp_route` skills use that
   provider, so dynamic tool calls get the same list-shaped results plus
   trace-only provider metadata.
+- Native definition/reference skills expose only the common JSON-RPC contract:
+  `file_path`, `line`, and `character`. Symbol-only lookup is a
+  CodeMiner extension and stays behind `lsp_route` rather than silently giving
+  the static arm a stronger tool.
+- Native `definition` and `references` results are normalized to a stable,
+  provider-independent location DTO. Rich symbol nodes remain available through
+  the CodeMiner-only `route` capability.
 - MCP `lsp_*` tools use the same provider and keep their serialized output
   format unchanged.
 - Runtime traces record `lsp_provider`, `lsp_result_fingerprint`, and a compact
@@ -36,11 +43,12 @@ without starting or round-tripping through a language server. It is separate
 from startup preload and compact-context experiments.
 
 The behavior guardrail is **agent-visible equivalence**, not byte-for-byte
-native LSP parity. For each supported capability, the static provider must
-return the same ordered set of locations that the agent/MCP tool contract will
-show to the model or client. Compare the same graph-facing file-position
-request against live JSON-RPC LSP, and only treat the static path as a drop-in
-acceleration when both providers return the same ordered fingerprint.
+native LSP parity. For each supported native capability, both providers emit
+the same sorted location DTO fields; provider identity and behavior contract
+stay in trace metadata and are not shown to the model. The replay gate compares
+locations for coverage. The forced-call protocol check additionally requires
+the complete model-visible DTO payload hash to match before admitting a case;
+the task-level agent ablation does not filter cases by equivalence.
 
 Full native LSP behavior is intentionally a larger contract than this gate:
 language servers can return token selection ranges instead of symbol scopes,
@@ -50,11 +58,11 @@ JSON-RPC equivalence from a static snapshot. It should claim fast-path
 equivalence only for the request classes whose fingerprints match under the
 agent-visible output contract, and fall back explicitly otherwise.
 
-For `definition` and `references`, the first gate uses start-location
-fingerprints (`file:start_line`). Live LSP often returns a token selection range,
-while the static graph may return an enclosing symbol range and richer symbol
-name. Full range/symbol equality is a stricter later gate, not the initial
-dynamic-routing requirement.
+For `definition`, replay preserves ordered start locations. For `references`,
+it compares an unordered start-location set because JSON-RPC does not promise a
+cross-provider ordering. The provider facade then sorts and deduplicates those
+locations before serialization, so an equivalent request has an identical tool
+payload in both arms.
 
 Validation entry point:
 
@@ -133,10 +141,14 @@ codeminer-lsp-replay-benchmark \
   --language cpp \
   --compile-db /path/to/repo/compile_commands.json \
   --baseline-graph /path/to/previous/graph.pkl \
-  --command 'clangd' \
+  --command 'clangd --background-index --compile-commands-dir=/path/to/profile' \
   --max-per-capability 50 \
   --warmup-reps 1 \
+  --warmup-until-stable \
+  --minimum-equivalent-count 2 \
   --measured-reps 5 \
+  --wait-until-idle \
+  --idle-grace 10 \
   --output-json /tmp/lsp-replay-report.json \
   --output-markdown /tmp/lsp-replay-report.md \
   --require-all-equivalent
@@ -216,6 +228,129 @@ separately as graph load, static provider init, and live LSP start time. Latency
 distributions include only equivalent rows; mismatches and provider errors are
 guardrail failures, not speedup data.
 
+For paper runs, use `--warmup-until-stable` with a small non-zero
+`--minimum-equivalent-count`. Process initialization and even consecutive stable
+responses can precede full workspace analysis; the non-empty equivalence floor
+prevents a stable-but-unusable live state from entering the measured region. The
+default is zero so coverage studies can still measure snapshots with no
+equivalent rows.
+
+Forced-call provider protocol check:
+
+```bash
+codeminer-lsp-provider-protocol-check \
+  --graph /path/to/graph.pkl \
+  --project-root /path/to/repo \
+  --language go \
+  --requests /path/to/fixed-requests.json \
+  --command 'gopls serve' \
+  --capability definition \
+  --max-cases 2 \
+  --reps 1 \
+  --model vertex_ai/claude-haiku-4-5 \
+  --output-json /tmp/lsp-agent-ab.json
+```
+
+This crossover holds the model, prompt, tool name/schema, and model-visible
+result constant; it changes only the injected provider. Prompt caching is off
+by default to avoid an arm-order confound. Use this only as an integration
+guard for arguments, traces, turns, tokens, and answers: the harness supplies
+the request and forces one tool call. The CodeMiner Base agent ablation lets the
+model adopt tools dynamically and exports live-arm calls for frozen replay.
+Remote model wall time is not the LSP latency metric because API variance is
+orders of magnitude larger than one warm semantic request.
+
+The pinned Base sampling frame is now artifact-ready: 60/60 Go, Rust, and
+TypeScript snapshots pass strict source/profile/graph/occurrence-index identity
+checks under `/mnt/data/codeminer/results/lsp_agent_base_artifacts_v4`. The
+artifacts contain 10,287,017 exact SCIP occurrences. This readiness result does
+not replace request replay or constitute an agent outcome; it only removes
+artifact drift from the dynamic adoption study.
+
+The completed Haiku Base campaign yielded four naturally adopted live-arm
+requests across Gin, Terraform, and Axios. Frozen five-repetition replay against
+the same snapshot and request arguments produced 4/4 equivalent requests and
+20/20 equivalent measured rows: two definitions and two references, with no
+mismatch, error, or fallback. Static p50/p95 was 0.19/0.58 ms, live JSON-RPC
+p50/p95 was 2.22/12.65 ms, and paired speedup p50 was 11.43x. Graph load, live
+process start, and behavioral warmup p50 were 2.80 ms, 85.15 ms, and 1.78 s,
+respectively, and remain separate setup metrics. The aggregate report is
+`/mnt/data/codeminer/results/lsp_agent_base_haiku_v2_replay/aggregate.json`.
+
+This natural trace is strong mechanism evidence but a small compatibility
+sample. Generated cross-language requests still expose lower equivalence for
+Rust and TypeScript references, so the system must preserve profile-specific
+promotion and live fallback rather than globally replacing every JSON-RPC LSP
+request.
+
+### CodeMiner Base 100-Snapshot Replay
+
+The full CodeMiner Base replay uses all 100 unique `(repo, base_commit,
+language)` snapshots: 21 Go, 20 Rust, 19 TypeScript/JavaScript, 20 Python, and
+20 C/C++. The frozen manifest is
+`/mnt/data/codeminer/results/lsp_agent_base_study_manifest_v3.json` with SHA-256
+`4a2376ad11e1ff4b54857c8f33e8b83c025e3a9fe7cb0da69cbd778e5078f6d4`.
+All 100 snapshot/profile identities and artifact quality gates pass.
+
+Each snapshot contributes five deterministic definition positions and five
+reference positions. Both providers receive the same request. The live server
+is allowed two warmup repetitions and additional repetitions until behavior is
+stable; each measured request then runs ten times. C/C++ starts clangd with
+`--background-index` and the exact profile directory as
+`--compile-commands-dir`, and requires ten continuous idle seconds before the
+timed region. Other languages require one idle second. Reports retain every
+mismatch, while latency distributions include only requests whose result
+fingerprints match in all repetitions.
+
+| language | snapshots | definition equivalent | references equivalent | overall equivalent | equivalent-row p50 speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C/C++ | 20 | 87/100 (87%) | 22/100 (22%) | 109/200 (55%) | 43.93x |
+| Go | 21 | 104/105 (99%) | 77/105 (73%) | 181/210 (86%) | 6.03x |
+| Python | 20 | 80/100 (80%) | 36/100 (36%) | 116/200 (58%) | 2.74x |
+| Rust | 20 | 85/100 (85%) | 33/100 (33%) | 118/200 (59%) | 2.70x |
+| TypeScript/JavaScript | 19 | 81/95 (85%) | 27/95 (28%) | 108/190 (57%) | 6.42x |
+
+Overall, 632/1,000 requests (63.2%) are behaviorally equivalent: 437/500
+definitions (87.4%) and 195/500 references (39.0%). Across the 6,320 admitted
+measured rows, static p50 is 0.62 ms, live JSON-RPC p50 is 2.30 ms, and paired
+speedup p50 is 4.71x. There are no measured provider errors or fallbacks. Two
+transient reference errors occurred during 2,140 warmup rows; both affected
+servers subsequently stabilized and had error-free measured regions.
+
+The result supports a guarded fast path, not universal replacement. Definition
+coverage is high across all languages, while reference coverage remains
+backend- and language-dependent. Unsupported fingerprints must continue to
+fall back to live JSON-RPC.
+
+Reviewable aggregate artifacts committed with this experiment are:
+
+- [aggregate Markdown](artifacts/lsp_replay_base_v3_100/aggregate.md)
+- [single-column figure](artifacts/lsp_replay_base_v3_100/lsp_replay_100_single_column.png)
+
+![CodeMiner Base 100-snapshot LSP replay](artifacts/lsp_replay_base_v3_100/lsp_replay_100_single_column.png)
+
+The full local report set, including all 100 per-snapshot reports and the PDF
+figure, remains at:
+
+- `/mnt/data/codeminer/results/lsp_replay_base_v3_100/aggregate.json`
+- `/mnt/data/codeminer/results/lsp_replay_base_v3_100/aggregate.md`
+- `/mnt/data/codeminer/results/lsp_replay_base_v3_100/lsp_replay_100_single_column.pdf`
+
+Regenerate the figure from the 100 machine-readable reports with:
+
+```bash
+python scripts/profiling/plot_lsp_replay_paper.py \
+  --reports-dir /mnt/data/codeminer/results/lsp_replay_base_v3_100/reports \
+  --output-prefix /tmp/lsp_replay_100_single_column
+```
+
+The separate two-snapshot Haiku extension pilot completed six cells without
+runtime errors, but the model made zero native LSP calls in every arm and used
+all 20 turns. Running the remaining 354 model cells would therefore measure
+agent search variance and cost without adding LSP latency observations. The
+100-snapshot provider replay is the primary acceleration experiment; dynamic
+adoption remains a separate negative result.
+
 Latest local pilot, using a two-file temporary Python repo and
 `npx --yes --package pyright pyright-langserver --stdio`:
 
@@ -232,13 +367,16 @@ The pilot exposed three experiment-design constraints:
   gates. It is a CodeMiner extension, not a native LSP request.
 - References should usually be gated by unordered start-location set equality;
   otherwise provider ordering differences dominate the result.
-- Position-based dynamic LSP acceleration is not safe for arbitrary characters
-  yet. The static graph is line-granular today, so it can return a line anchor
-  even when live LSP returns no definition for a cursor on whitespace or a
-  keyword. Static lookups now require the source token under `character` to
-  match the indexed target symbol; when the source is unavailable or the cursor
-  misses the symbol token, the static path fails instead of claiming
-  equivalence.
+- Symbol-graph edges alone are not sufficient for native position queries.
+  They discard local symbols and exact character ranges, so naturally adopted
+  receiver/local-variable calls can fail even when the live server succeeds.
+  Native position calls now use a separately versioned SCIP occurrence index
+  and fall back to the graph only for a declaration omitted by an older SCIP
+  producer. The graph remains the backend for symbol-oriented `lsp_route`.
+- Exact positions improve coverage but do not imply universal behavioral
+  equivalence. Indexer/server versions and workspace views can still differ,
+  especially for Rust and TypeScript references. Compatibility is reported on
+  every request; latency is aggregated only for matching fingerprints.
 
 Each row reports static/reference provider status, result count, fingerprint,
 latency, `latency_saved_ms`, `speedup_ratio`, and one of:

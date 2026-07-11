@@ -11,7 +11,9 @@ from typing import Any, Mapping, Optional, Sequence
 
 import pytest
 
+from codeminer.agent.lsp_provider import StaticLSPProvider
 from codeminer.eval.agent_runner.live_lsp_provider import lsp_locations_to_nodes
+from codeminer.eval.agent_runner.lsp_readiness import wait_for_lsp_provider_readiness
 from codeminer.eval.agent_runner.lsp_replay_benchmark import (
     exit_code_for_lsp_replay_benchmark,
     generate_lsp_replay_requests,
@@ -94,6 +96,12 @@ class _FakeLiveProvider:
     def close(self) -> None:
         self.closed = True
 
+    def wait_until_idle(
+        self, *, max_wait_s: float = 60.0, idle_grace_s: float = 1.0
+    ) -> bool:
+        self.idle_grace_s = idle_grace_s
+        return max_wait_s == 60.0
+
     def __call__(self, capability: str, arguments: Mapping[str, Any]) -> Any:
         assert self.started is True
         assert arguments["file_path"] == "caller.py"
@@ -143,6 +151,50 @@ class _FakeLiveProvider:
         )
 
 
+def test_readiness_requires_requested_equivalent_case_count(tmp_path):
+    graph = _range_graph(tmp_path)
+    request = generate_lsp_replay_requests(
+        graph, capabilities=["definition"], max_per_capability=1
+    )[0]
+
+    class LoadingProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, capability, arguments):
+            self.calls += 1
+            target = "caller.py" if self.calls <= 2 else "callee.py"
+            line = 1 if self.calls <= 2 else 4
+            return lsp_locations_to_nodes(
+                [
+                    {
+                        "uri": (tmp_path / target).as_uri(),
+                        "range": {
+                            "start": {"line": line, "character": 0},
+                            "end": {"line": line, "character": 1},
+                        },
+                    }
+                ],
+                project_root=tmp_path,
+                relation="json-rpc definition",
+                node_type="definition",
+            )
+
+    readiness = wait_for_lsp_provider_readiness(
+        [request],
+        graph=graph,
+        static_provider=StaticLSPProvider(graph),
+        live_provider=LoadingProvider(),
+        minimum_reps=2,
+        max_reps=4,
+        poll_seconds=0,
+        minimum_equivalent_count=1,
+    )
+
+    assert readiness.completed_reps == 4
+    assert readiness.equivalent_count == 1
+
+
 def test_generate_lsp_replay_requests_from_reference_edges(tmp_path):
     graph = _range_graph(tmp_path)
 
@@ -167,6 +219,24 @@ def test_generate_lsp_replay_requests_from_reference_edges(tmp_path):
         },
     ]
     assert requests[0].request_id == "definition:caller.py:1:11:load_config"
+
+    assert not generate_lsp_replay_requests(
+        graph,
+        capabilities=["definition"],
+        max_per_capability=1,
+        file_suffixes=[".cc", ".cpp"],
+    )
+    assert (
+        len(
+            generate_lsp_replay_requests(
+                graph,
+                capabilities=["definition"],
+                max_per_capability=1,
+                file_suffixes=["py"],
+            )
+        )
+        == 1
+    )
 
 
 def test_generate_lsp_replay_requests_spreads_candidates(tmp_path):
@@ -238,14 +308,41 @@ def test_run_lsp_replay_benchmark_reports_equivalent_latency(tmp_path):
         graph=graph,
         project_root=tmp_path,
         language="python",
-        warmup_reps=1,
+        source_repo="org/repo",
+        source_commit="a" * 40,
+        warmup_reps=2,
+        warmup_until_stable=True,
+        warmup_poll_seconds=0,
+        minimum_equivalent_count=1,
         measured_reps=2,
+        wait_until_idle=True,
+        idle_grace_s=10.0,
         live_provider_factory=_FakeLiveProvider,
     )
 
     summary = payload["summary"]["overall"]
     assert payload["request_count"] == 2
     assert payload["artifact_quality"]["passed"] is True
+    assert payload["schema_version"] == 2
+    assert payload["warmup_summary"]["row_count"] == 4
+    assert payload["warmup_summary"]["error_count"] == 0
+    assert payload["warmup_protocol"]["stable"] is True
+    assert payload["warmup_protocol"]["live_nonempty_count"] == 2
+    assert payload["warmup_protocol"]["minimum_equivalent_count"] == 1
+    assert payload["setup"]["warmup_wall_ms"] >= 0
+    assert payload["setup"]["idle_wait_ms"] >= 0
+    assert payload["setup"]["idle_grace_s"] == 10.0
+    assert payload["subject"]["language"] == "python"
+    assert payload["subject"]["repository"] == "org/repo"
+    assert payload["subject"]["git_commit"] == "a" * 40
+    assert len(payload["subject"]["snapshot_id"]) == 64
+    assert payload["subject"]["graph"] == {
+        "node_count": 4,
+        "edge_count": 1,
+        "has_selection_line": True,
+    }
+    assert payload["subject"]["reference_provider"]["provider"] == "json_rpc"
+    assert payload["request_source"] == {"kind": "provided"}
     assert len(payload["comparisons"]) == 4
     assert summary["row_count"] == 4
     assert summary["equivalent_row_count"] == 4
@@ -262,6 +359,33 @@ def test_run_lsp_replay_benchmark_reports_equivalent_latency(tmp_path):
     assert "Artifact quality: yes" in markdown
     assert "Equivalence guardrail: yes" in markdown
     assert "static p50/p95/p99 ms" in markdown
+
+
+def test_adaptive_warmup_rejects_stable_but_empty_live_provider(tmp_path):
+    class EmptyLiveProvider(_FakeLiveProvider):
+        def __call__(self, capability, arguments):
+            return []
+
+    graph = _range_graph(tmp_path)
+    requests = generate_lsp_replay_requests(
+        graph,
+        capabilities=["definition"],
+        max_per_capability=1,
+    )
+
+    with pytest.raises(RuntimeError, match="did not stabilize.*nonempty=0/1"):
+        run_lsp_replay_benchmark(
+            requests,
+            graph=graph,
+            project_root=tmp_path,
+            language="python",
+            warmup_reps=2,
+            warmup_until_stable=True,
+            max_warmup_reps=2,
+            warmup_poll_seconds=0,
+            measured_reps=1,
+            live_provider_factory=EmptyLiveProvider,
+        )
 
 
 def test_exit_code_for_lsp_replay_benchmark_guardrails():

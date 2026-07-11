@@ -13,9 +13,11 @@ aggregate latency only for rows whose agent-visible fingerprints match.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shlex
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -29,7 +31,9 @@ from codeminer.agent.lsp_provider import (
     StaticLSPProvider,
     normalize_lsp_capability,
 )
+from codeminer.compiler.snapshot_store import SourceSnapshot
 from codeminer.ls_index.index_quality import (
+    TRANSLATION_UNIT_SUFFIXES,
     IndexQualityPolicy,
     assess_index_quality,
     discover_compilation_database,
@@ -44,6 +48,7 @@ from .lsp_provider_validation import (
     compare_static_lsp_provider,
     default_lsp_provider_fingerprint,
 )
+from .lsp_readiness import wait_for_lsp_provider_readiness
 
 Clock = Callable[[], float]
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -59,6 +64,7 @@ def generate_lsp_replay_requests(
     definition_top_k: int = 8,
     references_top_k: int = 40,
     include_declaration: bool = True,
+    file_suffixes: Optional[Sequence[str]] = None,
 ) -> list[LSPProviderRequest]:
     """Generate deterministic file-position LSP replay requests from graph refs.
 
@@ -89,6 +95,16 @@ def generate_lsp_replay_requests(
     candidates = _reference_position_candidates(
         graph, project_root=_project_root(graph, project_root)
     )
+    if file_suffixes:
+        normalized_suffixes = {
+            suffix.lower() if suffix.startswith(".") else f".{suffix.lower()}"
+            for suffix in file_suffixes
+        }
+        candidates = [
+            candidate
+            for candidate in candidates
+            if Path(candidate["file_path"]).suffix.lower() in normalized_suffixes
+        ]
     for candidate in _evenly_spaced(candidates, max_per_capability):
         for capability in requested_capabilities:
             if counts[capability] >= max_per_capability:
@@ -134,26 +150,43 @@ def run_lsp_replay_benchmark(
     graph: Any,
     project_root: str | Path,
     language: str,
+    source_repo: Optional[str] = None,
+    source_commit: Optional[str] = None,
     command: Optional[Sequence[str]] = None,
     warmup_reps: int = 1,
+    warmup_until_stable: bool = False,
+    max_warmup_reps: int = 10,
+    warmup_poll_seconds: float = 1.0,
+    min_live_nonempty_fraction: float = 0.1,
+    minimum_equivalent_count: int = 0,
     measured_reps: int = 5,
     skip_probe: bool = False,
     compdb_path: str | Path | None = None,
     baseline_graph: Any = None,
     quality_policy: IndexQualityPolicy | None = None,
     allow_low_quality_artifact: bool = False,
+    wait_until_idle: bool = False,
+    idle_timeout_s: float = 60.0,
+    idle_grace_s: float = 1.0,
     fingerprint_selector: FingerprintSelector = default_lsp_provider_fingerprint,
     clock: Clock = time.monotonic,
     live_provider_factory: Callable[..., LiveLSPReferenceProvider] = (
         LiveLSPReferenceProvider
     ),
+    occurrence_index: Any = None,
 ) -> dict[str, Any]:
     """Run a warm provider-level replay benchmark and return JSON-ready data."""
 
     if warmup_reps < 0:
         raise ValueError("warmup_reps must be non-negative")
+    if max_warmup_reps < max(1, warmup_reps):
+        raise ValueError("max_warmup_reps must be at least warmup_reps")
+    if not 0 <= min_live_nonempty_fraction <= 1:
+        raise ValueError("min_live_nonempty_fraction must be between 0 and 1")
     if measured_reps < 1:
         raise ValueError("measured_reps must be positive")
+    if bool(source_repo) != bool(source_commit):
+        raise ValueError("source_repo and source_commit must be provided together")
 
     request_list = [_coerce_request(request) for request in requests]
     _validate_native_requests(request_list)
@@ -171,7 +204,7 @@ def run_lsp_replay_benchmark(
         raise ValueError(f"graph artifact quality guardrail failed: {failures}")
 
     static_init_start = clock()
-    static_provider = StaticLSPProvider(graph)
+    static_provider = StaticLSPProvider(graph, occurrence_index=occurrence_index)
     static_provider_init_ms = (clock() - static_init_start) * 1000
 
     live_provider = live_provider_factory(
@@ -180,21 +213,42 @@ def run_lsp_replay_benchmark(
         command=command,
         skip_probe=skip_probe,
     )
+    idle_wait_ms: Optional[float] = None
+    warmup_rows: list[dict[str, Any]] = []
+    comparison_rows: list[dict[str, Any]] = []
     live_start = clock()
     live_provider.start()
     live_start_ms = (clock() - live_start) * 1000
-    comparison_rows: list[dict[str, Any]] = []
     with live_provider:
-        for _ in range(warmup_reps):
-            compare_static_lsp_provider(
-                request_list,
-                graph=graph,
-                static_provider=static_provider,
-                reference_provider=live_provider,
-                reference_provider_name=JSON_RPC_LSP_PROVIDER,
-                fingerprint_selector=fingerprint_selector,
-                clock=clock,
-            )
+        if wait_until_idle:
+            idle_wait_start = clock()
+            wait = getattr(live_provider, "wait_until_idle", None)
+            if not callable(wait):
+                raise RuntimeError(
+                    "live reference provider does not support idle waiting"
+                )
+            if not wait(max_wait_s=idle_timeout_s, idle_grace_s=idle_grace_s):
+                raise RuntimeError(
+                    "live reference provider did not become idle within "
+                    f"{idle_timeout_s}s"
+                )
+            idle_wait_ms = (clock() - idle_wait_start) * 1000
+
+        readiness = wait_for_lsp_provider_readiness(
+            request_list,
+            graph=graph,
+            static_provider=static_provider,
+            live_provider=live_provider,
+            minimum_reps=warmup_reps,
+            until_stable=warmup_until_stable,
+            max_reps=max_warmup_reps,
+            poll_seconds=warmup_poll_seconds,
+            min_live_nonempty_fraction=min_live_nonempty_fraction,
+            minimum_equivalent_count=minimum_equivalent_count,
+            fingerprint_selector=fingerprint_selector,
+            clock=clock,
+        )
+        warmup_rows.extend(readiness.rows)
 
         for rep in range(1, measured_reps + 1):
             comparisons = compare_static_lsp_provider(
@@ -211,15 +265,43 @@ def run_lsp_replay_benchmark(
                 row["rep"] = rep
                 comparison_rows.append(row)
 
+    effective_command = getattr(live_provider, "effective_command", None)
+    if effective_command is None:
+        effective_command = getattr(live_provider, "command", None) or command
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "benchmark": "lsp_request_replay",
+        "subject": _benchmark_subject(
+            graph,
+            project_root=project_root,
+            language=language,
+            source_repo=source_repo,
+            source_commit=source_commit,
+            live_command=effective_command,
+        ),
+        "request_source": {"kind": "provided"},
         "request_count": len(request_list),
-        "warmup_reps": warmup_reps,
+        "warmup_reps": readiness.completed_reps,
+        "warmup_protocol": {
+            "minimum_reps": warmup_reps,
+            "until_stable": warmup_until_stable,
+            "max_reps": max_warmup_reps,
+            "poll_seconds": warmup_poll_seconds,
+            "min_live_nonempty_fraction": min_live_nonempty_fraction,
+            "minimum_equivalent_count": minimum_equivalent_count,
+            "stable": readiness.stable,
+            "live_nonempty_count": readiness.live_nonempty_count,
+            "equivalent_count": readiness.equivalent_count,
+        },
         "measured_reps": measured_reps,
+        "warmup_summary": _summarize_rows(warmup_rows),
         "setup": {
+            "occurrence_index_enabled": occurrence_index is not None,
             "static_provider_init_ms": static_provider_init_ms,
             "live_start_ms": live_start_ms,
+            "idle_wait_ms": idle_wait_ms,
+            "idle_grace_s": idle_grace_s if wait_until_idle else None,
+            "warmup_wall_ms": readiness.wall_ms,
         },
         "artifact_quality": artifact_quality,
         "requests": [request.to_dict() for request in request_list],
@@ -394,11 +476,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run and report replay even when the artifact quality gate fails.",
     )
     parser.add_argument(
+        "--source-repo",
+        help="Canonical repository name used for snapshot identity",
+    )
+    parser.add_argument(
+        "--source-commit",
+        help="Exact source commit used for snapshot identity",
+    )
+    parser.add_argument(
         "--requests",
         help=(
             "Optional JSON/JSONL request file. If omitted, requests are "
             "generated deterministically from graph reference edges."
         ),
+    )
+    parser.add_argument(
+        "--occurrence-index",
+        help="Optional persisted SCIP occurrence index for exact native positions.",
     )
     parser.add_argument(
         "--capabilities",
@@ -412,12 +506,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generated request cap per capability.",
     )
     parser.add_argument("--warmup-reps", type=int, default=1)
+    parser.add_argument("--warmup-until-stable", action="store_true")
+    parser.add_argument("--max-warmup-reps", type=int, default=10)
+    parser.add_argument("--warmup-poll-seconds", type=float, default=1.0)
+    parser.add_argument("--min-live-nonempty-fraction", type=float, default=0.1)
+    parser.add_argument(
+        "--minimum-equivalent-count",
+        type=int,
+        default=0,
+        help=(
+            "Require this many non-empty equivalent requests before live "
+            "behavior can be considered ready."
+        ),
+    )
     parser.add_argument("--measured-reps", type=int, default=5)
     parser.add_argument(
         "--command",
         help="Optional live LSP command string, for example 'pyright-langserver --stdio'",
     )
     parser.add_argument("--skip-probe", action="store_true")
+    parser.add_argument(
+        "--wait-until-idle",
+        action="store_true",
+        help="Wait for live-server background analysis before warmups",
+    )
+    parser.add_argument("--idle-timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--idle-grace",
+        type=float,
+        default=1.0,
+        help="Continuous quiet period required before timed requests.",
+    )
     parser.add_argument("--output-json", help="Write machine-readable benchmark report")
     parser.add_argument("--output-markdown", help="Write markdown benchmark report")
     parser.add_argument(
@@ -443,6 +562,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 project_root=project_root,
                 capabilities=_split_csv(args.capabilities),
                 max_per_capability=args.max_per_capability,
+                file_suffixes=(
+                    tuple(TRANSLATION_UNIT_SUFFIXES)
+                    if args.language.lower() in {"c", "c++", "cpp", "clang"}
+                    else None
+                ),
             )
         if not requests:
             raise ValueError("no LSP replay requests available")
@@ -460,21 +584,69 @@ def main(argv: Sequence[str] | None = None) -> int:
             min_baseline_vertex_ratio=args.min_baseline_graph_ratio,
             min_baseline_edge_ratio=args.min_baseline_graph_ratio,
         )
+        occurrence_index = None
+        occurrence_index_path = (
+            Path(args.occurrence_index).expanduser().resolve()
+            if args.occurrence_index
+            else Path(project_root).parent / "lsp_index.pkl"
+        )
+        if occurrence_index_path.is_file():
+            from codeminer.scip_interface.lsp_occurrence_index import (
+                SCIPOccurrenceIndex,
+            )
+
+            occurrence_index = SCIPOccurrenceIndex.load(occurrence_index_path)
         payload = run_lsp_replay_benchmark(
             requests,
             graph=graph,
             project_root=project_root,
             language=args.language,
+            source_repo=args.source_repo,
+            source_commit=args.source_commit,
             command=_command_from_arg(args.command),
             warmup_reps=args.warmup_reps,
+            warmup_until_stable=args.warmup_until_stable,
+            max_warmup_reps=args.max_warmup_reps,
+            warmup_poll_seconds=args.warmup_poll_seconds,
+            min_live_nonempty_fraction=args.min_live_nonempty_fraction,
+            minimum_equivalent_count=args.minimum_equivalent_count,
             measured_reps=args.measured_reps,
             skip_probe=args.skip_probe,
             compdb_path=args.compile_db,
             baseline_graph=baseline_graph,
             quality_policy=quality_policy,
             allow_low_quality_artifact=args.allow_low_quality_artifact,
+            wait_until_idle=args.wait_until_idle,
+            idle_timeout_s=args.idle_timeout,
+            idle_grace_s=args.idle_grace,
+            occurrence_index=occurrence_index,
+        )
+        if args.requests:
+            request_path = Path(args.requests).resolve()
+            payload["request_source"] = {
+                "kind": "file",
+                "path": str(request_path),
+                "sha256": _file_sha256(request_path),
+            }
+        else:
+            payload["request_source"] = {
+                "kind": "graph_reference_edges",
+                "capabilities": _split_csv(args.capabilities),
+                "max_per_capability": args.max_per_capability,
+            }
+        graph_source = _graph_source_from_args(args)
+        payload["subject"]["graph"].update(
+            {
+                "artifact_path": str(graph_source),
+                "artifact_sha256": _file_sha256(graph_source),
+            }
         )
         payload["setup"]["graph_load_ms"] = graph_load_ms
+        if occurrence_index is not None:
+            payload["subject"]["lsp_occurrence_index"] = {
+                "artifact_path": str(occurrence_index_path),
+                "artifact_sha256": _file_sha256(occurrence_index_path),
+            }
         _write_reports(
             payload,
             output_json=args.output_json,
@@ -610,6 +782,58 @@ def _project_root(graph: Any, project_root: str | Path | None) -> Optional[Path]
         else getattr(graph, "project_root", None)
     )
     return Path(root).resolve() if root else None
+
+
+def _benchmark_subject(
+    graph: Any,
+    *,
+    project_root: str | Path,
+    language: str,
+    source_repo: Optional[str],
+    source_commit: Optional[str],
+    live_command: Optional[Sequence[str]],
+) -> dict[str, Any]:
+    root = Path(project_root).resolve()
+    snapshot = (
+        SourceSnapshot(source_repo, source_commit)
+        if source_repo is not None and source_commit is not None
+        else None
+    )
+    graph_data = getattr(graph, "graph", None)
+    vertex_attributes = (
+        set(graph_data.vs.attribute_names()) if graph_data is not None else set()
+    )
+    return {
+        "project_root": str(root),
+        "repository": snapshot.repo if snapshot is not None else None,
+        "git_commit": snapshot.commit if snapshot is not None else _git_commit(root),
+        "snapshot_id": snapshot.snapshot_id if snapshot is not None else None,
+        "language": language,
+        "graph": {
+            "node_count": graph_data.vcount() if graph_data is not None else None,
+            "edge_count": graph_data.ecount() if graph_data is not None else None,
+            "has_selection_line": "selection_line" in vertex_attributes,
+        },
+        "reference_provider": {
+            "provider": JSON_RPC_LSP_PROVIDER,
+            "command": list(live_command) if live_command is not None else None,
+        },
+    }
+
+
+def _git_commit(project_root: Path) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
 
 
 def _summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -763,6 +987,14 @@ def _load_graph_from_args(
     return graph, (time.monotonic() - start) * 1000
 
 
+def _graph_source_from_args(args: argparse.Namespace) -> Path:
+    if args.graph:
+        return Path(args.graph).resolve()
+    if not args.instance_id:
+        raise ValueError("--instance-id is required with --prebuilt-root")
+    return (Path(args.prebuilt_root) / str(args.instance_id) / "graph.pkl").resolve()
+
+
 def _project_root_from_args(args: argparse.Namespace) -> str:
     from .prebuilt import repo_path_for
 
@@ -784,6 +1016,14 @@ def _command_from_arg(command: str | None) -> list[str] | None:
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _write_reports(

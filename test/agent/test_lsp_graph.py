@@ -78,6 +78,36 @@ def test_lsp_definition_character_must_hit_reference_token(tmp_path):
         lsp_graph.lsp_definition(graph, file_path="caller.py", line=1, character=4)
 
 
+def test_lsp_definition_character_considers_declaration_and_same_line_reference(
+    tmp_path,
+):
+    (tmp_path / "reader.go").write_text(
+        "func (r Reader) Render() {}\n", encoding="utf-8"
+    )
+    graph = CodeGraph(project_root=str(tmp_path))
+    graph.add_file_node("reader.go")
+    graph.add_symbol_node(
+        "Reader.Render",
+        line=0,
+        scope_start_line=0,
+        scope_end_line=0,
+        symbol_type=NODE_TYPE_FUNCTION,
+    )
+    graph.add_symbol_reference(
+        "Reader",
+        module_path="reader.go",
+        anchor_file="reader.go",
+        anchor_line=0,
+    )
+    graph.build_range_indexes()
+
+    result = lsp_graph.lsp_definition(
+        graph, file_path="reader.go", line=0, character=20
+    )
+
+    assert [node.node_name for node in result] == ["Reader.Render"]
+
+
 def test_lsp_references_character_must_hit_reference_token(tmp_path):
     (tmp_path / "caller.py").write_text(
         "def run():\n    return load_config()\n", encoding="utf-8"
@@ -94,6 +124,30 @@ def test_lsp_definition_accepts_symbol_seed():
     results = lsp_graph.lsp_definition(graph, symbol="load_config")
 
     assert [node.node_name for node in results] == ["callee.py:load_config()"]
+
+
+def test_lsp_definition_uses_declaration_line_not_scope_start():
+    graph = CodeGraph()
+    graph.add_file_node("decorated.py")
+    graph.add_symbol_node(
+        "decorated.Handler",
+        line=5,
+        scope_start_line=3,
+        scope_end_line=9,
+        symbol_type=NODE_TYPE_FUNCTION,
+    )
+    graph.graph.vs[graph.name_to_vertex["decorated.Handler"]][
+        "unified_name"
+    ] = "decorated.py:Handler()"
+
+    result = lsp_graph.lsp_definition(graph, symbol="decorated.Handler")
+
+    assert result[0].start_line == 5
+    assert result[0].end_line == 5
+    info = graph.get_node_info_by_name("decorated.Handler")
+    assert info["start_line"] == 3
+    assert info["end_line"] == 9
+    assert info["selection_line"] == 5
 
 
 def test_lsp_references_returns_declaration_and_reference_site():
@@ -213,8 +267,11 @@ def test_lsp_route_can_fallback_to_query_seed_candidates():
     assert route[0].content == "route provider: query match config, default"
 
 
-def test_lsp_skills_load_and_execute_against_expand_context():
-    graph = _range_graph()
+def test_lsp_skills_load_and_execute_against_expand_context(tmp_path):
+    (tmp_path / "caller.py").write_text(
+        "def run():\n    return load_config()\n", encoding="utf-8"
+    )
+    graph = _range_graph(tmp_path)
     context = {"expand": ExpandContext(code_graph=graph)}
     loader = SkillLoader()
 
@@ -222,10 +279,34 @@ def test_lsp_skills_load_and_execute_against_expand_context():
 
     assert meta is not None
     assert meta.executor_fn is not None
-    results = meta.executor_fn(symbol="load_config")
-    assert [node.node_name for node in results] == ["callee.py:load_config()"]
+    results = meta.executor_fn(file_path="caller.py", line=1, character=15)
+    assert [node.node_name for node in results] == ["callee.py:5"]
     assert lsp_result_metadata(results)["provider"] == STATIC_LSP_PROVIDER
     assert lsp_result_metadata(results)["capability"] == "definition"
+    schema = skill_to_tool_schema(meta)["function"]["parameters"]
+    assert schema["required"] == ["file_path", "line", "character"]
+    assert "symbol" not in schema["properties"]
+
+
+def test_lsp_skills_use_injected_provider_without_a_graph():
+    class Provider:
+        def definition(self, **kwargs):
+            return [kwargs]
+
+    context = {"expand": ExpandContext(lsp_provider=Provider())}
+    meta = SkillLoader().load_skill(
+        "codeminer/agent/skills/lsp_definition",
+        context,
+    )
+
+    assert meta.executor_fn(file_path="caller.py", line=3, character=4) == [
+        {
+            "file_path": "caller.py",
+            "line": 3,
+            "character": 4,
+            "top_k": 8,
+        }
+    ]
 
 
 def test_lsp_route_skill_exposes_static_graph_tool_contract():

@@ -14,7 +14,10 @@ from codeminer.agent.lsp_provider import (
     CAPABILITY_DEFINITION,
     CAPABILITY_REFERENCES,
     JSON_RPC_LSP_PROVIDER,
+    LSPProviderMetadata,
+    LSPProviderNodes,
     normalize_lsp_capability,
+    normalize_native_lsp_nodes,
 )
 from codeminer.graph.incremental.lsp_client import LSPClient
 from codeminer.languages import normalize_graph_language
@@ -45,6 +48,7 @@ class LiveLSPReferenceProvider:
         self.command = list(command) if command is not None else None
         self.client_factory = client_factory
         self.skip_probe = bool(skip_probe)
+        self.effective_command: Optional[list[str]] = None
         self._client: Any = None
 
     def __enter__(self) -> "LiveLSPReferenceProvider":
@@ -62,6 +66,7 @@ class LiveLSPReferenceProvider:
         command = self.command or LSPClient.get_lsp_command(self.language)
         if not command:
             raise RuntimeError(f"no LSP command registered for {self.language!r}")
+        self.effective_command = list(command)
         client = self.client_factory(command, str(self.project_root), self.language)
         start = getattr(client, "start", None)
         if callable(start):
@@ -77,6 +82,20 @@ class LiveLSPReferenceProvider:
         if callable(shutdown):
             shutdown()
         self._client = None
+
+    def wait_until_idle(
+        self,
+        *,
+        max_wait_s: float = 60.0,
+        idle_grace_s: float = 1.0,
+    ) -> bool:
+        """Wait for reference-server background analysis to quiesce."""
+
+        client = self._ensure_client()
+        wait = getattr(client, "wait_until_idle", None)
+        if not callable(wait):
+            raise RuntimeError("live LSP client does not expose an idle wait")
+        return bool(wait(max_wait_s=max_wait_s, idle_grace_s=idle_grace_s))
 
     def __call__(self, capability: str, arguments: Mapping[str, Any]) -> Any:
         """Serve one graph-facing LSP request for provider comparison."""
@@ -96,7 +115,7 @@ class LiveLSPReferenceProvider:
         character: Optional[int] = None,
         symbol: Optional[str] = None,
         top_k: int = 8,
-    ) -> list[QueriedNode] | dict[str, str]:
+    ) -> LSPProviderNodes | dict[str, str]:
         """Run ``textDocument/definition`` against the live language server."""
 
         del symbol  # Live LSP definition is position-based.
@@ -108,13 +127,17 @@ class LiveLSPReferenceProvider:
             int(line),
             int(character or 0),
         )
+        _raise_on_client_failure(client, CAPABILITY_DEFINITION, locations)
         nodes = lsp_locations_to_nodes(
             locations,
             project_root=self.project_root,
             relation="json-rpc definition",
             node_type="definition",
         )
-        return nodes[: max(1, int(top_k or 8))]
+        return self._wrap(
+            CAPABILITY_DEFINITION,
+            nodes[: max(1, int(top_k or 8))],
+        )
 
     def references(
         self,
@@ -125,7 +148,7 @@ class LiveLSPReferenceProvider:
         symbol: Optional[str] = None,
         include_declaration: bool = True,
         top_k: int = 40,
-    ) -> list[QueriedNode] | dict[str, str]:
+    ) -> LSPProviderNodes | dict[str, str]:
         """Run ``textDocument/references`` against the live language server."""
 
         del symbol  # Live LSP references is position-based.
@@ -138,13 +161,17 @@ class LiveLSPReferenceProvider:
             int(character or 0),
             include_declaration=bool(include_declaration),
         )
+        _raise_on_client_failure(client, CAPABILITY_REFERENCES, locations)
         nodes = lsp_locations_to_nodes(
             locations,
             project_root=self.project_root,
             relation="json-rpc reference",
             node_type="reference",
         )
-        return nodes[: max(1, int(top_k or 40))]
+        return self._wrap(
+            CAPABILITY_REFERENCES,
+            nodes[: max(1, int(top_k or 40))],
+        )
 
     def _ensure_client(self) -> Any:
         self.start()
@@ -155,6 +182,35 @@ class LiveLSPReferenceProvider:
         if path.is_absolute():
             return path
         return self.project_root / path
+
+    def _wrap(self, capability: str, nodes: Iterable[Any]) -> LSPProviderNodes:
+        return LSPProviderNodes(
+            normalize_native_lsp_nodes(nodes, capability=capability),
+            metadata=LSPProviderMetadata(
+                provider=JSON_RPC_LSP_PROVIDER,
+                capability=capability,
+                status="ok",
+                lsp_method=f"textDocument/{capability}",
+                behavior_contract="json_rpc_lsp_v1",
+                position_granularity="character",
+            ),
+        )
+
+
+def _raise_on_client_failure(client: Any, capability: str, result: Any) -> None:
+    """Keep transport failures distinct from valid empty LSP responses."""
+
+    if result:
+        return
+    error = getattr(client, "_last_error", None)
+    if not isinstance(error, Mapping):
+        return
+    code = error.get("code")
+    if code in (None, -2):
+        # LSP permits a null result when no location exists at the position.
+        return
+    message = str(error.get("message") or "unknown live LSP failure")
+    raise RuntimeError(f"live LSP {capability} failed ({code}): {message}")
 
 
 def lsp_locations_to_nodes(
