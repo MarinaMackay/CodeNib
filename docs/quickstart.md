@@ -14,7 +14,6 @@ neither an API key nor a model download.
 
 - Python 3.10 or newer
 - Git
-- Node.js 18.18 or newer, with npm
 
 Install CodeNib and verify the local runtime:
 
@@ -32,15 +31,20 @@ codenib wiki /path/to/repository
 CodeNib performs four steps:
 
 1. Detects supported source languages.
-2. Builds or updates the repository views under
-   `<repo>/.codenib_cache`.
+2. Builds or updates repository views under
+   `~/.codenib/repositories/<repo>-<id>/indexes`.
 3. Registers the repository with a local FastAPI service.
-4. Starts the packaged Wiki frontend and opens
+4. Serves the packaged production frontend and opens
    [http://localhost:3000](http://localhost:3000).
 
-The first launch runs `npm ci` in a user-owned frontend cache under
-`$CODENIB_HOME`; later launches reuse that installation. Press `Ctrl-C` once
-to stop both services.
+The release wheel contains the compiled frontend, so this path does not need
+Node.js, npm, or a source checkout. CodeNib-owned indexes and manifests stay
+outside the target repository; set `CODENIB_HOME` to relocate that state. The
+`fast` and `semantic` presets leave the checkout unchanged. Some language-aware
+graph backends must invoke the repository's build or package manager and may
+prepare project-local dependencies such as `node_modules`; run those profiles
+from a clean checkout when that distinction matters. Press `Ctrl-C` once to
+stop both services.
 
 Use different ports or keep the browser closed when needed:
 
@@ -69,6 +73,7 @@ codenib wiki /path/to/repository --rebuild
 |---|---|---|
 | `fast` | `codenib` | BM25 |
 | `semantic` | `codenib[semantic]` | BM25 and dense vectors |
+| `graph` | `codenib[graph]` | BM25 and symbol graph |
 | `full` | `codenib[full]` | BM25, dense vectors, symbol graph, and Zoekt |
 
 For natural-language search:
@@ -79,7 +84,8 @@ codenib wiki /path/to/repository --preset semantic
 ```
 
 The semantic preset downloads its embedding model on first use. The full
-preset also requires language-specific SCIP/LSP tools and Zoekt binaries;
+and graph presets require language-specific SCIP/LSP tools; full also needs
+Zoekt binaries;
 follow [SCIP Indexing](scip_index.md) and check the
 [Language Capabilities](language_capabilities.md) matrix before using it.
 
@@ -100,7 +106,19 @@ through a LiteLLM-supported provider:
 ```bash
 pip install "codenib[agent]"
 export OPENAI_API_KEY=...
-codenib wiki . --agent-wiki
+codenib doctor --require agent \
+  --model openai/gpt-4o-mini --api-key-env OPENAI_API_KEY --probe-model
+codenib wiki . --generate --model openai/gpt-4o-mini
+```
+
+For an OpenAI-compatible local or hosted endpoint:
+
+```bash
+export LOCAL_LLM_KEY=...
+codenib wiki . --generate \
+  --model openai/local-model \
+  --api-base http://127.0.0.1:8000/v1 \
+  --api-key-env LOCAL_LLM_KEY
 ```
 
 Provider and model configuration is documented in
@@ -130,7 +148,6 @@ codenib doctor --require semantic --require graph
 
 Common fixes:
 
-- Upgrade Node.js if the Wiki reports a version below 18.18.
 - Install the named extra when a command reports a missing optional module.
 - Use `--rebuild` after intentionally changing index profiles or builders.
 - Check that ports 3000 and 8000 are free, or select alternatives.

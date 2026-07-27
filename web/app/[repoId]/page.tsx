@@ -1,12 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Header from "@/components/Header";
 import Markdown from "@/components/Markdown";
 import AskBar from "@/components/AskBar";
-import Codemap from "@/components/Codemap";
-import GraphView from "@/components/GraphView";
+import { AppLink } from "@/lib/router";
 import {
   fetchCommits,
   fetchRepos,
@@ -15,11 +13,16 @@ import {
   fetchWikiTree,
   repoRelative,
   type CodemapResponse,
+  type Citation,
   type CommitRef,
   type RepoInfo,
   type WikiPage,
   type WikiPageRef,
 } from "@/lib/api";
+
+const CodePanel = lazy(() => import("@/components/CodePanel"));
+const Codemap = lazy(() => import("@/components/Codemap"));
+const GraphView = lazy(() => import("@/components/GraphView"));
 
 interface Heading {
   id: string;
@@ -38,9 +41,16 @@ function stripGeneratedDiagrams(md: string): string {
 }
 
 // Link a repo-relative source path to the exact blob on GitHub at the indexed commit.
-function ghFileUrl(repo: string | undefined, commit: string | undefined, file: string): string | null {
+function ghFileUrl(
+  repo: string | undefined,
+  commit: string | undefined,
+  file: string,
+  start?: number | null,
+  end?: number | null
+): string | null {
   if (!repo) return null;
-  return `https://github.com/${repo}/blob/${commit || "HEAD"}/${file}`;
+  const lines = start ? `#L${start}${end && end !== start ? `-L${end}` : ""}` : "";
+  return `https://github.com/${repo}/blob/${commit || "HEAD"}/${file}${lines}`;
 }
 
 function TocTree({
@@ -100,19 +110,21 @@ function commitEvidence(commits: CommitRef[], selected?: string): string | null 
   return parts.length ? parts.join(" · ") : null;
 }
 
-export default function WikiPageView() {
-  const params = useParams<{ repoId: string }>();
-  const repoId = decodeURIComponent(params.repoId);
+export default function WikiPageView({ repoId }: { repoId: string }) {
 
   const [repo, setRepo] = useState<RepoInfo | null>(null);
   const [pages, setPages] = useState<WikiPageRef[]>([]);
   const [activeId, setActiveId] = useState<string>("overview");
   const [page, setPage] = useState<WikiPage | null>(null);
   const [pageGraph, setPageGraph] = useState<CodemapResponse | null>(null);
+  const [pageGraphOpen, setPageGraphOpen] = useState(false);
+  const [pageGraphLoading, setPageGraphLoading] = useState(false);
+  const [pageGraphError, setPageGraphError] = useState(false);
   // The graph explorer opens as a full-screen modal, optionally seeded on a
   // symbol when launched via "Focus here" from a wiki subsystem map.
   const [graphSeed, setGraphSeed] = useState<string | undefined>(undefined);
   const [graphOpen, setGraphOpen] = useState(false);
+  const [sourceCitation, setSourceCitation] = useState<Citation | null>(null);
   const [headings, setHeadings] = useState<Heading[]>([]);
   const [activeHeading, setActiveHeading] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
@@ -170,17 +182,37 @@ export default function WikiPageView() {
     setPage(null);
     setPageError(null);
     setPageGraph(null);
+    setPageGraphOpen(false);
+    setPageGraphLoading(false);
+    setPageGraphError(false);
+    setSourceCitation(null);
     fetchWikiPage(repoId, activeId)
       .then((p) => !cancelled && setPage(p))
       .catch((e) => !cancelled && setPageError(String(e)));
-    // The page's symbols as a view over the graph (rendered atop the narrative).
-    fetchWikiGraph(repoId, activeId)
-      .then((g) => !cancelled && setPageGraph(g))
-      .catch(() => !cancelled && setPageGraph(null));
     return () => {
       cancelled = true;
     };
   }, [repoId, activeId]);
+
+  useEffect(() => {
+    if (!pageGraphOpen || pageGraph) return;
+    let cancelled = false;
+    setPageGraphLoading(true);
+    setPageGraphError(false);
+    fetchWikiGraph(repoId, activeId)
+      .then((graph) => {
+        if (!cancelled) setPageGraph(graph);
+      })
+      .catch(() => {
+        if (!cancelled) setPageGraphError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setPageGraphLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId, activeId, pageGraphOpen, pageGraph]);
 
   // Build "On this page" from the actually-rendered heading ids (matches rehype-slug).
   const rescanHeadings = useCallback(() => {
@@ -236,15 +268,41 @@ export default function WikiPageView() {
     return () => document.removeEventListener("keydown", onKey);
   }, [graphOpen]);
 
+  useEffect(() => {
+    if (!sourceCitation) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSourceCitation(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [sourceCitation]);
+
   const hasGraph = !!repo?.capabilities?.codemap;
+  const generationMode = page?.generation?.mode ?? "offline";
+  const sourceChecked = !!page?.grounding?.valid && page?.quality?.valid !== false;
+  const evidenceRoutes = [
+    ...new Set(page?.evidence?.items.flatMap((item) => item.routes) ?? []),
+  ];
   const openGraph = (seed?: string) => {
     setGraphSeed(seed);
     setGraphOpen(true);
   };
 
   return (
-    <div className="wiki">
+    <div className="wiki wiki-reading">
       <Header
+        actions={
+          repo?.capabilities?.chat ? (
+            <AppLink
+              className="icon-btn header-ask"
+              href={`/${encodeURIComponent(repoId)}/ask`}
+              aria-label={`Ask a question about ${repo.repo}`}
+              title="Ask this repository"
+            >
+              <span aria-hidden>✦</span>
+            </AppLink>
+          ) : null
+        }
         center={
           <nav className="breadcrumb" aria-label="Breadcrumb">
             <button
@@ -256,15 +314,36 @@ export default function WikiPageView() {
             </button>
             <span className="crumb-sep">/</span>
             <span className="crumb-repo mono">{repo ? repo.repo : repoId}</span>
-            {hasGraph && (
-              <button
-                className="codegraph-launch"
-                onClick={() => openGraph()}
-                title="Open the interactive code dependency graph"
+            <button
+              className={`codegraph-launch ${hasGraph ? "" : "unavailable"}`}
+              onClick={() => openGraph()}
+              title={
+                hasGraph
+                  ? "Open the interactive code dependency graph"
+                  : "Dependency graph is not indexed for this repository"
+              }
+              aria-label={
+                hasGraph
+                  ? "Open dependency map"
+                  : "Set up dependency map"
+              }
+            >
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden
               >
-                ⌗ CodeGraph
-              </button>
-            )}
+                <circle cx="5" cy="6" r="2" />
+                <circle cx="19" cy="7" r="2" />
+                <circle cx="12" cy="19" r="2" />
+                <path d="m7 6.2 10 .6M6.5 8l4.4 9.2m6.5-8.3-4.3 8.4" />
+              </svg>
+              <span>Dependency Map</span>
+            </button>
             {page && <span className="crumb-sep">/</span>}
             {page && <span className="crumb-page">{page.title}</span>}
           </nav>
@@ -317,26 +396,134 @@ export default function WikiPageView() {
 
         <main className="wiki-main">
           <div className="wiki-content" ref={contentRef}>
-              {pageGraph && pageGraph.available && pageGraph.nodes.length > 0 && (
-                <details className="subsystem-map" open>
+              {page && (
+                <div
+                  className={`page-provenance ${
+                    sourceChecked ? "source-checked" : "needs-review"
+                  }`}
+                  role="status"
+                >
+                  <span className="provenance-state">
+                    {generationMode === "offline"
+                      ? "Index-derived page"
+                      : sourceChecked
+                        ? "Evidence-linked generation"
+                        : generationMode === "degraded"
+                          ? "Index-derived fallback"
+                          : "Generated, evidence review needed"}
+                  </span>
+                  {page.grounding && (
+                    <span className="provenance-detail">
+                      {page.grounding.evidence_count} source symbols
+                      {page.grounding.relation_count > 0 &&
+                        ` · ${page.grounding.relation_count} static relations`}
+                      {evidenceRoutes.length > 0 && ` · ${evidenceRoutes.join(" + ")}`}
+                    </span>
+                  )}
+                  {page.generation?.model && (
+                    <span className="provenance-model mono">{page.generation.model}</span>
+                  )}
+                </div>
+              )}
+              {hasGraph && (
+                <details
+                  className="subsystem-map"
+                  open={pageGraphOpen}
+                  onToggle={(event) =>
+                    setPageGraphOpen(event.currentTarget.open)
+                  }
+                >
                   <summary className="subsystem-summary">
                     <span className="subsystem-title">Subsystem map</span>
-                    <span className="subsystem-count">{pageGraph.nodes.length} symbols</span>
+                    <span className="subsystem-count">
+                      {pageGraph?.available && pageGraph.nodes.length > 0
+                        ? `${pageGraph.nodes.length} symbols`
+                        : "Indexed graph"}
+                    </span>
                     {repo?.commit_short && (
                       <span className="subsystem-index mono">Last indexed {repo.commit_short}</span>
                     )}
                   </summary>
-                  <GraphView
-                    repoId={repoId}
-                    data={pageGraph}
-                    variant="wiki"
-                    onFocus={(label) => openGraph(label)}
-                    repoFullName={repo?.repo}
-                    commit={repo?.base_commit}
-                  />
+                  {pageGraphOpen &&
+                    (pageGraphLoading ? (
+                      <div className="subsystem-loading">Loading subsystem map…</div>
+                    ) : pageGraphError ||
+                      !pageGraph?.available ||
+                      pageGraph.nodes.length === 0 ? (
+                      <div className="subsystem-loading">
+                        No source-linked graph is available for this page.
+                      </div>
+                    ) : (
+                      <Suspense
+                        fallback={
+                          <div className="subsystem-loading">Loading graph view…</div>
+                        }
+                      >
+                        <GraphView
+                          repoId={repoId}
+                          data={pageGraph}
+                          variant="wiki"
+                          onFocus={(label) => openGraph(label)}
+                          repoFullName={repo?.repo}
+                          commit={repo?.base_commit}
+                        />
+                      </Suspense>
+                    ))}
                 </details>
               )}
-              {page && page.citations.length > 0 && (
+              {page?.evidence && page.evidence.items.length > 0 ? (
+                <details className="evidence-ledger">
+                  <summary>
+                    Source evidence ({page.evidence.items.length})
+                  </summary>
+                  <div className="evidence-list">
+                    {page.evidence.items.map((item) => {
+                      const url = ghFileUrl(
+                        repo?.repo,
+                        repo?.base_commit,
+                        item.file,
+                        item.start_line,
+                        item.end_line
+                      );
+                      return (
+                        <a
+                          id={`evidence-${item.id}`}
+                          key={item.id}
+                          className="evidence-row"
+                          href={url ?? undefined}
+                          target={url ? "_blank" : undefined}
+                          rel={url ? "noreferrer" : undefined}
+                        >
+                          <span className="evidence-id mono">{item.id}</span>
+                          <span className="evidence-symbol mono">{item.symbol}</span>
+                          <span className="evidence-location mono">
+                            {item.file}
+                            {item.start_line ? `:${item.start_line}` : ""}
+                          </span>
+                          {item.routes.length > 0 && (
+                            <span className="evidence-route">{item.routes.join(" + ")}</span>
+                          )}
+                        </a>
+                      );
+                    })}
+                    {page.evidence.relations.map((item) => (
+                      <div
+                        id={`evidence-${item.id}`}
+                        key={item.id}
+                        className="evidence-row relation"
+                      >
+                        <span className="evidence-id mono">{item.id}</span>
+                        <span className="evidence-symbol mono">
+                          {item.source} → {item.target}
+                        </span>
+                        <span className="evidence-location mono">
+                          {item.anchors[0] ?? "static reference"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ) : page && page.citations.length > 0 ? (
                 <details className="relevant-files-wiki">
                   {(() => {
                     const wikiFiles = [
@@ -372,9 +559,16 @@ export default function WikiPageView() {
                     );
                   })()}
                 </details>
-              )}
+              ) : null}
               {page ? (
-                <Markdown>{stripGeneratedDiagrams(page.markdown)}</Markdown>
+                <Markdown
+                  citations={page.citations}
+                  onCite={(index) =>
+                    setSourceCitation(page.citations[index] ?? null)
+                  }
+                >
+                  {stripGeneratedDiagrams(page.markdown)}
+                </Markdown>
               ) : pageError ? (
                 <p className="muted">Couldn't load this page. It may not exist — pick a section from the sidebar.</p>
               ) : (
@@ -419,15 +613,17 @@ export default function WikiPageView() {
           onClick={() => setGraphOpen(false)}
           role="dialog"
           aria-modal="true"
-          aria-label="Code dependency graph"
+          aria-label="Repository dependency map"
         >
           <div className="graph-modal" onClick={(e) => e.stopPropagation()}>
             <div className="graph-modal-head">
-              <span className="mono">
-                <b>CodeGraph</b> · {repo ? repo.repo : repoId}
+              <b>Dependency Map</b>
+              <span aria-hidden>·</span>
+              <span className="graph-modal-repo mono">
+                {repo ? repo.repo : repoId}
               </span>
               <span className="graph-modal-hint muted small">
-                top-down dependency graph — every edge is a real LSP/SCIP reference. Esc to close.
+                Symbol references at the indexed commit · Esc to close
               </span>
               <button
                 className="graph-modal-close"
@@ -438,14 +634,80 @@ export default function WikiPageView() {
               </button>
             </div>
             <div className="graph-modal-body">
-              <Codemap repoId={repoId} initialSymbol={graphSeed} commit={selectedCommit} />
+              <Suspense
+                fallback={
+                  <div className="codemap-loading">Loading dependency map…</div>
+                }
+              >
+                <Codemap
+                  repoId={repoId}
+                  initialSymbol={graphSeed}
+                  commit={selectedCommit}
+                  coverage={repo?.graph_coverage}
+                />
+              </Suspense>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {sourceCitation && (
+        <div
+          className="source-modal-scrim"
+          onClick={() => setSourceCitation(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Source definition"
+        >
+          <div
+            className="source-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="source-modal-head">
+              <div>
+                <span className="source-modal-kicker">Indexed definition</span>
+                <div className="source-modal-title mono">
+                  {sourceCitation.node_name ||
+                    repoRelative(sourceCitation.file)}
+                </div>
+                <div className="source-modal-location mono">
+                  {repoRelative(sourceCitation.file)}
+                  {sourceCitation.start_line != null
+                    ? `:${sourceCitation.start_line}-${
+                        sourceCitation.end_line ??
+                        sourceCitation.start_line
+                      }`
+                    : ""}
+                </div>
+              </div>
+              <button
+                className="source-modal-close"
+                onClick={() => setSourceCitation(null)}
+                aria-label="Close source"
+              >
+                ×
+              </button>
+            </div>
+            <div className="source-modal-body">
+              <Suspense
+                fallback={
+                  <div className="codemap-loading">Loading source…</div>
+                }
+              >
+                <CodePanel
+                  repoId={repoId}
+                  citations={[sourceCitation]}
+                  repo={repo?.repo}
+                  commit={repo?.base_commit}
+                />
+              </Suspense>
             </div>
           </div>
         </div>
       )}
 
       {repo?.capabilities?.chat && (
-        <AskBar repoId={repoId} repo={repo.repo} />
+        <AskBar repoId={repoId} repo={repo.repo} collapsible />
       )}
     </div>
   );

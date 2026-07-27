@@ -1,14 +1,12 @@
-const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE ?? "";
+declare global {
+  interface Window {
+    __CODENIB_API_BASE__?: string;
+  }
+}
 
 function browserApiBase(): string {
-  if (typeof window === "undefined") return configuredApiBase;
-  try {
-    const url = new URL(configuredApiBase);
-    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") return "";
-  } catch {
-    // Empty or relative base already means same-origin.
-  }
-  return configuredApiBase;
+  if (typeof window === "undefined") return "";
+  return (window.__CODENIB_API_BASE__ ?? "").replace(/\/+$/, "");
 }
 
 export const API_BASE = browserApiBase();
@@ -34,8 +32,15 @@ export interface RepoInfo {
   languages: string[];
   file_count: number;
   capabilities: Record<string, boolean>;
+  graph_coverage?: GraphCoverage | null;
   /** Commit-window cost figures; absent for repos without a prebuilt window. */
   incremental?: WindowStats | null;
+}
+
+export interface GraphCoverage {
+  available_languages: string[];
+  unavailable_languages: string[];
+  partial: boolean;
 }
 
 export interface Citation {
@@ -88,6 +93,56 @@ export interface WikiPage {
   markdown: string;
   citations: Citation[];
   diagram: string;
+  evidence?: {
+    items: WikiEvidenceItem[];
+    relations: WikiRelationItem[];
+  };
+  generation?: {
+    mode: "generated" | "offline" | "degraded";
+    model: string | null;
+    repaired?: boolean;
+    fallback?: "fact_plan" | null;
+    reason?: string;
+    plan_warnings?: string[];
+  };
+  grounding?: {
+    valid: boolean;
+    citation_coverage: number;
+    cited_evidence?: number;
+    evidence_count: number;
+    relation_count: number;
+    unknown_citations?: string[];
+    unknown_files?: string[];
+    unsupported_identifiers?: string[];
+  };
+  quality?: {
+    valid: boolean;
+    planned_sections: number;
+    required_sections: number;
+    rendered_sections: number;
+    substantive_blocks: number;
+    required_blocks: number;
+    covered_claims: number;
+    planned_claims: number;
+    claim_coverage: number;
+  };
+}
+
+export interface WikiEvidenceItem {
+  id: string;
+  file: string;
+  start_line: number | null;
+  end_line: number | null;
+  symbol: string;
+  kind: string;
+  routes: string[];
+}
+
+export interface WikiRelationItem {
+  id: string;
+  source: string;
+  target: string;
+  anchors: string[];
 }
 
 export interface SourceSlice {

@@ -52,6 +52,110 @@ def test_bundle_loads_views_without_constructing_agent_runtime():
     assert calls == [("views", bundle), ("runtime", bundle)]
 
 
+def test_bundle_reports_partial_graph_language_coverage():
+    bundle = RepoBundle(
+        entry=SimpleNamespace(),
+        manifest=SimpleNamespace(
+            indexes={
+                "symbol_graph": SimpleNamespace(
+                    metadata={
+                        "available_languages": ["python", "ts"],
+                        "failed_languages": {
+                            "cpp": "compile database unavailable",
+                            "rust": "manifest unavailable",
+                        },
+                        "partial": True,
+                    }
+                )
+            }
+        ),
+    )
+
+    coverage = bundle.graph_coverage()
+
+    assert coverage is not None
+    assert coverage.available_languages == ["python", "ts"]
+    assert coverage.unavailable_languages == ["cpp", "rust"]
+    assert coverage.partial is True
+
+
+@pytest.mark.parametrize(
+    ("status", "view_commit"),
+    [
+        ("stale", "old-commit"),
+        ("failed", "new-commit"),
+        ("fresh", "old-commit"),
+    ],
+)
+def test_bundle_rejects_graphs_outside_the_manifest_snapshot(
+    tmp_path,
+    status,
+    view_commit,
+):
+    graph_dir = tmp_path / "symbol_graph"
+    graph_dir.mkdir()
+    (graph_dir / "graph.pkl").write_bytes(b"stale graph")
+    bundle = RepoBundle(
+        entry=SimpleNamespace(),
+        manifest=SimpleNamespace(
+            commit="new-commit",
+            indexes={
+                "symbol_graph": SimpleNamespace(
+                    status=status,
+                    commit=view_commit,
+                    path=str(graph_dir),
+                )
+            },
+        ),
+    )
+
+    assert bundle._graph_path() is None
+
+
+def test_bundle_accepts_fresh_graph_for_manifest_snapshot(tmp_path):
+    graph_dir = tmp_path / "symbol_graph"
+    graph_dir.mkdir()
+    graph_path = graph_dir / "graph.pkl"
+    graph_path.write_bytes(b"current graph")
+    bundle = RepoBundle(
+        entry=SimpleNamespace(),
+        manifest=SimpleNamespace(
+            commit="new-commit",
+            indexes={
+                "symbol_graph": SimpleNamespace(
+                    status="fresh",
+                    commit="new-commit",
+                    path=str(graph_dir),
+                )
+            },
+        ),
+    )
+
+    assert bundle._graph_path() == str(graph_path)
+
+
+def test_bundle_accepts_legacy_graph_beside_current_vector_view(tmp_path):
+    vector_dir = tmp_path / "vector"
+    vector_dir.mkdir()
+    graph_path = vector_dir / "graph.pkl"
+    graph_path.write_bytes(b"legacy current graph")
+    bundle = RepoBundle(
+        entry=SimpleNamespace(),
+        manifest=SimpleNamespace(
+            commit="new-commit",
+            indexes={
+                "vector": SimpleNamespace(
+                    status="fresh",
+                    commit="new-commit",
+                    path=str(vector_dir),
+                )
+            },
+        ),
+    )
+
+    assert bundle._graph_path() == str(graph_path)
+
+
 def test_config_index_types_for_mode():
     assert QAConfig(mode="sparse").index_types() == ["bm25"]
     assert QAConfig(mode="hybrid").index_types() == ["bm25", "vector"]
@@ -68,6 +172,7 @@ def test_load_config_from_yaml(tmp_path):
     cfg_file.write_text(
         "model: my-model\n"
         "wiki_model: wiki-model\n"
+        "wiki_api_base: http://wiki.example/v1\n"
         "model_api_base: http://ask.example/v1\n"
         "mode: hybrid\n"
         "embedding_provider: openai\n"
@@ -80,6 +185,7 @@ def test_load_config_from_yaml(tmp_path):
     cfg = load_config(str(cfg_file))
     assert cfg.model == "my-model"
     assert cfg.wiki_generation_model == "wiki-model"
+    assert cfg.wiki_generation_api_base == "http://wiki.example/v1"
     assert cfg.model_api_base == "http://ask.example/v1"
     assert cfg.mode == "hybrid"
     assert cfg.embedding_provider == "openai"
@@ -99,6 +205,8 @@ def test_backend_environment_overrides_yaml(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("CODENIB_DEMO_MODEL", "env-ask")
     monkeypatch.setenv("CODENIB_DEMO_WIKI_MODEL", "env-wiki")
+    monkeypatch.setenv("CODENIB_DEMO_WIKI_API_BASE", "http://wiki.local/v1")
+    monkeypatch.setenv("CODENIB_DEMO_WIKI_API_KEY", "wiki-secret")
     monkeypatch.setenv("CODENIB_DEMO_API_BASE", "http://ask.local/v1")
     monkeypatch.setenv("CODENIB_EMBEDDING_PROVIDER", "OPENAI")
     monkeypatch.setenv("CODENIB_EMBEDDING_BASE_URL", "http://embed.local/v1")
@@ -107,9 +215,21 @@ def test_backend_environment_overrides_yaml(tmp_path, monkeypatch):
 
     assert cfg.model == "env-ask"
     assert cfg.wiki_generation_model == "env-wiki"
+    assert cfg.wiki_generation_api_base == "http://wiki.local/v1"
+    assert cfg.wiki_generation_api_key == "wiki-secret"
     assert cfg.model_api_base == "http://ask.local/v1"
     assert cfg.embedding_provider == "openai"
     assert cfg.embedding_base_url == "http://embed.local/v1"
+
+
+def test_wiki_backend_falls_back_to_ask_backend():
+    cfg = QAConfig(
+        model_api_base="http://ask.local/v1",
+        model_api_key="ask-secret",
+    )
+
+    assert cfg.wiki_generation_api_base == "http://ask.local/v1"
+    assert cfg.wiki_generation_api_key == "ask-secret"
 
 
 def test_rejects_unknown_embedding_provider(tmp_path):

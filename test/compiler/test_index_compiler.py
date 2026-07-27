@@ -34,6 +34,10 @@ from codenib.compiler.resources import (
     IndexStatus,
     ResourceResolver,
 )
+from codenib.repository_filters import (
+    REPOSITORY_FILTER_POLICY_VERSION,
+    default_exclude_patterns,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -168,13 +172,18 @@ class TestVectorIndexBuilder:
             index_metric="l2",
         )
 
-        assert builder._artifact_identity() == {
+        assert builder.artifact_identity() == {
+            "builder_schema": 2,
             "embedding_model": "test-model",
             "embedding_provider": "huggingface",
             "embedding_dimension": 384,
             "dimension": 384,
             "embedding_kwargs": {"revision": "model-commit"},
             "index_metric": "l2",
+            "languages": ["python"],
+            "levels": ["l0", "l2"],
+            "max_lines_per_chunk": 300,
+            "repository_filter_policy": REPOSITORY_FILTER_POLICY_VERSION,
         }
 
 
@@ -221,6 +230,7 @@ class TestSymbolGraphBuilder:
                     "languages": ["python"],
                     "project_name": "repo",
                     "skip_level": None,
+                    "exclude_patterns": default_exclude_patterns(),
                     "graph_route": "active",
                 },
             )
@@ -302,6 +312,48 @@ class TestSymbolGraphBuilder:
         assert status.metadata["graph_route"] == "scip-candidate"
         assert calls[0][1]["graph_route"] == "scip-candidate"
 
+    def test_build_records_partial_language_coverage(self, monkeypatch, tmp_path):
+        from codenib import ls_router
+        from codenib.ls_router import GraphBuildResult
+
+        mock_graph = MagicMock()
+        mock_graph.graph.vs = list(range(25))
+        calls = []
+
+        def fake_build(*args, **kwargs):
+            calls.append((args, kwargs))
+            return GraphBuildResult(
+                graph=mock_graph,
+                requested_languages=["python", "cpp"],
+                available_languages=["python"],
+                failed_languages={"cpp": "compilation database missing"},
+            )
+
+        monkeypatch.setattr(
+            ls_router,
+            "build_graph_for_languages_with_report",
+            fake_build,
+        )
+
+        builder = SymbolGraphBuilder(
+            languages=["python", "cpp"],
+            allow_partial_languages=True,
+        )
+        status = builder.build(
+            scope="current_repo",
+            repo_path="/fake/repo",
+            output_dir=str(tmp_path / "graph"),
+        )
+
+        assert status.state == IndexState.FRESH
+        assert status.metadata["languages"] == ["python", "cpp"]
+        assert status.metadata["available_languages"] == ["python"]
+        assert status.metadata["failed_languages"] == {
+            "cpp": "compilation database missing"
+        }
+        assert status.metadata["partial"] is True
+        assert calls[0][1]["allow_partial"] is True
+
 
 # ---------------------------------------------------------------------------
 # register_default_builders
@@ -350,6 +402,19 @@ class TestRegisterDefaultBuilders:
         assert symbol_graph.language == "rust"
         assert symbol_graph.languages == ["rust", "python"]
         assert symbol_graph.graph_route == "scip-candidate"
+        assert symbol_graph.allow_partial_languages is False
+
+    def test_can_register_partial_multi_language_graph_builder(self):
+        registry = IndexBuilderRegistry()
+        register_default_builders(
+            registry,
+            languages=["python", "cpp"],
+            allow_partial_graph_languages=True,
+        )
+
+        symbol_graph = registry.get("symbol_graph")
+        assert isinstance(symbol_graph, SymbolGraphBuilder)
+        assert symbol_graph.allow_partial_languages is True
 
 
 # ---------------------------------------------------------------------------
@@ -703,6 +768,93 @@ class TestUpdateRepo:
         # HEAD did not move, so no builder should run again.
         assert len(calls) == 1
 
+    def test_rebuilds_only_view_with_outdated_builder_identity(self, tmp_path):
+        _git_repo(tmp_path)
+        calls = []
+
+        class VersionedBuilder:
+            version = 1
+
+            def artifact_identity(self):
+                return {"builder_schema": self.version}
+
+            def build(self, scope: str, **kwargs) -> IndexStatus:
+                calls.append(self.version)
+                return IndexStatus(
+                    index_type="rec",
+                    state=IndexState.FRESH,
+                    last_built=time.time(),
+                    age_seconds=0.0,
+                    scope=scope,
+                    path=kwargs["output_dir"],
+                    metadata=self.artifact_identity(),
+                )
+
+            def incremental_update(self, scope: str, **kwargs) -> IndexStatus:
+                return self.build(scope, **kwargs)
+
+        builder = VersionedBuilder()
+        registry = IndexBuilderRegistry()
+        registry.register("rec", builder)
+        compiler = IndexCompiler(
+            registry,
+            IndexCompilerConfig(index_types=["rec"], languages=["python"]),
+        )
+        compiler.compile_repo(str(tmp_path))
+        builder.version = 2
+
+        manifest = compiler.update_repo(str(tmp_path))
+
+        assert calls == [1, 2]
+        assert manifest.indexes["rec"].config["builder_schema"] == 2
+
+    def test_builder_identity_change_at_new_head_forces_full_build(self, tmp_path):
+        _git_repo(tmp_path)
+        calls = []
+
+        class VersionedBuilder:
+            version = 1
+
+            def artifact_identity(self):
+                return {"builder_schema": self.version}
+
+            def _status(self, scope: str, output_dir: str) -> IndexStatus:
+                return IndexStatus(
+                    index_type="rec",
+                    state=IndexState.FRESH,
+                    last_built=time.time(),
+                    age_seconds=0.0,
+                    scope=scope,
+                    path=output_dir,
+                    metadata=self.artifact_identity(),
+                )
+
+            def build(self, scope: str, **kwargs) -> IndexStatus:
+                calls.append(("build", self.version, kwargs.get("last_commit")))
+                return self._status(scope, kwargs["output_dir"])
+
+            def incremental_update(self, scope: str, **kwargs) -> IndexStatus:
+                calls.append(
+                    ("incremental_update", self.version, kwargs.get("last_commit"))
+                )
+                return self._status(scope, kwargs["output_dir"])
+
+        builder = VersionedBuilder()
+        registry = IndexBuilderRegistry()
+        registry.register("rec", builder)
+        compiler = IndexCompiler(
+            registry,
+            IndexCompilerConfig(index_types=["rec"], languages=["python"]),
+        )
+        compiler.compile_repo(str(tmp_path))
+        _commit(tmp_path, "b.py")
+        builder.version = 2
+
+        manifest = compiler.update_repo(str(tmp_path))
+
+        assert calls == [("build", 1, None), ("build", 2, None)]
+        assert manifest.indexes["rec"].config["builder_schema"] == 2
+
     def test_uses_incremental_path_when_head_moved(self, tmp_path):
         first = _git_repo(tmp_path)
         calls: list = []
@@ -713,6 +865,65 @@ class TestUpdateRepo:
 
         compiler.update_repo(str(tmp_path))
         assert calls[-2] == ("incremental_update", first)
+
+    def test_incremental_graph_preserves_partial_language_coverage(self, tmp_path):
+        first = _git_repo(tmp_path)
+        calls = []
+
+        class PartialGraphBuilder:
+            def artifact_identity(self):
+                return {"builder_schema": 1, "languages": ["python", "cpp"]}
+
+            def _status(self, scope: str, output_dir: str, metadata) -> IndexStatus:
+                return IndexStatus(
+                    index_type="symbol_graph",
+                    state=IndexState.FRESH,
+                    last_built=time.time(),
+                    age_seconds=0.0,
+                    scope=scope,
+                    path=output_dir,
+                    metadata={**self.artifact_identity(), **metadata},
+                )
+
+            def build(self, scope: str, **kwargs) -> IndexStatus:
+                calls.append(("build", None))
+                return self._status(
+                    scope,
+                    kwargs["output_dir"],
+                    {
+                        "available_languages": ["python"],
+                        "failed_languages": {"cpp": "compile database unavailable"},
+                        "partial": True,
+                    },
+                )
+
+            def incremental_update(self, scope: str, **kwargs) -> IndexStatus:
+                calls.append(("incremental_update", kwargs["last_commit"]))
+                return self._status(
+                    scope,
+                    kwargs["output_dir"],
+                    {"update_mode": "incremental"},
+                )
+
+        registry = IndexBuilderRegistry()
+        registry.register("symbol_graph", PartialGraphBuilder())
+        compiler = IndexCompiler(
+            registry,
+            IndexCompilerConfig(
+                index_types=["symbol_graph"],
+                languages=["python", "cpp"],
+            ),
+        )
+        compiler.compile_repo(str(tmp_path))
+        _commit(tmp_path, "notes.md")
+
+        manifest = compiler.update_repo(str(tmp_path))
+        metadata = manifest.indexes["symbol_graph"].metadata
+
+        assert calls == [("build", None), ("incremental_update", first)]
+        assert metadata["available_languages"] == ["python"]
+        assert metadata["failed_languages"] == {"cpp": "compile database unavailable"}
+        assert metadata["partial"] is True
 
     def test_manifest_records_new_commit_after_update(self, tmp_path):
         _git_repo(tmp_path)
@@ -818,6 +1029,55 @@ class TestUpdateRepo:
         assert attempts == ["build", "build"]
         assert recovered.last_indexed_commit == head
         assert recovered.indexes["rec"].status == "fresh"
+
+    def test_partial_build_preserves_other_fresh_views(self, tmp_path):
+        head = _git_repo(tmp_path)
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25"))
+        registry.register("symbol_graph", _mock_builder("symbol_graph"))
+        compiler = IndexCompiler(
+            registry,
+            IndexCompilerConfig(
+                index_types=["bm25", "symbol_graph"],
+                languages=["python"],
+            ),
+        )
+
+        compiler.compile_repo(str(tmp_path), index_types=["bm25"])
+        manifest = compiler.update_repo(str(tmp_path), index_types=["symbol_graph"])
+
+        assert set(manifest.indexes) == {"bm25", "symbol_graph"}
+        assert manifest.indexes["bm25"].status == "fresh"
+        assert manifest.indexes["symbol_graph"].status == "fresh"
+        assert manifest.indexes["bm25"].commit == head
+        assert manifest.indexes["symbol_graph"].commit == head
+        assert manifest.capabilities["sparse_search"] is True
+        assert manifest.capabilities["symbol_navigation"] is True
+
+    def test_partial_update_marks_unrequested_old_view_stale(self, tmp_path):
+        first = _git_repo(tmp_path)
+        registry = IndexBuilderRegistry()
+        registry.register("bm25", _mock_builder("bm25"))
+        registry.register("symbol_graph", _mock_builder("symbol_graph"))
+        compiler = IndexCompiler(
+            registry,
+            IndexCompilerConfig(
+                index_types=["bm25", "symbol_graph"],
+                languages=["python"],
+            ),
+        )
+        compiler.compile_repo(str(tmp_path))
+        second = _commit(tmp_path, "b.py")
+
+        manifest = compiler.update_repo(str(tmp_path), index_types=["bm25"])
+
+        assert manifest.indexes["bm25"].status == "fresh"
+        assert manifest.indexes["bm25"].commit == second
+        assert manifest.indexes["symbol_graph"].status == "stale"
+        assert manifest.indexes["symbol_graph"].commit == first
+        assert manifest.capabilities["sparse_search"] is True
+        assert manifest.capabilities["symbol_navigation"] is False
+        assert manifest.last_indexed_commit == first
 
 
 # ---------------------------------------------------------------------------

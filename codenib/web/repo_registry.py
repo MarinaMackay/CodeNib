@@ -14,7 +14,6 @@ concurrent queries are safe.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
 from importlib.util import find_spec
 from threading import Lock
@@ -22,8 +21,9 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from ..compiler.manifest import RepoManifest
 from ..log_utils import get_logger
+from ..repository_summary import read_repository_summary
 from .config import QAConfig, RepoEntry, load_registry
-from .schemas import RepoInfo
+from .schemas import GraphCoverage, RepoInfo
 
 if TYPE_CHECKING:
     from ..agent.runner import AgentRunner
@@ -50,40 +50,6 @@ _DEMO_SYSTEM_PROMPT = (
     "you found so the reader can open them. If a search returns nothing useful, "
     "try a different query or tool before concluding."
 )
-
-
-_README_SKIP = re.compile(
-    r"\b(install|download|getting started|to get started|usage|build from source"
-    r"|clone|npm i\b|pip install|cargo add|see (the )?docs|documentation"
-    r"|these steps|version information|for example|e\.g\.)\b",
-    re.IGNORECASE,
-)
-# Lines that are clearly boilerplate prefixes, not a project tagline.
-_README_SKIP_PREFIX = ("note:", "warning:", "tip:", "see ", "run ", "$ ")
-
-
-def _readme_summary(text: str, limit: int = 160) -> str:
-    """A descriptive sentence from a README — skipping headings, badges, HTML,
-    and install/usage boilerplate (prefers the project tagline)."""
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith(("#", ">", "<", "---", "===", "|", "- ", "* ", "```")):
-            continue
-        if line.startswith(("![", "[![")) or line.startswith("["):
-            continue  # badge / image / link-only line
-        # Strip markdown links/emphasis, keep the visible text.
-        line = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", line)
-        line = re.sub(r"[*_`]", "", line)
-        line = re.sub(r"<[^>]+>", "", line).strip()
-        # Require a real sentence: skip labels ("Requirements:"), short lines.
-        if line.endswith(":") or len(line.split()) < 6 or _README_SKIP.search(line):
-            continue
-        if line.lower().startswith(_README_SKIP_PREFIX):
-            continue
-        return (line[:limit] + "…") if len(line) > limit else line
-    return ""
 
 
 def _fresh_registry():
@@ -175,6 +141,33 @@ class RepoBundle:
             languages=self.manifest.languages,
             file_count=self._file_count(),
             capabilities=capabilities,
+            graph_coverage=self.graph_coverage(),
+        )
+
+    def graph_coverage(self) -> GraphCoverage | None:
+        """Describe partial multi-language graph coverage when metadata exists."""
+
+        entry = self.manifest.indexes.get("symbol_graph")
+        if entry is None:
+            return None
+        metadata = entry.metadata or {}
+        available = [
+            str(language)
+            for language in metadata.get("available_languages") or ()
+            if str(language).strip()
+        ]
+        failures = metadata.get("failed_languages") or {}
+        unavailable = (
+            [str(language) for language in failures if str(language).strip()]
+            if isinstance(failures, dict)
+            else []
+        )
+        if not available and not unavailable:
+            return None
+        return GraphCoverage(
+            available_languages=available,
+            unavailable_languages=unavailable,
+            partial=bool(metadata.get("partial") or unavailable),
         )
 
     def _graph_path(self) -> Optional[str]:
@@ -182,25 +175,41 @@ class RepoBundle:
 
         The manifest only declares bm25/vector, but the prebuilt tree ships a
         ``graph.pkl`` alongside the vector store (and, when present, via a
-        ``symbol_graph`` entry), so probe both. Result is cached.
+        ``symbol_graph`` entry), so probe the legacy vector location only when
+        there is no explicit graph entry. Result is cached.
         """
         cached = getattr(self, "_graph_path_cache", "?")
         if cached != "?":
             return cached
         candidates: List[str] = []
         sg = self.manifest.indexes.get("symbol_graph")
-        if sg is not None and getattr(sg, "path", None):
-            candidates.append(
-                sg.path
-                if sg.path.endswith(".pkl")
-                else os.path.join(sg.path, "graph.pkl")
-            )
-        vec = self.manifest.indexes.get("vector")
-        if vec is not None and getattr(vec, "path", None):
-            candidates.append(os.path.join(vec.path, "graph.pkl"))
+        if sg is not None:
+            if self._view_is_current(sg) and getattr(sg, "path", None):
+                candidates.append(
+                    sg.path
+                    if sg.path.endswith(".pkl")
+                    else os.path.join(sg.path, "graph.pkl")
+                )
+        else:
+            vec = self.manifest.indexes.get("vector")
+            if (
+                vec is not None
+                and self._view_is_current(vec)
+                and getattr(vec, "path", None)
+            ):
+                candidates.append(os.path.join(vec.path, "graph.pkl"))
         found = next((p for p in candidates if p and os.path.isfile(p)), None)
         self._graph_path_cache = found
         return found
+
+    def _view_is_current(self, entry: Any) -> bool:
+        """Whether a persisted view is eligible for the manifest's snapshot."""
+
+        if getattr(entry, "status", None) != "fresh":
+            return False
+        view_commit = str(getattr(entry, "commit", "") or "")
+        manifest_commit = str(getattr(self.manifest, "commit", "") or "")
+        return not view_commit or not manifest_commit or view_commit == manifest_commit
 
     def code_graph(self) -> Optional[CodeGraph]:
         """Lazily load + cache the repo's symbol graph (None if unavailable)."""
@@ -222,6 +231,24 @@ class RepoBundle:
             logger.warning("codemap: graph at %s unusable: %s", path, exc)
             self._code_graph = None
         return self._code_graph
+
+    def graph_unavailable_note(self) -> str:
+        """Return an actionable reason when the dependency graph cannot load."""
+
+        entry = self.manifest.indexes.get("symbol_graph")
+        if entry is None:
+            return (
+                "Dependency graph is not built. Use the graph profile to add "
+                "a language-aware symbol graph for this repository."
+            )
+        if entry.status == "stale":
+            return "Dependency graph is stale for this commit and must be updated."
+        if entry.status == "failed":
+            detail = str(entry.metadata.get("error") or "").strip()
+            if detail:
+                return f"Dependency graph build failed: {detail[:240]}"
+            return "Dependency graph build failed; inspect the index build output."
+        return "Dependency graph artifact could not be loaded; rebuild symbol_graph."
 
     def hierarchical_graph(self):
         """Lazily build + cache the repo-level compound graph for CodeGraph UI."""
@@ -272,18 +299,7 @@ class RepoBundle:
         cached = getattr(self, "_description_cache", None)
         if cached is not None:
             return cached
-        desc = ""
-        repo_dir = self.entry.repo_dir
-        for name in ("README.md", "README.rst", "README.txt", "README", "readme.md"):
-            path = os.path.join(repo_dir, name)
-            if not os.path.isfile(path):
-                continue
-            try:
-                with open(path, encoding="utf-8", errors="replace") as fh:
-                    desc = _readme_summary(fh.read())
-            except OSError:
-                desc = ""
-            break
+        desc = read_repository_summary(self.entry.repo_dir)
         self._description_cache = desc
         return desc
 
