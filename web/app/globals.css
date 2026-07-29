@@ -293,7 +293,10 @@ pre {
 
 .repo-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* minmax(0, 1fr), not 1fr: a track's default min-width is auto, so one card
+     holding an unbreakable string (a README that leaks a long sponsor URL)
+     widens its whole column and the three stop being equal. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   max-width: 1120px;
   width: 100%;
@@ -302,12 +305,12 @@ pre {
 }
 @media (max-width: 1024px) {
   .repo-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 680px) {
   .repo-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -341,6 +344,9 @@ pre {
   font-size: 13px;
   line-height: 1.45;
   color: var(--muted);
+  /* READMEs leak URLs and HTML attributes with no break opportunity; let them
+     wrap rather than push the card wider than its track. */
+  overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -833,7 +839,9 @@ pre {
 .onthispage-list a.active {
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 600;
+  /* No weight change: bolding re-measures the text, so a long entry rewraps
+     onto a second line as it becomes active and the whole rail jumps while
+     the reader scrolls. The accent background and colour already mark it. */
 }
 .refresh-wiki {
   margin-top: 18px;
@@ -905,15 +913,21 @@ pre {
   padding: 2px 5px;
   font-size: 0.85em;
   color: var(--text);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 /* Inline citation chip: a cited symbol/file in prose; click scrolls the code pane. */
 .cite-chip {
+  /* A symbol is part of the sentence, not a control sitting in it. Border and
+     fill made every mention read as a chip and the prose read as a form; the
+     affordance now appears on hover instead. */
   display: inline;
-  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-  border-radius: 5px;
-  padding: 1px 4px;
-  margin: 0 1px;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
   cursor: pointer;
   font: inherit;
   line-height: inherit;
@@ -922,8 +936,7 @@ pre {
   overflow-wrap: anywhere;
 }
 .cite-chip:hover {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  border-color: var(--accent);
+  border-bottom-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .cite-chip > code {
   background: none;
@@ -1736,6 +1749,7 @@ pre {
   font-size: 12px;
   color: var(--muted);
   margin-bottom: 8px;
+  overflow-wrap: anywhere;
 }
 .codemap-coverage {
   display: flex;
@@ -1773,6 +1787,9 @@ pre {
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   cursor: pointer;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .codemap-chip:hover {
   border-color: var(--accent);
@@ -2369,6 +2386,7 @@ pre {
   width: 94vw;
   height: 92vh;
   max-width: 1500px;
+  min-width: 0;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -2414,6 +2432,7 @@ pre {
 .graph-modal-body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding: 12px 16px 16px;
 }
@@ -2508,6 +2527,29 @@ pre {
   }
 }
 @media (max-width: 600px) {
+  .graph-modal-scrim {
+    padding: 12px;
+  }
+  .graph-modal {
+    width: 100%;
+    height: calc(100dvh - 24px);
+    max-width: 100%;
+  }
+  .graph-modal-head {
+    min-width: 0;
+    gap: 8px;
+    padding-inline: 10px;
+  }
+  .graph-modal-body {
+    padding: 10px;
+  }
+  .codemap-controls > * {
+    max-width: 100%;
+  }
+  .codemap-symbol {
+    flex-basis: 100%;
+    min-width: 0;
+  }
   .graph-modal-hint {
     display: none;
   }
@@ -3437,4 +3479,222 @@ a.codepanel-name:hover {
   background: transparent;
   padding: 0;
   white-space: pre;
+}
+
+/* --- hierarchical drill-down map (P5) --------------------------------------
+   Nested containment boxes: directory -> file -> symbol. Relationships below
+   are aggregated to whatever depth the reader has expanded to. */
+.hier-map {
+  border: 1px solid var(--border-2);
+  border-radius: 10px;
+  padding: 12px 14px 14px;
+  background: var(--panel, transparent);
+}
+.hier-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.hier-kicker {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.hier-stats {
+  font-size: 12px;
+  color: var(--muted);
+}
+.hier-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.hier-box {
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.hier-box.is-open {
+  border-color: var(--border);
+}
+.hier-box-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.hier-box-head:hover {
+  background: var(--hover, rgba(127, 127, 127, 0.08));
+}
+.hier-chevron {
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  font-family: var(--mono, monospace);
+  color: var(--muted);
+}
+.hier-label {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.hier-meta {
+  margin-inline-start: auto;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.hier-children {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 0 10px 9px 10px;
+}
+.hier-symbol {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.hier-symbol:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.hier-symbol:not(:disabled):hover {
+  border-color: var(--accent, currentColor);
+}
+.hier-symbol-name {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.hier-symbol-line {
+  margin-inline-start: auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+.hier-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px;
+  margin-top: 12px;
+}
+.hier-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  min-width: 0;
+}
+.hier-link:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.hier-link:not(:disabled):hover {
+  border-color: var(--accent, currentColor);
+}
+.hier-link-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+.hier-link-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hier-link-main b {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+.hier-link em {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Graph / Structure switch inside the Dependency Map */
+.codemap-views {
+  display: inline-flex;
+  gap: 4px;
+  margin: 8px 0 4px;
+  padding: 3px;
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+}
+.codemap-views button {
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+}
+.codemap-views button.is-active {
+  background: var(--hover, rgba(127, 127, 127, 0.12));
+  color: inherit;
+  font-weight: 600;
+}
+
+/* A citation reads as the source it stands for, not as an internal handle. */
+.cite-src {
+  display: inline;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0 0 0 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82em;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  color: var(--text-secondary);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.cite-src:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.cite-src-loc {
+  opacity: 0.75;
+}
+
+@media (max-width: 600px) {
+  .graph-modal-body .hier-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .graph-modal-body .hier-links {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

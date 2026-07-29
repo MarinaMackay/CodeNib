@@ -17,6 +17,7 @@ Drop-in for the demo's ``WikiBuilder``: exposes ``page_tree`` / ``page`` /
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import html
 import json
@@ -80,12 +81,42 @@ _EXT_LANG = {
     "kts": "kotlin",
 }
 _MAX_CONTEXT_CHARS = 14000
-_OUTLINE_PROMPT_VERSION = "12"
-_PAGE_PROMPT_VERSION = "99"
+# A quoted body should carry an idea, not reproduce a file.
+_MAX_EXCERPT_LINES = 14
+_OUTLINE_PROMPT_VERSION = "13"
+_PAGE_PROMPT_VERSION = "102"
 _MAX_PLAN_REPAIRS = 3
 _MAX_STYLE_REPAIRS = 2
-_OVERVIEW_RETRIEVAL_LIMIT = 12
+# The overview is asked for a section per outline area, and a repository
+# outline runs to 9-17 of them. Twelve symbols could not ground that many,
+# so the coverage guard fired on pages that simply had nothing to say about
+# an area -- feed it enough to answer instead of relaxing what it asks.
+_OVERVIEW_RETRIEVAL_LIMIT = 24
 _SOFT_PLAN_WARNING_PREFIXES = ("page thesis must contain exactly one sentence",)
+# Plan diagnostics come in three tiers. Soft ones are noise. *Composition* ones
+# say the page could be organised better -- a section leans on helpers, an area
+# has no section of its own -- but every sentence still says something real and
+# cites it. Only the third tier, an unsupported or misattributed fact, means the
+# page must not be published as written.
+#
+# Composition notes still steer the repair loop; they just no longer decide
+# publishability. They used to, and a richer page -- more sections, so more
+# surface for them to fire on -- was marked degraded even with a clean grounding
+# report, which made the flag fire on everything and mean nothing.
+_COMPOSITION_PLAN_WARNING_MARKERS = (
+    "elevates incidental helpers",
+    "is not an explicit component handoff",
+    "no supported component handoff",
+    "dominated by isolated",
+    "reads as a callable catalog",
+    "grounded in its allocated evidence",
+    "must use an allocated relation",
+    "needs a section-level",
+    "substantially repeat an admitted fact",
+    "needs one publishable, non-redundant claim",
+    "needs at least two supported facts",
+    "names a source file as a subsystem",
+)
 _NARRATIVE_CALLABLE_KINDS = frozenset({"function", "method"})
 _NARRATIVE_TYPE_KINDS = frozenset(
     {
@@ -183,6 +214,19 @@ def _lang(file: str) -> str:
     return _EXT_LANG.get((file or "").rsplit(".", 1)[-1].lower(), "")
 
 
+def _canonical_symbol(value: str) -> str:
+    """Identity of a symbol across retrieval routes.
+
+    The same definition reaches evidence under different spellings depending on
+    which index found it -- a sparse hit names it ``path/to/file.ts:thing()``
+    while a dense hit names it ``thing``. Strip the path qualifier and the
+    argument list so the two collapse onto one identity.
+    """
+
+    name = (value or "").strip().rsplit(":", 1)[-1].strip()
+    return re.sub(r"\([^)]*\)$", "", name).strip().casefold()
+
+
 def _link_evidence_markers(markdown: str) -> str:
     """Turn plain evidence markers into links to the page evidence ledger."""
 
@@ -244,6 +288,16 @@ def _prune_uncited_blocks(markdown: str) -> str:
         if (
             not stripped
             or stripped.startswith("#")
+            # A fenced block is a diagram or a code excerpt; it states its
+            # sources in the caption that follows, not inside the fence.
+            or stripped.startswith("```")
+            # A link list points at other pages of this wiki, which are named
+            # rather than cited.
+            or all(
+                line.lstrip().startswith(("-", "*"))
+                for line in stripped.splitlines()
+                if line.strip()
+            )
             or re.search(r"\[((?:E|R)\d+)\]", stripped)
             or len(re.sub(r"[`*_[\]()#>-]", "", stripped).strip()) < 40
         ):
@@ -562,6 +616,27 @@ def _hard_plan_warnings(warnings: Sequence[str]) -> List[str]:
     ]
 
 
+def _composition_plan_warnings(warnings: Sequence[str]) -> List[str]:
+    """Diagnostics about how the page is organised, not whether it is true."""
+
+    return [
+        warning
+        for warning in warnings
+        if any(marker in warning for marker in _COMPOSITION_PLAN_WARNING_MARKERS)
+    ]
+
+
+def _blocking_plan_warnings(warnings: Sequence[str]) -> List[str]:
+    """Diagnostics that must stop a page from being published as written."""
+
+    composition = set(_composition_plan_warnings(warnings))
+    return [
+        warning
+        for warning in _hard_plan_warnings(warnings)
+        if warning not in composition
+    ]
+
+
 def _plan_repair_score(
     plan: dict[str, Any],
     warnings: Sequence[str],
@@ -637,6 +712,11 @@ def _merge_fact_plans(
     merged = copy.deepcopy(base)
     if not merged.get("thesis") and candidate.get("thesis"):
         merged["thesis"] = copy.deepcopy(candidate["thesis"])
+    # A repair pass may be the first attempt that produced usable framing or a
+    # scan table; keep it rather than losing it to the earlier plan.
+    for key in ("purpose", "map", "flow", "see_also"):
+        if not merged.get(key) and candidate.get(key):
+            merged[key] = copy.deepcopy(candidate[key])
 
     sections = merged.setdefault("sections", [])
     for incoming in candidate.get("sections") or []:
@@ -991,6 +1071,124 @@ def _renderable_plan(
         intro = readme_intro[0] if readme_intro is not None else ""
     intro_terms = _prose_terms(intro)
 
+    # Framing and the scan table are grounded like any claim: a statement or row
+    # that cites nothing admissible is dropped rather than rendered unsupported.
+    purpose = rendered.get("purpose") or {}
+    purpose_ids = [
+        str(item) for item in (purpose.get("evidence") or []) if str(item) in allowed
+    ]
+    purpose_statements = [
+        sentence
+        for sentence in (
+            re.sub(r"\s+", " ", str(raw or "")).strip()
+            for raw in (purpose.get("statements") or [])
+        )
+        if sentence
+    ]
+    if purpose_statements and purpose_ids:
+        rendered["purpose"] = {
+            "statements": purpose_statements[:3],
+            "evidence": purpose_ids,
+        }
+    else:
+        rendered.pop("purpose", None)
+
+    rendered_map = []
+    for row in rendered.get("map") or []:
+        concern = re.sub(r"\s+", " ", str(row.get("concern") or "")).strip()
+        entity = re.sub(r"\s+", " ", str(row.get("entity") or "")).strip()
+        ids = [str(item) for item in row.get("evidence") or [] if str(item) in allowed]
+        if not concern or not entity or not ids:
+            continue
+        rendered_map.append({"concern": concern, "entity": entity, "evidence": ids})
+    # A two-row table is not worth the chrome; below that, prose carries it.
+    if len(rendered_map) >= 3:
+        rendered["map"] = rendered_map[:6]
+    else:
+        rendered.pop("map", None)
+
+    # Every diagram edge must be proven by the evidence id attached to that
+    # exact step. Seeing both endpoint names somewhere in the repository does
+    # not establish a relationship between them.
+    flow = rendered.get("flow") or {}
+    if flow:
+        evidence_by_id = {item.id: item for item in evidence}
+        relations_by_id = {item.id: item for item in relations}
+
+        def endpoint_key(endpoint: str) -> str:
+            name = endpoint.strip().strip("`").strip()
+            name = re.sub(r":\d+(?:-\d+)?$", "", name)
+            name = re.sub(r"\([^)]*\)$", "", name).strip()
+            return re.split(r"::|\.", name)[-1].casefold()
+
+        def admitted_step(step: dict[str, Any]) -> dict[str, Any] | None:
+            source = str(step.get("from") or "").strip()
+            target = str(step.get("to") or "").strip()
+            if not source or not target or endpoint_key(source) == endpoint_key(target):
+                return None
+            statement = f"`{source.strip('`')}` calls `{target.strip('`')}`"
+            supported_ids = []
+            for raw_id in step.get("evidence") or []:
+                item_id = str(raw_id)
+                source_item = evidence_by_id.get(item_id)
+                relation = relations_by_id.get(item_id)
+                if source_item is not None and evidence_matches_claim(
+                    statement,
+                    source_item,
+                ):
+                    supported_ids.append(item_id)
+                elif relation is not None and (
+                    endpoint_key(source) == endpoint_key(relation.source)
+                    and endpoint_key(target) == endpoint_key(relation.target)
+                ):
+                    supported_ids.append(item_id)
+            if not supported_ids:
+                return None
+            return {**step, "evidence": supported_ids}
+
+        steps = [
+            admitted
+            for step in flow.get("steps") or []
+            if (admitted := admitted_step(step)) is not None
+        ]
+
+        # A flow is a directed path, not merely a weakly connected set. Pick the
+        # longest simple directed path from the admitted edges and drop a lone
+        # arrow rather than presenting it as a lifecycle.
+        best_path: List[dict[str, Any]] = []
+
+        def visit(
+            path: List[dict[str, Any]],
+            used_edges: set[int],
+            seen_nodes: set[str],
+        ) -> None:
+            nonlocal best_path
+            if len(path) > len(best_path):
+                best_path = list(path)
+            target = endpoint_key(str(path[-1].get("to") or ""))
+            for index, candidate in enumerate(steps):
+                if index in used_edges:
+                    continue
+                source = endpoint_key(str(candidate.get("from") or ""))
+                next_target = endpoint_key(str(candidate.get("to") or ""))
+                if source != target or next_target in seen_nodes:
+                    continue
+                visit(
+                    [*path, candidate],
+                    {*used_edges, index},
+                    {*seen_nodes, next_target},
+                )
+
+        for index, step in enumerate(steps):
+            source = endpoint_key(str(step.get("from") or ""))
+            target = endpoint_key(str(step.get("to") or ""))
+            visit([step], {index}, {source, target})
+        steps = best_path
+        if len(steps) >= 2:
+            rendered["flow"] = {**flow, "steps": steps}
+        else:
+            rendered.pop("flow", None)
+
     rendered_sections = []
     for section in rendered.get("sections") or []:
         rendered_claims = []
@@ -1117,7 +1315,122 @@ def _fact_plan_markdown(
         readme_intro = _readme_intro(evidence)
         if readme_intro is not None:
             intro = (readme_intro[0], [readme_intro[1]])
-    rendered_sections: List[tuple[str, str]] = []
+    # Framing first, then the scan table, then the detail -- a reader who has
+    # not seen the codebase needs to know what this area is for before being
+    # handed symbol-level handoffs.
+    purpose_block = ""
+    purpose = plan.get("purpose") or {}
+    purpose_statements = [str(item).strip() for item in purpose.get("statements") or []]
+    purpose_statements = [item for item in purpose_statements if item]
+    if purpose_statements:
+        sentences = [
+            _format_supported_literals(item).rstrip(".") + "."
+            for item in purpose_statements
+        ]
+        purpose_block = " ".join(sentences)
+        ids = [str(item) for item in purpose.get("evidence") or []]
+        if ids:
+            purpose_block += " " + " ".join(f"[{item}]" for item in ids)
+
+    map_block = ""
+    rows = plan.get("map") or []
+    if rows:
+        lines = ["| Capability | Implemented by | Source |", "|---|---|---|"]
+        for row in rows:
+            concern = _format_supported_literals(str(row.get("concern") or "")).strip()
+            entity = _format_supported_literals(str(row.get("entity") or "")).strip()
+            ids = " ".join(f"[{item}]" for item in row.get("evidence") or [])
+            lines.append(f"| {concern} | {entity} | {ids} |")
+        map_block = "\n".join(lines)
+
+    # Mermaid node ids must be opaque; the labels carry the real names.
+    flow_block = ""
+    flow = plan.get("flow") or {}
+    if flow.get("steps"):
+        node_ids: dict[str, str] = {}
+
+        def node_id(label: str) -> str:
+            key = label.strip().strip("`").strip()
+            if key not in node_ids:
+                node_ids[key] = f"n{len(node_ids)}"
+            return node_ids[key]
+
+        lines = ["```mermaid", "flowchart LR"]
+        edges = []
+        for step in flow["steps"]:
+            src = str(step.get("from") or "").strip().strip("`")
+            tgt = str(step.get("to") or "").strip().strip("`")
+            label = re.sub(r'["\n|]', " ", str(step.get("label") or "")).strip()
+            sid, tid = node_id(src), node_id(tgt)
+            edges.append((sid, tid, label))
+        for name, ident in node_ids.items():
+            safe = re.sub(r'["\n|]', " ", name)
+            # Mermaid needs the label in literal double quotes, so build it
+            # rather than let a repr choose the quoting.
+            lines.append("  " + ident + '["' + safe + '"]')
+        for sid, tid, label in edges:
+            lines.append(
+                f"  {sid} -->|{label}| {tid}" if label else f"  {sid} --> {tid}"
+            )
+        lines.append("```")
+        caption_ids: List[str] = []
+        for step in flow["steps"]:
+            for item in step.get("evidence") or []:
+                if item not in caption_ids:
+                    caption_ids.append(str(item))
+        caption = str(flow.get("title") or "").strip()
+        if caption and caption_ids:
+            # The fence is stripped before the prose checks run, so the caption
+            # is where this block states its sources.
+            lines.append("")
+            lines.append(
+                caption.rstrip(".")
+                + ". "
+                + " ".join(f"[{item}]" for item in caption_ids)
+            )
+        flow_block = "\n".join(lines)
+
+    see_also_block = ""
+    refs = plan.get("see_also") or []
+    if refs:
+        parts = []
+        for ref in refs:
+            page = str(ref.get("page") or "").strip()
+            title = str(ref.get("title") or page).strip()
+            why = str(ref.get("why") or "").strip()
+            link = f"[{title}](?p={page})"
+            parts.append(f"- {link}" + (f" — {why}" if why else ""))
+        see_also_block = "\n".join(parts)
+
+    evidence_by_id = {item.id: item for item in evidence}
+
+    def excerpt_block(section: dict[str, Any]) -> str:
+        """Render a cited body verbatim from the evidence we hold."""
+
+        spec = section.get("excerpt") or {}
+        item = evidence_by_id.get(str(spec.get("evidence") or ""))
+        if item is None or not (item.content or "").strip():
+            return ""
+        lines = [
+            line
+            for line in item.content.splitlines()
+            if line.strip() and not line.strip().startswith("…")
+        ][:_MAX_EXCERPT_LINES]
+        if len(lines) < 2:
+            return ""
+        language = _lang(item.file)
+        span = ""
+        if item.start_line is not None:
+            span = f":{item.start_line}"
+            if item.end_line is not None and item.end_line != item.start_line:
+                span += f"-{item.end_line}"
+        why = re.sub(r"\s+", " ", str(spec.get("why") or "")).strip()
+        caption = f"`{item.file}{span}`" + (f" — {why.rstrip('.')}." if why else "")
+        return "\n".join(
+            [f"```{language}", *lines, "```", "", f"{caption} [{item.id}]"]
+        )
+
+    rendered_sections: List[tuple[str, List[str]]] = []
     for section in plan.get("sections") or []:
         sentences = []
         section_ids: list[str] = []
@@ -1129,11 +1442,30 @@ def _fact_plan_markdown(
             sentences.append(rendered_claim)
             section_ids.extend(item for item in ids if item not in section_ids)
         title = re.sub(r"\s+", " ", str(section.get("title") or "")).strip()
-        if title and sentences:
-            paragraph = " ".join(sentences)
-            if section_ids:
-                paragraph += " " + " ".join(f"[{item}]" for item in section_ids)
-            rendered_sections.append((title, paragraph))
+        if not title or not sentences:
+            continue
+        parts: List[str] = []
+        lead = section.get("lead") or {}
+        lead_sentences = [
+            _format_supported_literals(str(item).strip()).rstrip(".") + "."
+            for item in lead.get("statements") or []
+            if str(item or "").strip()
+        ]
+        lead_ids = [str(item) for item in lead.get("evidence") or []]
+        if lead_sentences and lead_ids:
+            parts.append(
+                " ".join(lead_sentences)
+                + " "
+                + " ".join(f"[{item}]" for item in lead_ids)
+            )
+        paragraph = " ".join(sentences)
+        if section_ids:
+            paragraph += " " + " ".join(f"[{item}]" for item in section_ids)
+        parts.append(paragraph)
+        block = excerpt_block(section)
+        if block:
+            parts.append(block)
+        rendered_sections.append((title, parts))
 
     if not rendered_sections:
         if intro is None:
@@ -1142,8 +1474,17 @@ def _fact_plan_markdown(
     blocks = []
     if intro is not None:
         blocks.append(intro[0] + " " + " ".join(f"[{item}]" for item in intro[1]))
-    for title, paragraph in rendered_sections:
-        blocks.extend((f"## {title}", paragraph))
+    if purpose_block:
+        blocks.extend(("## Purpose and scope", purpose_block))
+    if map_block:
+        blocks.extend(("## At a glance", map_block))
+    if flow_block:
+        blocks.extend((f"## {flow.get('title') or 'How it fits together'}", flow_block))
+    for title, parts in rendered_sections:
+        blocks.append(f"## {title}")
+        blocks.extend(parts)
+    if see_also_block:
+        blocks.extend(("## Related pages", see_also_block))
     return "\n\n".join(blocks)
 
 
@@ -1301,14 +1642,80 @@ Source evidence:
 Static reference relations:
 {relations}
 
+Other pages of this wiki (do not restate what they own):
+{wiki_pages}
+
 Return ONLY JSON with this shape:
 {{"thesis":{{"statement":"one concise supported thesis","evidence":["E1"]}},
-"sections":[{{"title":"Section title","claims":[{{"role":"flow",
+"purpose":{{"statements":["what this area is responsible for",
+"what a reader can do with it"],"evidence":["E1","E2"]}},
+"map":[{{"concern":"Short capability name","entity":"`Class.method()`",
+"evidence":["E1"]}}],
+"flow":{{"title":"What the diagram shows","steps":[{{"from":"`Class.method()`",
+"to":"`Other.call()`","label":"what moves","evidence":["R1"]}}]}},
+"see_also":[{{"page":"page-id-from-the-list","why":"what that page covers"}}],
+"sections":[{{"title":"Section title",
+"lead":{{"statements":["what problem this part solves",
+"how it is arranged"],"evidence":["E1"]}},
+"excerpt":{{"evidence":"E2","why":"what to notice in these lines"}},
+"claims":[{{"role":"flow",
 "statement":"one concrete claim","evidence":["E1","E2","R1"]}}]}}]}}
 
-Use 2-5 sections and 1-3 claims per section. Every thesis and claim statement
-must be exactly one sentence, and every claim must cite one or more provided
-evidence IDs. Do not invent files, symbols, APIs, relationships, or
+Use 3-6 sections and 2-4 claims per section. Every thesis, purpose, and claim
+statement must be exactly one sentence, and every claim must cite one or more
+provided evidence IDs.
+
+Write `purpose` for a reader who has not seen this codebase: two or three
+sentences saying what this area is responsible for and what it does for the
+caller, in plain language, before any symbol-by-symbol detail. Name concrete
+components, but explain the responsibility rather than reciting a call. It is
+still grounded -- cite the evidence the responsibility rests on.
+
+The no-benefit-language rule below applies to `purpose` and `map` exactly as it
+does to claims: describe what the code does, never how good it is. Do not write
+that something is fast, flexible, easy, powerful, efficient, or that it allows,
+enables, ensures, facilitates or optimizes anything -- not even when the
+project's own README says so. Say what it does instead.
+
+Write `map` as 3-6 rows pairing a capability a reader would look for with the
+concrete code entity that implements it, so the page can be scanned before it
+is read. Each row cites the evidence for that pairing. Omit `map` when the
+evidence does not support at least three distinct pairings.
+
+Open each section with `lead`: one or two sentences at the level of mechanism
+-- what problem this part of the system solves and how it is arranged -- before
+any symbol-by-symbol detail. A lead may reason across its sentences and does
+not have to name two endpoints; it must still cite the evidence it rests on.
+Write it for someone meeting this codebase for the first time. Do not restate
+the section title, and do not simply name the callables the claims will cover.
+
+Give a section an `excerpt` when one cited body is worth reading directly,
+naming the E# whose source shows it and one sentence on what to notice. Choose
+the passage that carries the idea, not the longest one. At most two sections on
+a page should carry an excerpt; a page of code excerpts is no better than
+reading the file.
+
+Write `flow` when the evidence supports an ordered path a reader can follow --
+a request being handled, a value being transformed, a lifecycle advancing. Use
+3-6 steps. Every `from` and `to` must be a symbol that appears in the supplied
+evidence or relations, written the same way it appears there; a step that names
+anything else is dropped. Prefer steps backed by an R# relation. Omit `flow`
+entirely when the evidence shows no ordered path -- an invented sequence is
+worse than none.
+
+Write `see_also` to point at 1-3 of the other wiki pages listed below when a
+responsibility genuinely belongs to them. Use their exact bracketed id. Never
+name a page that is not listed, and do not point at this page.
+
+Do not repeat a relation across sections: each source-to-target handoff belongs
+to exactly one section, in the section whose responsibility it serves.
+
+You are writing one page of a wiki, not a standalone document. When a
+responsibility clearly belongs to another listed page, name that area in one
+clause and move on instead of re-explaining it; spend this page's evidence on
+what this page owns. Never invent a page that is not listed.
+
+Do not invent files, symbols, APIs, relationships, or
 behavior. State implementation facts, not expected benefits or marketing
 judgments. Write direct subject-verb-object claims. Avoid benefit language such
 as allows, enables, facilitates, efficient, optimize, quick, flexible, easy, or
@@ -2404,9 +2811,14 @@ class AgentWiki:
         prompt_version = (
             _OUTLINE_PROMPT_VERSION if suffix == "outline" else _PAGE_PROMPT_VERSION
         )
+        # Deliberately model-independent: the key identifies *what* was asked
+        # (prompt version + repo snapshot + index state), not *who* answered.
+        # Binding the model/endpoint into the key made every backend swap
+        # discard the whole corpus (~800 pages, hours of generation). The
+        # producing model is recorded in the cache entry instead — see
+        # ``_write_cache`` — mirroring EdgeLabeler's namespace-only keying.
         raw = (
             f"{prompt_version}/{getattr(entry, 'instance_id', 'repo')}@{commit}/"
-            f"{self._model}/{self._api_base or ''}/{self._cache_llm_identity}/"
             f"{view_identity}/{suffix}"
         )
         return hashlib.sha1(raw.encode()).hexdigest()[:16]
@@ -2460,7 +2872,17 @@ class AgentWiki:
             return
         try:
             with open(path, "w", encoding="utf-8") as fh:
-                json.dump({"model": self._model, "data": data}, fh)
+                json.dump(
+                    {
+                        # Provenance only — none of this is part of the cache
+                        # key, so a later backend swap reuses this entry.
+                        "model": self._model,
+                        "api_base": self._api_base or "",
+                        "llm_identity": self._cache_llm_identity,
+                        "data": data,
+                    },
+                    fh,
+                )
         except OSError:
             pass
 
@@ -2543,7 +2965,7 @@ class AgentWiki:
         self._write_cache(cache_suffix, page)
         return page
 
-    def _retrieve(self, meta: Dict[str, Any], top_k: int = 8) -> List[Any]:
+    def _retrieve(self, meta: Dict[str, Any], top_k: int = 12) -> List[Any]:
         ensure_views = getattr(self._bundle, "ensure_views", None)
         if callable(ensure_views):
             ensure_views()
@@ -3137,6 +3559,7 @@ class AgentWiki:
 
     def _evidence_items(self, nodes: List[Any]) -> List[EvidenceItem]:
         items: List[EvidenceItem] = []
+        by_identity: Dict[tuple[str, str], int] = {}
         total = 0
         for node in nodes:
             raw_file = self._node_attr(node, "file") or ""
@@ -3145,6 +3568,14 @@ class AgentWiki:
                 continue
             start = self._node_attr(node, "start_line")
             end = self._node_attr(node, "end_line")
+            # A 0/0 span is the "no line data" signature of an index whose
+            # document metadata carries no spans (``_compute_symbols`` coerces
+            # a missing span to 0). Emitting it would cite line 1 of the file
+            # with false confidence; a citation without a line anchor is the
+            # honest degradation. A genuine whole-file anchor pairs start 0
+            # with the file's real end line, so it is unaffected.
+            if start == 0 and end == 0:
+                start = end = None
             start_line = (start + 1) if isinstance(start, int) else None
             end_line = (end + 1) if isinstance(end, int) else start_line
             content = self._node_attr(node, "content") or ""
@@ -3163,6 +3594,33 @@ class AgentWiki:
                 candidate_key(node, self._node_attr),
                 (),
             )
+            # One definition can surface once per retrieval route. Keeping both
+            # copies spends the context budget twice and, when the extra copy
+            # came from a span-less index, leaves the page citing the same
+            # symbol once with a line anchor and once without.
+            identity = (file, _canonical_symbol(str(symbol)))
+            seen_at = by_identity.get(identity)
+            if seen_at is not None:
+                prior = items[seen_at]
+                merged_routes = tuple(dict.fromkeys((*prior.routes, *routes)))
+                if prior.start_line is None and start_line is not None:
+                    # This copy knows where it lives; prefer it, and take the
+                    # content that matches the span it reports.
+                    upgraded = dataclasses.replace(
+                        prior,
+                        start_line=start_line,
+                        end_line=end_line,
+                        content=content,
+                        routes=merged_routes,
+                    )
+                elif merged_routes != prior.routes:
+                    upgraded = dataclasses.replace(prior, routes=merged_routes)
+                else:
+                    continue
+                total += len(upgraded.prompt_block()) - len(prior.prompt_block())
+                items[seen_at] = upgraded
+                continue
+
             item = EvidenceItem(
                 id=f"E{len(items) + 1}",
                 file=file,
@@ -3177,6 +3635,7 @@ class AgentWiki:
             if items and total + block_size > _MAX_CONTEXT_CHARS:
                 break
             items.append(item)
+            by_identity[identity] = len(items) - 1
             total += block_size
         return items
 
@@ -3396,6 +3855,91 @@ class AgentWiki:
     def _relations_context(relations: List[RelationItem]) -> str:
         return "\n".join(item.prompt_line() for item in relations) or "(none)"
 
+    def _resolve_page_references(
+        self,
+        plan: Dict[str, Any],
+        current_id: str,
+    ) -> Dict[str, Any]:
+        """Keep only cross-references that name a real page of this wiki.
+
+        The model is given the page list, but a link to a page that does not
+        exist is a dead end for the reader, so ids are checked rather than
+        trusted. Titles come from the outline so the link text stays correct
+        even if the model paraphrased.
+        """
+
+        refs = plan.get("see_also") or []
+        if not refs:
+            return plan
+        titles: Dict[str, str] = {}
+
+        def walk(pages: Sequence[Dict[str, Any]]) -> None:
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_id = str(page.get("id") or "")
+                if page_id:
+                    titles[page_id] = str(page.get("title") or page_id)
+                walk(page.get("children") or [])
+
+        walk((self._outline or {}).get("pages") or [])
+        if not titles:
+            return plan
+        resolved = []
+        seen = set()
+        for ref in refs:
+            page_id = str(ref.get("page") or "").strip()
+            if page_id not in titles or page_id == current_id or page_id in seen:
+                continue
+            seen.add(page_id)
+            resolved.append({**ref, "page": page_id, "title": titles[page_id]})
+        plan = dict(plan)
+        if resolved:
+            plan["see_also"] = resolved
+        else:
+            plan.pop("see_also", None)
+        return plan
+
+    def _wiki_context(self, current_id: str) -> str:
+        """The other pages of this wiki, so a page knows where it sits.
+
+        Pages are planned independently from their own retrieved evidence, which
+        left every page re-explaining whatever its neighbours had already
+        covered and never pointing at them. This is derived from the outline,
+        so it costs no extra model call.
+        """
+
+        lines: List[str] = []
+
+        def walk(pages: Sequence[Dict[str, Any]], depth: int) -> None:
+            for page in pages:
+                if not isinstance(page, dict):
+                    continue
+                page_id = str(page.get("id") or "")
+                title = str(page.get("title") or "").strip()
+                if not title:
+                    continue
+                summary = re.sub(r"\s+", " ", str(page.get("summary") or "")).strip()[
+                    :160
+                ]
+                marker = " (this page)" if page_id == current_id else ""
+                indent = "  " * depth
+                # The id is what a cross-reference has to name, so hand it over.
+                lines.append(
+                    f"{indent}- [{page_id}] {title}{marker}"
+                    + (f": {summary}" if summary else "")
+                )
+                walk(page.get("children") or [], depth + 1)
+
+        # Read the resolved outline only. Generating one here would make page
+        # rendering depend on an outline round-trip it does not otherwise need.
+        outline = self._outline or {}
+        try:
+            walk(outline.get("pages") or [], 0)
+        except Exception:  # noqa: BLE001 - context is an enhancement, never fatal
+            return "(unavailable)"
+        return "\n".join(lines) or "(none)"
+
     def _fact_plan(
         self,
         meta: Dict[str, Any],
@@ -3410,16 +3954,29 @@ class AgentWiki:
             constraints=_plan_evidence_constraints(meta, evidence, relations),
             evidence=self._evidence_context(evidence),
             relations=self._relations_context(relations),
+            wiki_pages=self._wiki_context(str(meta.get("id") or "")),
         )
         allowed = [item.id for item in evidence] + [item.id for item in relations]
         errors: List[str] = []
         try:
             text = self._client().complete(
                 [{"role": "user", "content": prompt}],
-                max_tokens=1200,
+                # A plan now carries framing, a scan table and up to six
+                # sections; 1200 truncated the JSON mid-object, which parsed as
+                # "no supported sections" and sent every page through repair.
+                max_tokens=3000,
                 temperature=0.0,
             )
             plan, errors = parse_fact_plan(text, allowed)
+            # Framing and the scan table are validated on their own evidence and
+            # are orthogonal to the section repairs that follow. Repairs rewrite
+            # sections and can drop them, so hold the first admitted copy and put
+            # it back on whichever plan finally wins.
+            sticky_blocks = {
+                key: copy.deepcopy(plan[key])
+                for key in ("purpose", "map", "flow", "see_also")
+                if plan.get(key)
+            }
             plan = _normalize_plan_support(plan, evidence, relations)
             plan = _renderable_plan(plan, evidence, relations)
         except Exception as exc:  # noqa: BLE001 - use structural fallback
@@ -3531,7 +4088,7 @@ class AgentWiki:
             try:
                 repaired_text = self._client().complete(
                     [{"role": "user", "content": repair_prompt}],
-                    max_tokens=1400,
+                    max_tokens=2600,
                     temperature=0.0,
                 )
                 repaired_plan, repaired_errors = parse_fact_plan(repaired_text, allowed)
@@ -3596,6 +4153,8 @@ class AgentWiki:
                 logger.debug("wiki fact-plan repair unavailable: %s", exc)
                 break
         if best_plan.get("sections"):
+            for key, value in sticky_blocks.items():
+                best_plan.setdefault(key, value)
             return best_plan, best_warnings
 
         claims = [
@@ -3646,7 +4205,14 @@ class AgentWiki:
             for i in range(len(parts)):
                 rel = "/".join(parts[i:])
                 if os.path.exists(os.path.join(repo_dir, rel)):
-                    self._iroot = p[: len(p) - len(rel)]
+                    prefix = p[: len(p) - len(rel)]
+                    # Only cache a real prefix. An already-relative input (a
+                    # sparse hit) matches at i=0 with an empty prefix, and
+                    # caching that would make every later absolute path (a
+                    # dense hit, indexed under the builder's own root) fall
+                    # through unstripped.
+                    if prefix:
+                        self._iroot = prefix
                     return rel
         mi = p.rfind("/repo/")
         if mi != -1:
@@ -3772,7 +4338,7 @@ class AgentWiki:
         )
         nodes = self._retrieve(
             meta,
-            top_k=(_OVERVIEW_RETRIEVAL_LIMIT if meta.get("id") == "overview" else 8),
+            top_k=(_OVERVIEW_RETRIEVAL_LIMIT if meta.get("id") == "overview" else 12),
         )
         evidence = self._evidence_items(nodes)
         if not evidence:
@@ -3800,6 +4366,7 @@ class AgentWiki:
 
         relations = self._relation_items(evidence, meta)
         plan, plan_warnings = self._fact_plan(meta, evidence, relations)
+        plan = self._resolve_page_references(plan, str(meta.get("id") or ""))
         model_planning_failed = "model planning unavailable" in plan_warnings
         dense_sections = meta.get("id") == "overview"
         quality_requirements = {
@@ -4041,12 +4608,14 @@ class AgentWiki:
                     quality = candidate_quality
                     repaired = True
         markdown = _link_evidence_markers(markdown)
-        hard_plan_warnings = _hard_plan_warnings(plan_warnings)
+        blocking_plan_warnings = _blocking_plan_warnings(plan_warnings)
+        # Publish on the grounding floor, not on a spotless report. Coverage,
+        # unresolved identifiers, marketing words and composition notes are all
+        # still computed and returned -- they describe the page, and surfacing
+        # them is the point. Gating on every one of them made "degraded" fire on
+        # pages whose only fault was a shape the checker could not spell.
         publishable = bool(
-            report["valid"]
-            and not report["promotional_phrases"]
-            and quality["valid"]
-            and not hard_plan_warnings
+            report.get("grounded", report["valid"]) and not blocking_plan_warnings
         )
         generated = publishable and not model_failed and not model_planning_failed
         if generated:

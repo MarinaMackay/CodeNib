@@ -133,6 +133,20 @@ def test_source_body_matches_a_class_qualified_self_call():
     )
 
 
+def test_source_body_does_not_infer_flow_from_sibling_definitions():
+    evidence = EvidenceItem(
+        id="E1",
+        file="src/workflow.py",
+        start_line=1,
+        end_line=8,
+        symbol="alpha",
+        kind="function",
+        content=("def alpha():\n" "    return 1\n\n" "def beta():\n" "    return 2"),
+    )
+
+    assert not evidence_matches_claim("`alpha` calls `beta`", evidence)
+
+
 def test_diversification_bounds_candidates_from_one_file():
     ranked = [
         (SimpleNamespace(file="a.py", name=f"a{i}"), ("dense",), 1.0 / (i + 1))
@@ -597,3 +611,263 @@ def test_promotional_sentence_removal_preserves_support_marker():
     cleaned = remove_promotional_sentences(markdown)
 
     assert cleaned == "The `Router` dispatches requests from `src/core.py`. [E1]"
+
+
+def test_fully_attributed_table_counts_as_cited():
+    """A table cites per row; its last cell closes with a pipe, not a citation."""
+
+    from codenib.wiki.evidence import _block_is_cited
+
+    table = (
+        "| Capability | Implemented by | Source |\n"
+        "|---|---|---|\n"
+        "| Send a request | `Session.send()` | [E1] |\n"
+        "| Open a connection | `HTTPAdapter.get_connection()` | [E2] |"
+    )
+    assert _block_is_cited(table)
+
+
+def test_table_with_an_unattributed_row_is_not_cited():
+    from codenib.wiki.evidence import _block_is_cited
+
+    table = (
+        "| Capability | Implemented by | Source |\n"
+        "|---|---|---|\n"
+        "| Send a request | `Session.send()` | [E1] |\n"
+        "| Open a connection | `HTTPAdapter.get_connection()` |  |"
+    )
+    assert not _block_is_cited(table)
+
+
+def test_prose_still_needs_a_trailing_citation_run():
+    from codenib.wiki.evidence import _block_is_cited
+
+    assert _block_is_cited("`Session.send()` dispatches the request. [E1]")
+    assert not _block_is_cited("`Session.send()` dispatches the request.")
+
+
+def test_promotional_words_quoted_from_source_are_not_the_page_s_own():
+    """A project's own tagline is reported with a citation, not asserted."""
+
+    from codenib.wiki.evidence import EvidenceItem, grounding_report
+
+    readme = EvidenceItem(
+        id="E1",
+        file="README.md",
+        start_line=1,
+        end_line=3,
+        symbol="README.md",
+        kind="doc",
+        content="A fast and flexible static site generator written in Go.",
+    )
+    quoted = "A fast and flexible static site generator written in Go. [E1]"
+    assert grounding_report(quoted, [readme], [])["promotional_phrases"] == []
+
+
+def test_promotional_words_the_page_wrote_itself_still_flag():
+    from codenib.wiki.evidence import EvidenceItem, grounding_report
+
+    src = EvidenceItem(
+        id="E1",
+        file="site.go",
+        start_line=1,
+        end_line=3,
+        symbol="Build",
+        kind="function",
+        content="func Build() error { return nil }",
+    )
+    authored = "`Build()` is a fast and flexible entry point. [E1]"
+    assert grounding_report(authored, [src], [])["promotional_phrases"]
+
+
+def _doc(content, file="src/models.py", symbol="PreparedRequest.prepare_url"):
+    from codenib.wiki.evidence import EvidenceItem
+
+    return EvidenceItem(
+        id="E1",
+        file=file,
+        start_line=1,
+        end_line=9,
+        symbol=symbol,
+        kind="method",
+        content=content,
+    )
+
+
+def test_qualified_display_name_resolves_from_both_halves():
+    from codenib.wiki.evidence import grounding_report
+
+    item = _doc(
+        "struct AnyNodeRef;", file="crates/ast/src/generated.rs", symbol="AnyNodeRef"
+    )
+    md = "The `crates/ast/src/generated.rs:AnyNodeRef` enum wraps every node. [E1]"
+    assert grounding_report(md, [item], [])["unsupported_identifiers"] == []
+
+
+def test_attribute_access_resolves_from_owner_and_leaf():
+    from codenib.wiki.evidence import grounding_report
+
+    item = _doc(
+        "class PreparedRequest:\n    def prepare_url(self):\n        self.url = None"
+    )
+    md = "`PreparedRequest.url` holds the encoded target after preparation. [E1]"
+    assert grounding_report(md, [item], [])["unsupported_identifiers"] == []
+
+
+def test_uri_scheme_is_not_an_identifier():
+    from codenib.wiki.evidence import grounding_report
+
+    item = _doc("def prepare_url(self):\n    return None")
+    md = "`prepare_url` rejects a `mailto:` target before encoding the host. [E1]"
+    assert grounding_report(md, [item], [])["unsupported_identifiers"] == []
+
+
+def test_an_invented_symbol_still_flags():
+    from codenib.wiki.evidence import grounding_report
+
+    item = _doc("def prepare_url(self):\n    return None")
+    md = "`PreparedRequest.teleport_payload()` moves the body offsite. [E1]"
+    assert grounding_report(md, [item], [])["unsupported_identifiers"]
+
+
+def test_grounding_floor_rejects_an_unsupported_symbol():
+    """A mostly cited page must not publish an invented symbol as grounded."""
+
+    from codenib.wiki.evidence import grounding_report
+
+    item = _doc("def prepare_url(self):\n    return None")
+    md = (
+        "`prepare_url` encodes the target host before transmission. [E1]\n\n"
+        "It also normalises the query string for the adapter. [E1]\n\n"
+        "The `NonexistentHelper.thing()` call is not in evidence at all."
+    )
+    report = grounding_report(md, [item], [])
+    assert report["valid"] is False
+    assert report["grounded"] is False
+    assert report["unsupported_identifiers"]
+
+
+def test_grounding_floor_allows_uncited_connective_prose_without_false_sources():
+    from codenib.wiki.evidence import grounding_report
+
+    item = _doc("def prepare_url(self):\n    return None")
+    md = (
+        "`prepare_url` encodes the target host before transmission. [E1]\n\n"
+        "The request path is described in the next section for context.\n\n"
+        "`prepare_url` returns after the request target is ready. [E1]"
+    )
+    report = grounding_report(md, [item], [])
+    assert report["valid"] is False
+    assert report["grounded"] is True
+    assert report["unknown_files"] == []
+    assert report["unsupported_identifiers"] == []
+
+
+def test_grounding_floor_rejects_a_page_citing_evidence_that_does_not_exist():
+    from codenib.wiki.evidence import grounding_report
+
+    item = _doc("def prepare_url(self):\n    return None")
+    md = "`prepare_url` encodes the target host before transmission. [E9]"
+    report = grounding_report(md, [item], [])
+    assert report["grounded"] is False
+    assert report["unknown_citations"] == ["E9"]
+
+
+def test_flow_needs_at_least_two_steps():
+    """A single arrow is not a path worth drawing."""
+
+    import json
+
+    from codenib.wiki.evidence import parse_fact_plan
+
+    raw = json.dumps(
+        {
+            "thesis": {"statement": "`A.go()` runs.", "evidence": ["E1"]},
+            "flow": {
+                "title": "One hop",
+                "steps": [{"from": "`A.go()`", "to": "`B.do()`", "evidence": ["E1"]}],
+            },
+            "sections": [
+                {
+                    "title": "S",
+                    "claims": [
+                        {
+                            "role": "flow",
+                            "statement": "`A.go()` calls `B.do()`.",
+                            "evidence": ["E1"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    plan, _ = parse_fact_plan(raw, {"E1"})
+    assert "flow" not in plan
+
+
+def test_flow_survives_with_enough_steps():
+    import json
+
+    from codenib.wiki.evidence import parse_fact_plan
+
+    raw = json.dumps(
+        {
+            "thesis": {"statement": "`A.go()` runs.", "evidence": ["E1"]},
+            "flow": {
+                "title": "Request path",
+                "steps": [
+                    {"from": "`A.go()`", "to": "`B.do()`", "evidence": ["E1"]},
+                    {"from": "`B.do()`", "to": "`C.end()`", "evidence": ["E1"]},
+                ],
+            },
+            "sections": [
+                {
+                    "title": "S",
+                    "claims": [
+                        {
+                            "role": "flow",
+                            "statement": "`A.go()` calls `B.do()`.",
+                            "evidence": ["E1"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    plan, _ = parse_fact_plan(raw, {"E1"})
+    assert len(plan["flow"]["steps"]) == 2
+
+
+def test_flow_drops_steps_without_admissible_evidence():
+    import json
+
+    from codenib.wiki.evidence import parse_fact_plan
+
+    raw = json.dumps(
+        {
+            "thesis": {"statement": "`A.go()` runs.", "evidence": ["E1"]},
+            "flow": {
+                "title": "Unattributed path",
+                "steps": [
+                    {"from": "`A.go()`", "to": "`B.go()`"},
+                    {"from": "`B.go()`", "to": "`C.go()`"},
+                ],
+            },
+            "sections": [
+                {
+                    "title": "S",
+                    "claims": [
+                        {
+                            "role": "flow",
+                            "statement": "`A.go()` calls `B.go()`.",
+                            "evidence": ["E1"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    plan, _ = parse_fact_plan(raw, {"E1"})
+
+    assert "flow" not in plan

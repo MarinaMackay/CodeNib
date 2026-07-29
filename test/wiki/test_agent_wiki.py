@@ -5233,7 +5233,7 @@ def test_structured_page_deduplicates_without_free_form_markdown_repair(tmp_path
     assert page["markdown"].count("`Router` dispatches") == 1
 
 
-def test_generation_distinguishes_soft_and_semantic_plan_diagnostics(tmp_path):
+def test_generation_separates_soft_composition_and_semantic_diagnostics(tmp_path):
     node = {
         "file": "src/core.py",
         "node_name": "Router",
@@ -5319,10 +5319,15 @@ def test_generation_distinguishes_soft_and_semantic_plan_diagnostics(tmp_path):
         }
     )
 
+    # A composition note says the page could be organised better, not that it
+    # says something unsupported. It is recorded and steers repair, but it does
+    # not stop the page from being published -- a richer page has more sections
+    # and so more surface for these to fire on, and gating on them marked every
+    # page degraded while its grounding report was clean.
     assert isolated["grounding"]["valid"] is True
     assert isolated["quality"]["valid"] is True
-    assert isolated["generation"]["mode"] == "degraded"
-    assert isolated["generation"]["reason"] == "quality_guard"
+    assert isolated["generation"]["mode"] == "generated"
+    assert isolated["generation"]["reason"] is None
     assert isolated["generation"]["plan_warnings"] == [isolated_warning]
 
     semantic_warning = (
@@ -5341,6 +5346,7 @@ def test_generation_distinguishes_soft_and_semantic_plan_diagnostics(tmp_path):
         }
     )
 
+    # An unsupported fact is the tier that still blocks publication.
     assert guarded["grounding"]["valid"] is True
     assert guarded["quality"]["valid"] is True
     assert guarded["generation"]["mode"] == "degraded"
@@ -5492,3 +5498,166 @@ def test_agent_wiki_page_cache_key_tracks_outline_metadata():
     assert AgentWiki._page_cache_suffix(original) != AgentWiki._page_cache_suffix(
         revised
     )
+
+
+def test_flow_step_naming_an_unsupported_symbol_is_dropped():
+    """A diagram must not invent a hop the evidence does not show."""
+
+    from codenib.wiki.agent_wiki import _renderable_plan
+    from codenib.wiki.evidence import EvidenceItem
+
+    evidence = [
+        EvidenceItem(
+            id="E1",
+            file="a.py",
+            start_line=1,
+            end_line=9,
+            symbol="Router.handle",
+            kind="method",
+            content="def handle(self):\n    return self.dispatch()",
+        )
+    ]
+    plan = {
+        "thesis": {"statement": "`Router.handle()` dispatches.", "evidence": ["E1"]},
+        "flow": {
+            "title": "Path",
+            "steps": [
+                {
+                    "from": "`Router.handle()`",
+                    "to": "`Router.dispatch()`",
+                    "evidence": ["E1"],
+                },
+                {
+                    "from": "`Router.dispatch()`",
+                    "to": "`Teleporter.beam()`",
+                    "evidence": ["E1"],
+                },
+            ],
+        },
+        "sections": [
+            {
+                "title": "S",
+                "claims": [
+                    {
+                        "role": "flow",
+                        "statement": "`Router.handle()` calls `Router.dispatch()`.",
+                        "evidence": ["E1"],
+                    }
+                ],
+            }
+        ],
+    }
+    rendered = _renderable_plan(plan, evidence, [])
+    # Only one step resolves, and one arrow is not a flow.
+    assert "flow" not in rendered
+
+
+def test_flow_keeps_only_its_connected_path():
+    """Disconnected pairs are a relation list drawn with arrows, not a path."""
+
+    from codenib.wiki.agent_wiki import _renderable_plan
+    from codenib.wiki.evidence import EvidenceItem
+
+    evidence = [
+        EvidenceItem(
+            id="E1",
+            file="a.py",
+            start_line=1,
+            end_line=3,
+            symbol="Session.send",
+            kind="method",
+            content="def send(self):\n    prepare()",
+        ),
+        EvidenceItem(
+            id="E2",
+            file="a.py",
+            start_line=4,
+            end_line=6,
+            symbol="prepare",
+            kind="function",
+            content="def prepare():\n    dispatch()",
+        ),
+        EvidenceItem(
+            id="E3",
+            file="b.py",
+            start_line=1,
+            end_line=3,
+            symbol="unrelated_one",
+            kind="function",
+            content="def unrelated_one():\n    unrelated_two()",
+        ),
+    ]
+    plan = {
+        "thesis": {"statement": "`Session.send()` sends.", "evidence": ["E1"]},
+        "flow": {
+            "title": "Path",
+            "steps": [
+                {"from": "`send()`", "to": "`prepare()`", "evidence": ["E1"]},
+                {"from": "`prepare()`", "to": "`dispatch()`", "evidence": ["E2"]},
+                {
+                    "from": "`unrelated_one()`",
+                    "to": "`unrelated_two()`",
+                    "evidence": ["E3"],
+                },
+            ],
+        },
+        "sections": [
+            {
+                "title": "S",
+                "claims": [
+                    {
+                        "role": "flow",
+                        "statement": "`send()` calls `prepare()`.",
+                        "evidence": ["E1"],
+                    }
+                ],
+            }
+        ],
+    }
+    steps = _renderable_plan(plan, evidence, [])["flow"]["steps"]
+    assert len(steps) == 2
+    assert all("unrelated" not in str(s) for s in steps)
+
+
+def test_flow_drops_names_that_exist_without_a_proven_relation():
+    """Independent definitions must not become a source-checked flow."""
+
+    from codenib.wiki.agent_wiki import _renderable_plan
+    from codenib.wiki.evidence import EvidenceItem
+
+    evidence = [
+        EvidenceItem(
+            id=f"E{index}",
+            file="workflow.py",
+            start_line=index,
+            end_line=index,
+            symbol=name,
+            kind="function",
+            content=f"def {name}():\n    return {index}",
+        )
+        for index, name in enumerate(("alpha", "beta", "gamma"), start=1)
+    ]
+    plan = {
+        "thesis": {"statement": "`alpha()` starts.", "evidence": ["E1"]},
+        "flow": {
+            "title": "Invented path",
+            "steps": [
+                {"from": "`alpha()`", "to": "`beta()`", "evidence": ["E1"]},
+                {"from": "`beta()`", "to": "`gamma()`", "evidence": ["E2"]},
+            ],
+        },
+        "sections": [
+            {
+                "title": "S",
+                "claims": [
+                    {
+                        "role": "responsibility",
+                        "statement": "`alpha()` returns one",
+                        "evidence": ["E1"],
+                    }
+                ],
+            }
+        ],
+    }
+
+    assert "flow" not in _renderable_plan(plan, evidence, [])

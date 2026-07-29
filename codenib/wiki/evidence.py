@@ -26,6 +26,29 @@ _CITATION_TAIL_RE = re.compile(
     r"(?:\s*\[(?:E|R)\d+\])+\s*[.!?]?\s*$",
 )
 _CODE_RE = re.compile(r"`([^`\n]+)`")
+# Publication floor: at least half a page's blocks must carry their source.
+_MIN_CITATION_COVERAGE = 0.5
+_TABLE_DIVIDER_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+
+
+def _block_is_cited(block: str) -> bool:
+    """Whether a rendered block carries its own source attribution.
+
+    Prose puts its citations in a trailing run. A table cites per row instead,
+    and its last cell closes with a pipe, so the trailing-run test never matches
+    -- which counted a fully attributed table as an uncited block. Require every
+    data row to cite, which is stricter than the prose rule, not looser.
+    """
+
+    if _CITATION_TAIL_RE.search(block):
+        return True
+    rows = [line for line in block.splitlines() if line.strip().startswith("|")]
+    if len(rows) >= 3 and _TABLE_DIVIDER_RE.match(rows[1]):
+        data_rows = rows[2:]
+        return bool(data_rows) and all(_CITATION_RE.search(row) for row in data_rows)
+    return False
+
+
 _PATH_RE = re.compile(
     r"(?<![\w/])([\w./-]+\.(?:py|pyi|go|rs|ts|tsx|js|jsx|c|h|cc|cpp|hpp|"
     r"java|rb|php|cs|kt|kts|swift|scala))(?![\w/])",
@@ -235,36 +258,101 @@ def relation_matches_claim(statement: str, relation: RelationItem) -> bool:
 
 
 def evidence_matches_claim(statement: str, evidence: EvidenceItem) -> bool:
-    """Whether one cited source body contains every named claim endpoint."""
+    """Whether a cited callable body directly invokes the named target.
 
-    identifiers = {
+    Merely mentioning both names is not enough: a file that independently
+    defines ``alpha`` and ``beta`` does not prove an ``alpha -> beta`` edge.
+    Source-only flow support is therefore limited to a function/method whose
+    identity matches the claim's source and whose body contains a call to the
+    target. Other interactions require a static ``RelationItem``.
+    """
+
+    identifiers = [
         re.sub(r"\([^)]*\)$", "", item.strip()).lower()
         for item in _CODE_RE.findall(statement or "")
-    }
+    ]
     if len(identifiers) < 2:
         return False
-    source_corpus = "\n".join((evidence.symbol, evidence.content)).lower()
-    file_corpus = evidence.file.lower()
+    evidence_symbol = _endpoint_symbol(evidence.symbol)
+    evidence_leaf = re.split(r"::|\.", evidence_symbol)[-1]
 
-    def present(identifier: str) -> bool:
-        if identifier in source_corpus:
-            return True
-        if "/" in identifier or re.search(
-            r"\.(?:py|go|rs|ts|tsx|js|jsx|c|h|cc|cpp|java|rb|php|cs|kt|kts)$",
-            identifier,
-        ):
-            return identifier in file_corpus
-        symbol = identifier.rsplit(":", 1)[-1]
-        leaf = symbol.rsplit(".", 1)[-1]
-        return bool(
-            len(leaf) >= 3
-            and re.search(
-                rf"(?<!\w){re.escape(leaf)}(?!\w)",
-                source_corpus,
+    def names_evidence_symbol(identifier: str) -> bool:
+        normalized = _endpoint_symbol(identifier)
+        leaf = re.split(r"::|\.", normalized)[-1]
+        return normalized == evidence_symbol or (bool(leaf) and leaf == evidence_leaf)
+
+    def source_body(identifier: str) -> str:
+        if names_evidence_symbol(identifier):
+            return evidence.content or ""
+        source = _endpoint_symbol(identifier)
+        leaf = re.split(r"::|\.", source)[-1]
+        definitions = (
+            re.compile(
+                rf"^(?P<indent>\s*)(?:async\s+)?def\s+{re.escape(leaf)}\s*\(",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                rf"^(?P<indent>\s*)(?:(?:export|public|private|protected|static)"
+                rf"\s+)*(?:async\s+)?function\s+{re.escape(leaf)}\s*\(",
+                re.IGNORECASE,
+            ),
+        )
+        lines = (evidence.content or "").splitlines()
+        for index, line in enumerate(lines):
+            match = next(
+                (
+                    pattern.search(line)
+                    for pattern in definitions
+                    if pattern.search(line)
+                ),
+                None,
             )
+            if match is None:
+                continue
+            indent = len(match.group("indent").expandtabs(4))
+            body = [line]
+            for later in lines[index + 1 :]:
+                stripped = later.strip()
+                later_indent = len(later) - len(later.lstrip())
+                if (
+                    stripped
+                    and later_indent <= indent
+                    and re.match(
+                        r"(?:async\s+)?def\s+|class\s+|"
+                        r"(?:(?:export|public|private|protected|static)\s+)*"
+                        r"(?:async\s+)?function\s+",
+                        stripped,
+                        re.IGNORECASE,
+                    )
+                ):
+                    break
+                body.append(later)
+            return "\n".join(body)
+        return ""
+
+    def body_calls(identifier: str, content: str) -> bool:
+        target = _endpoint_symbol(identifier)
+        leaf = re.split(r"::|\.", target)[-1]
+        if len(leaf) < 2:
+            return False
+        call = re.compile(rf"(?<!\w){re.escape(leaf)}\s*\(", re.IGNORECASE)
+        declarations = (
+            re.compile(rf"^\s*(?:async\s+)?def\s+{re.escape(leaf)}\s*\("),
+            re.compile(
+                rf"^\s*(?:(?:export|public|private|protected|static)\s+)*"
+                rf"(?:async\s+)?function\s+{re.escape(leaf)}\s*\("
+            ),
+        )
+        return any(
+            call.search(line)
+            and not any(pattern.search(line) for pattern in declarations)
+            for line in content.splitlines()
         )
 
-    return all(present(identifier) for identifier in identifiers)
+    return any(
+        bool(body := source_body(source)) and body_calls(target, body)
+        for source, target in zip(identifiers, identifiers[1:], strict=False)
+    )
 
 
 def is_interaction_claim(statement: str) -> bool:
@@ -482,17 +570,163 @@ def parse_fact_plan(
                         "evidence": evidence,
                     }
                 )
+        # Mechanism-level framing for the section. It may reason across two
+        # sentences and need not name two endpoints, but it still has to cite.
+        lead: dict[str, Any] = {}
+        raw_lead = section.get("lead")
+        if isinstance(raw_lead, dict):
+            statements = [
+                str(item).strip()
+                for item in raw_lead.get("statements") or []
+                if str(item or "").strip()
+            ]
+            lead_evidence = _supported_evidence_ids(
+                raw_lead.get("evidence"),
+                allowed,
+                label="section lead",
+                errors=errors,
+            )
+            if statements and lead_evidence:
+                lead = {"statements": statements[:2], "evidence": lead_evidence}
+
+        # The excerpt names which evidence to show; the source is rendered from
+        # that item rather than reproduced by the model, so it stays verbatim.
+        excerpt: dict[str, Any] = {}
+        raw_excerpt = section.get("excerpt")
+        if isinstance(raw_excerpt, dict):
+            ref = str(raw_excerpt.get("evidence") or "").strip()
+            why = str(raw_excerpt.get("why") or "").strip()
+            if ref in allowed:
+                excerpt = {"evidence": ref, "why": why}
+
         if title and claims:
-            sections.append({"title": title, "claims": claims})
+            entry: dict[str, Any] = {"title": title, "claims": claims}
+            if lead:
+                entry["lead"] = lead
+            if excerpt:
+                entry["excerpt"] = excerpt
+            sections.append(entry)
     if not sections:
         errors.append("plan has no supported sections")
-    return {
+
+    # Reader-facing framing and the scan table are grounded like any claim: each
+    # needs admissible evidence ids or it is dropped rather than passed through.
+    purpose: dict[str, Any] = {}
+    raw_purpose = raw.get("purpose")
+    if isinstance(raw_purpose, dict):
+        statements = [
+            str(item).strip()
+            for item in raw_purpose.get("statements") or []
+            if str(item or "").strip()
+        ]
+        purpose_evidence = _supported_evidence_ids(
+            raw_purpose.get("evidence"),
+            allowed,
+            label="purpose",
+            errors=errors,
+        )
+        if statements and purpose_evidence:
+            purpose = {"statements": statements, "evidence": purpose_evidence}
+
+    scan_map: List[dict[str, Any]] = []
+    for row in raw.get("map") or []:
+        if not isinstance(row, dict):
+            continue
+        concern = str(row.get("concern") or "").strip()
+        entity = str(row.get("entity") or "").strip()
+        row_evidence = _supported_evidence_ids(
+            row.get("evidence"),
+            allowed,
+            label="map row",
+            errors=errors,
+        )
+        if concern and entity and row_evidence:
+            scan_map.append(
+                {"concern": concern, "entity": entity, "evidence": row_evidence}
+            )
+
+    # A diagram is validated here, on structured data, rather than by reading the
+    # rendered fence back out: a mermaid block is stripped before the prose
+    # checks run, so a step naming a symbol nobody supplied would sail through.
+    flow: dict[str, Any] = {}
+    raw_flow = raw.get("flow")
+    if isinstance(raw_flow, dict):
+        steps = []
+        for step in raw_flow.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            source = str(step.get("from") or "").strip()
+            target = str(step.get("to") or "").strip()
+            label = str(step.get("label") or "").strip()
+            step_evidence = _supported_evidence_ids(
+                step.get("evidence"),
+                allowed,
+                label="flow step",
+                errors=errors,
+            )
+            if source and target and source != target and step_evidence:
+                steps.append(
+                    {
+                        "from": source,
+                        "to": target,
+                        "label": label,
+                        "evidence": step_evidence,
+                    }
+                )
+        # One arrow is not a flow.
+        if len(steps) >= 2:
+            flow = {
+                "title": str(raw_flow.get("title") or "").strip(),
+                "steps": steps[:6],
+            }
+
+    see_also: List[dict[str, Any]] = []
+    for ref in raw.get("see_also") or []:
+        if not isinstance(ref, dict):
+            continue
+        page = str(ref.get("page") or "").strip()
+        why = str(ref.get("why") or "").strip()
+        if page:
+            see_also.append({"page": page, "why": why})
+
+    plan: dict[str, Any] = {
         "thesis": {
             "statement": thesis_statement,
             "evidence": thesis_evidence,
         },
         "sections": sections,
-    }, errors
+    }
+    if purpose:
+        plan["purpose"] = purpose
+    if scan_map:
+        plan["map"] = scan_map
+    if flow:
+        plan["flow"] = flow
+    if see_also:
+        plan["see_also"] = see_also[:3]
+    return plan, errors
+
+
+def _quotes_cited_evidence(block: str, evidence: Sequence["EvidenceItem"]) -> bool:
+    """Whether a block reproduces text that is already in its cited source.
+
+    A project's own one-line description is the natural opening for an overview,
+    and it is reported with a citation rather than asserted. Judging it as the
+    page's own marketing flagged pages for saying what their README says --
+    "A fast and flexible static site generator" -- which the page did not claim,
+    it quoted.
+    """
+
+    text = _CITATION_TAIL_RE.sub("", block).strip()
+    text = re.sub(r"\[(?:E|R)\d+\]", "", text).strip()
+    if len(text) < 24:
+        return False
+    needle = " ".join(text.split()).casefold()
+    for item in evidence:
+        haystack = " ".join((item.content or "").split()).casefold()
+        if needle and needle in haystack:
+            return True
+    return False
 
 
 def grounding_report(
@@ -515,7 +749,7 @@ def grounding_report(
         plain = re.sub(r"^[-*]\s+", "", block, flags=re.MULTILINE)
         if len(re.sub(r"[`*_[\]()#>-]", "", plain).strip()) >= 40:
             blocks.append(block)
-    cited_blocks = sum(1 for block in blocks if _CITATION_TAIL_RE.search(block))
+    cited_blocks = sum(1 for block in blocks if _block_is_cited(block))
     coverage = cited_blocks / len(blocks) if blocks else 0.0
 
     corpus = "\n".join(
@@ -533,11 +767,30 @@ def grounding_report(
         call_name_match = re.match(r"([A-Za-z_][\w.]*)\s*\(", source_name)
         call_name = call_name_match.group(1) if call_name_match else ""
         call_leaf = call_name.rsplit(".", 1)[-1]
+        # `path/to/file.rs:Symbol` is a display form; the corpus holds the path
+        # and the symbol separately, never joined. Accept it only when both
+        # halves are known.
+        qualified = ""
+        if ":" in source_name and not source_name.endswith(":"):
+            head, _, tail = source_name.rpartition(":")
+            if head and tail and head.lower() in corpus and tail.lower() in corpus:
+                qualified = source_name
+        # Attribute access, e.g. `PreparedRequest.url`. Calls already resolve by
+        # leaf name; do the same for attributes, but require the owner too.
+        attribute = ""
+        if not call_name and "." in source_name:
+            owner, _, leaf = source_name.rpartition(".")
+            if owner and leaf and owner.lower() in corpus and leaf.lower() in corpus:
+                attribute = source_name
         if (
             not normalized
             or normalized.lower() in _COMMON_CODE_TERMS
+            # A URI scheme (`mailto:`, `https:`) is not a code identifier.
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9+.\-]*:", normalized)
             or normalized.lower() in corpus
             or source_name.lower() in corpus
+            or qualified
+            or attribute
             or (call_name and call_name.lower() in corpus)
             or (call_leaf and call_leaf.lower() in corpus)
         ):
@@ -555,7 +808,12 @@ def grounding_report(
         }
     )
     unsupported_identifiers = sorted(set(unsupported_identifiers))
-    promotional = promotional_phrases(without_fences)
+    # Marketing words the page wrote itself are a defect; the same words inside
+    # a block it is quoting from cited source are not.
+    authored = "\n\n".join(
+        block for block in blocks if not _quotes_cited_evidence(block, evidence)
+    )
+    promotional = promotional_phrases(authored)
     valid = (
         bool(blocks)
         and coverage == 1.0
@@ -563,8 +821,23 @@ def grounding_report(
         and not unknown_files
         and not unsupported_identifiers
     )
+    # ``valid`` is the strict, descriptive reading: every substantial block is
+    # cited and every source reference resolves. ``grounded`` keeps a looser
+    # coverage floor for readable connective prose, but never admits an unknown
+    # source path, invented identifier, or promotional claim.
+    grounded = (
+        bool(blocks)
+        and coverage >= _MIN_CITATION_COVERAGE
+        # Citing an id that was never supplied is an integrity failure, not a
+        # shortfall: the page points at evidence that does not exist.
+        and not unknown_citations
+        and not unknown_files
+        and not unsupported_identifiers
+        and not promotional
+    )
     return {
         "valid": valid,
+        "grounded": grounded,
         "citation_coverage": round(coverage, 3),
         "cited_evidence": len(cited & allowed_ids),
         "evidence_count": len(evidence),

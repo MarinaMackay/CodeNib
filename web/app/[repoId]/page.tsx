@@ -33,7 +33,18 @@ interface Heading {
 // The wiki page now leads with an interactive subsystem graph, so the narrator's
 // generated mermaid diagrams (and any heading left empty once removed) are
 // redundant — strip them before rendering.
-function stripGeneratedDiagrams(md: string): string {
+/** Drop diagrams unless they came from the validated structured plan.
+ *
+ *  The WikiBuilder path emits a mechanical fan-out of every module it found,
+ *  which Mermaid's auto-layout renders as noise. Free-form model Markdown is
+ *  also not trusted to supply executable Mermaid directives. A generated
+ *  fact-plan diagram is different: its directed edges were validated against
+ *  the page's evidence before the backend rendered the fence. */
+function stripGeneratedDiagrams(
+  md: string,
+  keepValidatedPlan: boolean,
+): string {
+  if (keepValidatedPlan) return md;
   return md
     .replace(/\n#{1,6}[^\n]*\n+```mermaid[\s\S]*?```/g, "") // a heading + its diagram
     .replace(/```mermaid[\s\S]*?```/g, "") // any stray diagram
@@ -279,7 +290,11 @@ export default function WikiPageView({ repoId }: { repoId: string }) {
 
   const hasGraph = !!repo?.capabilities?.codemap;
   const generationMode = page?.generation?.mode ?? "offline";
-  const sourceChecked = !!page?.grounding?.valid && page?.quality?.valid !== false;
+  // "Source checked" is the strict claim: every substantial block is cited
+  // and every referenced source identifier resolves. Generated pages that only
+  // clear the looser grounding floor stay visible, but retain the review badge.
+  const sourceChecked =
+    generationMode === "generated" && page?.grounding?.valid === true;
   const evidenceRoutes = [
     ...new Set(page?.evidence?.items.flatMap((item) => item.routes) ?? []),
   ];
@@ -408,7 +423,7 @@ export default function WikiPageView({ repoId }: { repoId: string }) {
                       ? "Index-derived page"
                       : sourceChecked
                         ? "Evidence-linked generation"
-                        : generationMode === "degraded"
+                        : page.generation?.fallback
                           ? "Index-derived fallback"
                           : "Generated, evidence review needed"}
                   </span>
@@ -417,6 +432,11 @@ export default function WikiPageView({ repoId }: { repoId: string }) {
                       {page.grounding.evidence_count} source symbols
                       {page.grounding.relation_count > 0 &&
                         ` · ${page.grounding.relation_count} static relations`}
+                      {/* State how much of the page carries its source rather
+                          than only flagging a shortfall: the coverage number is
+                          the claim this product makes. */}
+                      {page.grounding.citation_coverage < 1 &&
+                        ` · ${Math.round(page.grounding.citation_coverage * 100)}% of blocks sourced`}
                       {evidenceRoutes.length > 0 && ` · ${evidenceRoutes.join(" + ")}`}
                     </span>
                   )}
@@ -563,11 +583,16 @@ export default function WikiPageView({ repoId }: { repoId: string }) {
               {page ? (
                 <Markdown
                   citations={page.citations}
+                  relations={page.evidence?.relations}
                   onCite={(index) =>
                     setSourceCitation(page.citations[index] ?? null)
                   }
                 >
-                  {stripGeneratedDiagrams(page.markdown)}
+                  {stripGeneratedDiagrams(
+                    page.markdown,
+                    generationMode === "generated" &&
+                      page.generation?.renderer === "fact_plan",
+                  )}
                 </Markdown>
               ) : pageError ? (
                 <p className="muted">Couldn't load this page. It may not exist — pick a section from the sidebar.</p>
