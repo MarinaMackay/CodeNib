@@ -45,7 +45,10 @@ theme:
   features:
     - navigation.instant
     - navigation.sections
-    - navigation.expand
+    # `prune` replaces `expand`, which the theme documents as incompatible.
+    # Material inlines the generated API tree into every page, so keep the
+    # navigation compact instead of expanding every API entry by default.
+    - navigation.prune
     - navigation.indexes
     - navigation.top
     - search.suggest
@@ -60,6 +63,81 @@ extra_css:
 
 plugins:
   - search
+  - api-autonav:
+      modules:
+        - codenib
+      nav_section_title: API Reference
+      api_root_uri: api
+      exclude_private: true
+      # Internal tooling also contains implicit namespace packages. Skip them
+      # without changing runtime package boundaries merely for documentation.
+      on_implicit_namespace_package: skip
+      exclude:
+        # api-autonav 0.4 accepts directory roots rather than individual Python
+        # files. Enforce an exact, positive public-module allowlist by rejecting
+        # every descendant that is not named here. This also keeps future
+        # internal modules private by default.
+        - >-
+          re:(?x)^codenib\.
+          (?!
+            (?:
+              agent
+              | agent\.skills
+              | agent\.skills\.context
+              | agent\.tools
+              | code_chunking
+              | compiler
+              | graph
+              | index
+              | index\.embedding
+              | integrations
+              | integrations\.(?:locagent|orcaloca)
+              | languages
+              | llm
+              | mcp
+              | model
+              | ops
+              | ops\.(?:expand|filter|rerank|retrieve|transform)
+              | scip_interface
+              | search
+              | types
+              | web\.local
+              | wiki
+            )$
+          ).*$
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - .
+          options:
+            docstring_style: google
+            docstring_section_style: table
+            # Types come from annotations (94% of public signatures are
+            # annotated), so a missing docstring type is not a defect.
+            # Reject stale or misspelled docstring parameters that do not exist
+            # in the signature. This does not check for missing parameter docs.
+            docstring_options:
+              ignore_init_summary: true
+              warn_missing_types: false
+              warn_unknown_params: true
+            filters: public
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            show_root_heading: true
+            show_root_full_path: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_source: true
+            show_bases: true
+            show_labels: true
+            summary: true
+            unwrap_annotated: true
+            modernize_annotations: true
+            line_length: 88
 
 markdown_extensions:
   - admonition

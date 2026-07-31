@@ -104,14 +104,41 @@ class RetrieveRerankPipeline:
             When omitted, :func:`build_retrieve_plan` is invoked with the
             provided ``retrieval_mode``.
         retrieval_mode: Shortcut for :func:`build_retrieve_plan`.
-        embedding_model / provider / dimension / kwargs: Dense index config.
-        rerank_model / provider / temperature / max_tokens: Reranker config.
+        retrieval_level: Context expansion level, either ``"l0"`` or ``"l2"``.
+        planning_budget: Budget used by automatic retrieval planning.
+        retrieval_planner: Planner used when ``retrieval_mode`` is ``"auto"``.
+        planner_capabilities: Optional capability override supplied to the planner.
+        code_graph: Graph used to expand retrieved code context.
+        fusion_strategy: Strategy used to combine multiple retrieval branches.
+        rrf_k: Rank constant used by reciprocal-rank fusion.
+        embedding_model: Dense embedding model identifier.
+        embedding_provider: Backend serving ``embedding_model``.
+        embedding_dimension: Dense vector width.
+        embedding_model_kwargs: Extra keyword arguments for the dense encoder.
+        rerank_model: Reranker model identifier.
+        rerank_temperature: Sampling temperature for the LLM reranker.
+        rerank_max_tokens: Token budget for a single rerank call.
+        rerank_strategy: Reranking backend: ``"llm"``, ``"embedding"``, or
+            ``"crossencoder"``.
+        rerank_embedding_model: Model used by embedding-based reranking.
+        rerank_embedding_provider: Backend for ``rerank_embedding_model``.
+        rerank_embedding_dimension: Vector width for embedding-based reranking.
+        rerank_embedding_model_kwargs: Extra keyword arguments for the rerank
+            embedding model.
+        rerank_index_metric: Similarity metric for the rerank vector index.
+        crossencoder_model: Model used by cross-encoder reranking.
+        crossencoder_batch_size: Batch size used by the cross-encoder.
         languages: Languages to chunk for indexing (default: ["python"]).
         max_lines_per_chunk: Maximum lines per chunk passed to chunker.
         sparse_max_k: Upper bound for BM25 index fan-out; defaults to 128.
-        rerank_window_size / rerank_window_step: Sliding window controls for the
-            reranker (see :meth:`RerankAgent.rerank_nodes`). When ``None``, the
-            reranker considers all candidates at once.
+        rerank_window_size: Sliding window width for the reranker (see
+            :meth:`RerankAgent.rerank_nodes`). When ``None``, the reranker
+            considers all candidates at once.
+        rerank_window_step: Stride between consecutive rerank windows.
+        rerank_listwise_format: Output format requested from listwise reranking.
+        enable_rerank: Whether to apply the configured reranking stage.
+        vector_masks: Optional per-language symbol masks for vector retrieval.
+        rerank_candidate_top_k: Maximum candidates passed into reranking.
     """
 
     def __init__(

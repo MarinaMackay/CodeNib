@@ -14,7 +14,7 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
 import yaml
 
@@ -50,6 +50,55 @@ ALLOWED_PUBLIC_STATIC_FILES = {
     "assets/stylesheets/extra.css",
     "incremental_graph/incremental_interactive.html",
 }
+
+# api-autonav scans the package directory recursively, so its generated pages
+# need a separate fail-closed boundary from the hand-written Markdown nav.
+# Keep this list in sync with the exact positive allowlist in mkdocs.yml.
+PUBLIC_API_MODULES = frozenset(
+    {
+        "codenib",
+        "codenib.agent",
+        "codenib.agent.skills",
+        "codenib.agent.skills.context",
+        "codenib.agent.tools",
+        "codenib.code_chunking",
+        "codenib.compiler",
+        "codenib.graph",
+        "codenib.index",
+        "codenib.index.embedding",
+        "codenib.integrations",
+        "codenib.integrations.locagent",
+        "codenib.integrations.orcaloca",
+        "codenib.languages",
+        "codenib.llm",
+        "codenib.mcp",
+        "codenib.model",
+        "codenib.ops",
+        "codenib.ops.expand",
+        "codenib.ops.filter",
+        "codenib.ops.rerank",
+        "codenib.ops.retrieve",
+        "codenib.ops.transform",
+        "codenib.scip_interface",
+        "codenib.search",
+        "codenib.types",
+        "codenib.web.local",
+        "codenib.wiki",
+    }
+)
+
+
+def _public_api_route(module: str) -> str:
+    # api-autonav renames codenib.index to avoid colliding with the package's
+    # generated index page. Pin that behavior so a plugin change fails CI.
+    if module == "codenib.index":
+        return "api/codenib/index/index_py/"
+    return f"api/{module.replace('.', '/')}/"
+
+
+PUBLIC_API_ROUTES = frozenset(
+    _public_api_route(module) for module in PUBLIC_API_MODULES
+)
 
 _INLINE_MARKDOWN_LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 _REFERENCE_LINK_RE = re.compile(r"^\s*\[[^\]]+\]:\s*(\S+)", re.MULTILINE)
@@ -121,6 +170,45 @@ def _normalize_public_location(location: str) -> str:
     parsed = urlparse(html.unescape(location))
     path = unquote(parsed.path).replace("\\", "/")
     return posixpath.normpath(f"/{path}").lstrip("/")
+
+
+def _normalize_api_route(location: str) -> str | None:
+    """Return a canonical generated API route, or ``None`` for other pages."""
+
+    normalized = _normalize_public_location(location)
+    if normalized == "api":
+        return "api/"
+    if not normalized.startswith("api/"):
+        return None
+    if normalized.endswith("/index.html"):
+        normalized = normalized.removesuffix("index.html")
+    return f"{normalized.rstrip('/')}/"
+
+
+def _compare_api_routes(label: str, actual: set[str]) -> list[str]:
+    errors: list[str] = []
+    unexpected = sorted(actual - PUBLIC_API_ROUTES)
+    missing = sorted(PUBLIC_API_ROUTES - actual)
+    if unexpected:
+        errors.append(
+            f"{label} exposes unexpected API routes: " + ", ".join(unexpected)
+        )
+    if missing:
+        errors.append(f"{label} is missing public API routes: " + ", ".join(missing))
+    return errors
+
+
+def _resolve_public_relative_location(source: str, location: str) -> str:
+    """Resolve a link as a browser would, clamping traversal at the origin."""
+
+    path = unquote(location).replace("\\", "/")
+    if path.startswith("/"):
+        # A percent-encoded leading slash is still a path on this origin, not
+        # a protocol-relative URL whose first segment becomes a host name.
+        path = f"/{path.lstrip('/')}"
+    base_url = f"https://public-docs.invalid/{source.lstrip('/')}"
+    resolved_path = urlparse(urljoin(base_url, path)).path
+    return _normalize_public_location(resolved_path)
 
 
 def _location_candidates(location: str) -> Iterable[str]:
@@ -314,20 +402,23 @@ def _check_site_links(site_dir: Path) -> list[str]:
         source = html_path.relative_to(site_root).as_posix()
         text = html_path.read_text(encoding="utf-8")
         for raw_target in _link_targets(text):
-            target = raw_target.strip()
+            target = html.unescape(raw_target.strip())
             if not target or target.startswith("#"):
                 continue
-            if _is_forbidden(target):
-                exposed_links.append(f"{source} -> {target}")
-                continue
             parsed = urlparse(target)
-            if parsed.scheme or parsed.netloc or not parsed.path:
+            # Only absolute targets may be matched against the forbidden
+            # prefixes as written: normalizing a relative link against the site
+            # root turns any "../../experiments/" into "experiments/", which
+            # misreads generated pages (e.g. the codenib.eval.experiments API
+            # reference) as leaks. Relative links are resolved below, against
+            # the directory of the page that contains them.
+            if parsed.scheme or parsed.netloc or unquote(parsed.path).startswith("/"):
+                if _is_forbidden(target):
+                    exposed_links.append(f"{source} -> {target}")
                 continue
-            resolved = (html_path.parent / unquote(parsed.path)).resolve()
-            try:
-                relative = resolved.relative_to(site_root).as_posix()
-            except ValueError:
+            if not parsed.path:
                 continue
+            relative = _resolve_public_relative_location(source, parsed.path)
             if _is_forbidden(relative):
                 exposed_links.append(f"{source} -> {relative}")
 
@@ -337,6 +428,41 @@ def _check_site_links(site_dir: Path) -> list[str]:
         "generated site links to internal locations: "
         + ", ".join(sorted(set(exposed_links)))
     ]
+
+
+def _check_api_inventory(site_dir: Path) -> list[str]:
+    """Require the generated pages, search index, and sitemap to match policy."""
+
+    site_routes = {
+        route
+        for path in (site_dir / "api").rglob("*.html")
+        if (route := _normalize_api_route(path.relative_to(site_dir).as_posix()))
+    }
+    errors = _compare_api_routes("generated site", site_routes)
+
+    search_path = site_dir / "search" / "search_index.json"
+    if search_path.is_file():
+        payload = json.loads(search_path.read_text(encoding="utf-8"))
+        search_routes = {
+            route
+            for document in payload.get("docs", [])
+            if (route := _normalize_api_route(str(document.get("location", ""))))
+        }
+        errors.extend(_compare_api_routes("search index", search_routes))
+
+    sitemap_path = site_dir / "sitemap.xml"
+    if sitemap_path.is_file():
+        root = ET.parse(sitemap_path).getroot()
+        sitemap_routes = {
+            route
+            for element in root.iter()
+            if element.tag.endswith("loc")
+            and element.text
+            and (route := _normalize_api_route(element.text))
+        }
+        errors.extend(_compare_api_routes("sitemap", sitemap_routes))
+
+    return errors
 
 
 def _check_search(site_dir: Path) -> list[str]:
@@ -390,6 +516,7 @@ def main() -> int:
         *_check_source_links(docs_dir, config),
         *_check_site_files(args.site_dir),
         *_check_site_links(args.site_dir),
+        *_check_api_inventory(args.site_dir),
         *_check_search(args.site_dir),
         *_check_sitemap(args.site_dir),
     ]
