@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Third-party policy clients used as end-to-end localization baselines."""
+"""Evaluation harnesses: agent runners, retrieval metrics, artifact bundles."""
