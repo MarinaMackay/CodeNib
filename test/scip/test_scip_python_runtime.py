@@ -5,6 +5,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from codenib.scip_interface import scip_indexer_base, scip_indexer_python
 from codenib.scip_interface.scip_indexer_python import SCIPPythonIndexer
 from codenib.scip_interface.scip_pb2 import Index
@@ -84,6 +86,39 @@ def test_scip_python_direct_run_preserves_node_heap(monkeypatch, tmp_path):
     assert indexer._run_direct(["/tools/scip-python", "index"], tmp_path)
     assert captured["cmd"][0] == "/tools/scip-python"
     assert captured["env"]["NODE_OPTIONS"] == "--max-old-space-size=16384"
+
+
+def test_scip_python_index_timeout_can_be_extended_for_large_repos(
+    monkeypatch, tmp_path
+):
+    indexer = SCIPPythonIndexer(tmp_path, output_dir=tmp_path / "out")
+    captured = {}
+
+    def fake_run(_cmd, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(scip_indexer_python, "_run_checked_with_timeout", fake_run)
+    monkeypatch.setenv("CODENIB_SCIP_PYTHON_INDEX_TIMEOUT_SECONDS", "1800")
+
+    assert indexer._run_direct(["/tools/scip-python", "index"], tmp_path)
+    assert captured["timeout"] == 1800.0
+
+
+@pytest.mark.parametrize("value", ["invalid", "0", "-1", "nan", "inf"])
+def test_scip_python_invalid_index_timeout_uses_the_ci_default(
+    monkeypatch, tmp_path, value
+):
+    indexer = SCIPPythonIndexer(tmp_path, output_dir=tmp_path / "out")
+    captured = {}
+
+    def fake_run(_cmd, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(scip_indexer_python, "_run_checked_with_timeout", fake_run)
+    monkeypatch.setenv("CODENIB_SCIP_PYTHON_INDEX_TIMEOUT_SECONDS", value)
+
+    assert indexer._run_direct(["/tools/scip-python", "index"], tmp_path)
+    assert captured["timeout"] == 600.0
 
 
 def test_scip_binary_decode_uses_packaged_protobuf_descriptor(monkeypatch, tmp_path):
