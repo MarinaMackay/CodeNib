@@ -60,6 +60,8 @@ _COMPARED_ATTRS = (
     "end_line",
     "selection_line",
     "unified_name",
+    "symbol_kind",
+    "has_definition",
 )
 
 # Edge attributes compared for parity. `anchor_file` / `anchor_line` were
@@ -225,6 +227,29 @@ documents {
 """.strip()
 
 
+_GO_STRUCTURAL_COLLISION_INDEX = """
+metadata {
+  tool_info {
+    name: "scip-go"
+    version: "0.1.26"
+  }
+}
+documents {
+  relative_path: "modules.go"
+  occurrences {
+    range: 0
+    range: 4
+    range: 11
+    symbol: "scip-go gomod example.com/collision v0.0.0 `example.com/collision`/modules."
+    symbol_roles: 1
+  }
+}
+documents {
+  relative_path: "modules/child.go"
+}
+""".strip()
+
+
 def _write_ruby_core_parity_project(project_root: Path) -> Path:
     (project_root / "lib/rake").mkdir(parents=True)
     (project_root / "lib/invoice.rb").write_text(
@@ -284,6 +309,20 @@ def _write_ruby_core_parity_project(project_root: Path) -> Path:
     )
     index = project_root / "index.decoded"
     index.write_text(_RUBY_CORE_PARITY_INDEX, encoding="utf-8")
+    return index
+
+
+def _write_go_structural_collision_project(project_root: Path) -> Path:
+    (project_root / "modules").mkdir()
+    (project_root / "go.mod").write_text(
+        "module example.com/collision\n", encoding="utf-8"
+    )
+    (project_root / "modules.go").write_text("var modules = 1\n", encoding="utf-8")
+    (project_root / "modules/child.go").write_text(
+        "package modules\n", encoding="utf-8"
+    )
+    index = project_root / "index.decoded"
+    index.write_text(_GO_STRUCTURAL_COLLISION_INDEX, encoding="utf-8")
     return index
 
 
@@ -494,6 +533,83 @@ def test_core_ruby_synthetic_parity(tmp_path):
     ).decode()
 
     _assert_graph_parity(serial_graph, core_graph, "ruby-synthetic")
+
+
+def test_core_go_structural_collision_parity(tmp_path):
+    index = _write_go_structural_collision_project(tmp_path)
+
+    from codenib.scip_interface.scip_decode_core import SCIPDecoderCore
+    from codenib.scip_interface.scip_decode_go import SCIPGoGraphDecoder
+
+    serial_graph = SCIPGoGraphDecoder(str(index), project_root=str(tmp_path)).decode()
+    core_graph = SCIPDecoderCore(
+        str(index),
+        project_root=str(tmp_path),
+        language="go",
+    ).decode()
+
+    _assert_graph_parity(serial_graph, core_graph, "go-structural-collision")
+    node = serial_graph.graph.vs[serial_graph.name_to_vertex["modules"]]
+    assert node["type"] == "directory"
+    assert node["has_definition"] is True
+
+
+def test_core_typescript_schema_v5_fixture_parity():
+    fixture_root = Path(__file__).parent / "fixtures" / "typescript_schema_v5"
+    index = fixture_root / "index.decoded"
+
+    from codenib.scip_interface.scip_decode_core import SCIPDecoderCore
+    from codenib.scip_interface.scip_decode_ts import SCIPTypeScriptGraphDecoder
+
+    serial_graph = SCIPTypeScriptGraphDecoder(
+        str(index), project_root=str(fixture_root)
+    ).decode()
+    core_graph = SCIPDecoderCore(
+        str(index),
+        project_root=str(fixture_root),
+        language="ts",
+    ).decode()
+
+    _assert_graph_parity(serial_graph, core_graph, "typescript-schema-v5")
+
+
+def test_core_typescript_schema_v5_explicit_kind_parity(tmp_path):
+    fixture_root = Path(__file__).parent / "fixtures" / "typescript_schema_v5"
+    content = (fixture_root / "index.decoded").read_text(encoding="utf-8")
+    marker = (
+        'symbol: "scip-typescript npm schema-v5-fixture 1.0.0 '
+        'src/`types.ts`/Runner#"\n'
+        '    documentation: "```ts\\ninterface Runner\\n```"'
+    )
+    assert marker in content
+    index = tmp_path / "index.decoded"
+    index.write_text(
+        content.replace(
+            marker,
+            marker.replace(
+                "\n    documentation", "\n    kind: Class\n    documentation"
+            ),
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    from codenib.scip_interface.scip_decode_core import SCIPDecoderCore
+    from codenib.scip_interface.scip_decode_ts import SCIPTypeScriptGraphDecoder
+
+    serial_graph = SCIPTypeScriptGraphDecoder(
+        str(index), project_root=str(fixture_root)
+    ).decode()
+    core_graph = SCIPDecoderCore(
+        str(index),
+        project_root=str(fixture_root),
+        language="ts",
+    ).decode()
+
+    _assert_graph_parity(serial_graph, core_graph, "typescript-explicit-kind")
+    symbol = "schema-v5-fixture@1.0.0:src/types.ts:Runner"
+    attrs = serial_graph.get_node_info_by_name(symbol)
+    assert attrs["symbol_kind"] == "class"
 
 
 # --------------------------------------------------------------------------

@@ -4,11 +4,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Thin Python wrapper around the `codenib_core` pybind11 extension.
+"""Full-graph Python facade around the low-level `codenib_core` extension.
 
 Exposes a `SCIPDecoderCore` that produces a fully-populated `CodeGraph`
 identical to the pure-Python serial decoder, but with the C++ core/ doing
-the parsing and parallel work under the hood.
+the parsing and parallel work under the hood. The extension's flat
+``decode_scip`` result is an internal transport; this facade also applies
+shared source-aware post-decode layers such as TypeScript import enrichment.
 
 Falls back to ImportError if the extension isn't built (callers can catch
 and fall back to the serial decoder).
@@ -16,6 +18,7 @@ and fall back to the serial decoder).
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from ..graph.code_graph import CodeGraph
@@ -79,6 +82,8 @@ def _build_code_graph(
         "end_line": [v["end_line"] for v in vertices],
         "selection_line": [v.get("selection_line") for v in vertices],
         "unified_name": [v["unified_name"] for v in vertices],
+        "symbol_kind": [v.get("symbol_kind") for v in vertices],
+        "has_definition": [v.get("has_definition") for v in vertices],
     }
     g.add_vertices(len(vertices), attributes=attrs)
 
@@ -159,6 +164,8 @@ class SCIPDecoderCore:
         t_total = time.perf_counter()
 
         t0 = time.perf_counter()
+        # This binding intentionally returns the low-level flat transport.
+        # Build and enrich through this facade before exposing a CodeGraph.
         result = _cpp.decode_scip(
             index_file=self.index_file_path,
             project_root=self.project_root,
@@ -172,6 +179,13 @@ class SCIPDecoderCore:
             result["edges"],
             project_root=self.project_root,
         )
+        if self.language in {"ts", "typescript", "js", "javascript"}:
+            from .typescript_semantics import enrich_typescript_import_edges
+
+            decoded_content = Path(self.index_file_path).read_text(encoding="utf-8")
+            enrich_typescript_import_edges(
+                graph, decoded_content, project_root=self.project_root
+            )
         t_build = time.perf_counter() - t0
 
         self.code_graph = graph

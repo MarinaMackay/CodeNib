@@ -252,6 +252,8 @@ void SCIPDecoderBase::merge_subgraphs(const std::vector<Subgraph> &subgraphs) {
   //   - First occurrence of a name takes its attrs (including unified_name).
   //   - Later DEFINITION overwrites all attrs (matches serial
   //     add_symbol_node's unconditional _add_vertex overwrite).
+  //   - Later FILE/DIRECTORY insertion overwrites only type (matches serial
+  //     structural-node upserts when a path collides with a symbol name).
   //   - Later REFERENCE leaves existing attrs alone (matches serial
   //     add_symbol_reference's "only create if missing").
   std::unordered_map<std::string, Subgraph::Node> merged_nodes;
@@ -270,25 +272,40 @@ void SCIPDecoderBase::merge_subgraphs(const std::vector<Subgraph> &subgraphs) {
       auto it = merged_nodes.find(name);
       if (it == merged_nodes.end()) {
         merged_nodes.emplace(name, node);
-      } else if (node.is_definition) {
-        Subgraph::Node &existing = it->second;
-        existing.is_definition = true;
-        if (!node.data.type.empty())
-          existing.data.type = node.data.type;
-        if (node.data.file.has_value())
-          existing.data.file = node.data.file;
-        if (node.data.start_line.has_value())
-          existing.data.start_line = node.data.start_line;
-        if (node.data.end_line.has_value())
-          existing.data.end_line = node.data.end_line;
-        if (node.data.selection_line.has_value())
-          existing.data.selection_line = node.data.selection_line;
-        if (node.data.unified_name.has_value())
-          existing.data.unified_name = node.data.unified_name;
-      } else if (!it->second.is_definition && node.updates_unified_name &&
-                 node.data.unified_name.has_value()) {
-        it->second.data.unified_name = node.data.unified_name;
-        it->second.updates_unified_name = true;
+      } else {
+        if (node.is_definition) {
+          Subgraph::Node &existing = it->second;
+          existing.is_definition = true;
+          existing.data.has_definition = true;
+          if (!node.data.type.empty())
+            existing.data.type = node.data.type;
+          if (node.data.file.has_value())
+            existing.data.file = node.data.file;
+          if (node.data.start_line.has_value())
+            existing.data.start_line = node.data.start_line;
+          if (node.data.end_line.has_value())
+            existing.data.end_line = node.data.end_line;
+          if (node.data.selection_line.has_value())
+            existing.data.selection_line = node.data.selection_line;
+          if (node.data.unified_name.has_value())
+            existing.data.unified_name = node.data.unified_name;
+          if (node.data.symbol_kind.has_value())
+            existing.data.symbol_kind = node.data.symbol_kind;
+        } else {
+          if (node.updates_structural_type && !node.data.type.empty()) {
+            it->second.data.type = node.data.type;
+            it->second.updates_structural_type = true;
+          }
+          if (!it->second.is_definition && node.updates_unified_name &&
+              node.data.unified_name.has_value()) {
+            it->second.data.unified_name = node.data.unified_name;
+            it->second.updates_unified_name = true;
+          }
+        }
+        if (!it->second.data.symbol_kind.has_value() &&
+            node.data.symbol_kind.has_value()) {
+          it->second.data.symbol_kind = node.data.symbol_kind;
+        }
       }
       // else: subsequent ref on existing node — leave attrs alone.
     }

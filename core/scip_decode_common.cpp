@@ -122,6 +122,7 @@ void SubgraphBuilder::add_directory_node(const std::string &dir_path) {
   Subgraph::Node &node = ensure_node(dir_path);
   apply_update(node, std::make_optional<std::string>(NODE_TYPE_DIRECTORY),
                std::nullopt, std::nullopt, std::nullopt);
+  node.updates_structural_type = true;
 }
 
 bool SubgraphBuilder::add_directory_if_needed(const std::string &dir_path) {
@@ -139,6 +140,7 @@ void SubgraphBuilder::add_file_node(const std::string &file_path) {
   Subgraph::Node &node = ensure_node(file_path);
   apply_update(node, std::make_optional<std::string>(NODE_TYPE_FILE),
                std::nullopt, std::nullopt, std::nullopt);
+  node.updates_structural_type = true;
   reset_scope_to_file(file_path);
 }
 
@@ -168,7 +170,8 @@ void SubgraphBuilder::add_file_hierarchy(const std::string &file_path) {
 void SubgraphBuilder::add_symbol_node(const std::string &symbol, int line,
                                       std::optional<int> scope_start_line,
                                       std::optional<int> scope_end_line,
-                                      const std::string &symbol_type) {
+                                      const std::string &symbol_type,
+                                      std::optional<std::string> symbol_kind) {
   Subgraph::Node &node = ensure_node(symbol);
   // Definitions ALWAYS overwrite (matches serial add_symbol_node semantics).
   apply_update(node, std::make_optional<std::string>(symbol_type),
@@ -180,22 +183,27 @@ void SubgraphBuilder::add_symbol_node(const std::string &symbol, int line,
                  scope_start_line, scope_end_line);
   }
   node.data.selection_line = line;
+  node.data.has_definition = true;
+  if (symbol_kind.has_value()) {
+    node.data.symbol_kind = std::move(symbol_kind);
+  }
   node.is_definition = true;
 }
 
 void SubgraphBuilder::add_symbol_reference(
     const std::string &symbol, const std::optional<std::string> &module_path,
     const std::string &symbol_type, std::optional<std::string> anchor_file,
-    std::optional<int> anchor_line) {
+    std::optional<int> anchor_line, std::optional<std::string> symbol_kind) {
   add_symbol_reference_from(current_scope_, symbol, module_path, symbol_type,
-                            std::move(anchor_file), anchor_line);
+                            std::move(anchor_file), anchor_line,
+                            std::move(symbol_kind));
 }
 
 void SubgraphBuilder::add_symbol_reference_from(
     const std::string &source, const std::string &symbol,
     const std::optional<std::string> &module_path,
     const std::string &symbol_type, std::optional<std::string> anchor_file,
-    std::optional<int> anchor_line) {
+    std::optional<int> anchor_line, std::optional<std::string> symbol_kind) {
   // Serial CodeGraph.add_symbol_reference: only populates attrs on FIRST
   // add. Subsequent refs leave the node alone (defs still overwrite via
   // add_symbol_node).
@@ -208,6 +216,10 @@ void SubgraphBuilder::add_symbol_reference_from(
                      : std::nullopt,
                  std::nullopt, std::nullopt);
     node.is_definition = false;
+    node.data.has_definition = false;
+  }
+  if (symbol_kind.has_value() && !node.data.symbol_kind.has_value()) {
+    node.data.symbol_kind = std::move(symbol_kind);
   }
   // Default anchor_file to the current document so range queries can
   // route reference edges to the file they originate from.
