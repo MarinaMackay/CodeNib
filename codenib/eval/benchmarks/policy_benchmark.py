@@ -30,8 +30,13 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from codenib.clients.locagent_agent import load_locagent_protocol, run_locagent_policy
-from codenib.eval.benchmarks.locagent import locagent_regions
+from codenib.clients.locagent_agent import run_locagent_policy
+from codenib.clients.locagent_protocol import (
+    LOCAGENT_PROTOCOL_REVISION,
+    LOCAGENT_PROTOCOL_SHA256,
+    build_locagent_protocol,
+)
+from codenib.eval.benchmarks.locagent import locagent_regions, parse_locagent_locations
 from codenib.eval.benchmarks.orcaloca import (
     OrcaLocaGroundTruth,
     OrcaLocaScore,
@@ -52,16 +57,17 @@ from codenib.eval.benchmarks.policy_compat import (
     inspect_policy_run_preflight,
     load_policy_results,
     policy_result_path,
-    source_files,
+    repository_files,
     write_json_atomic,
 )
+from codenib.eval.retrieval_eval import compute_metrics, normalize_file_path
 from codenib.integrations.locagent import LOCAGENT_REVISION, OPENHANDS_LOCAGENT_REVISION
 from codenib.integrations.orcaloca import ORCALOCA_REVISION
 
 _CODE_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _locagent_revision_sources(checkout: Path) -> tuple[RevisionSource, ...]:
+def _locagent_revision_sources(checkout: Path | None) -> tuple[RevisionSource, ...]:
     return (
         RevisionSource(
             name="locagent",
@@ -242,20 +248,16 @@ def _close_provider(provider: Any | None) -> str | None:
 def _run_locagent_loop(
     *,
     case: PolicyBenchmarkCase,
-    checkout: Path,
     dispatch: Callable[[str, Mapping[str, Any]], str],
     model: str,
     base_url: str | None,
     max_iterations: int,
-    locagent_python: Path | None = None,
 ) -> dict[str, Any]:
     from openai import OpenAI
 
-    protocol = load_locagent_protocol(
-        checkout,
+    protocol = build_locagent_protocol(
         problem_statement=case.problem_statement,
         package_name=case.instance_id.split("_")[0],
-        python_executable=locagent_python,
     )
     client_options = {"base_url": base_url} if base_url else {}
     execution = run_locagent_policy(
@@ -285,7 +287,7 @@ def _run_locagent_loop(
         "regions": list(
             locagent_regions(
                 execution.final_output,
-                valid_files=source_files(case.repo_path),
+                valid_files=repository_files(case.repo_path),
             )
         ),
         "tool_trace": list(execution.tool_trace),
@@ -302,6 +304,8 @@ def _run_locagent(args: argparse.Namespace) -> int:
         raise ValueError("--locagent-python is required for the native provider")
     if "native" in order and args.native_index_dir is None:
         raise ValueError("--native-index-dir is required for the native provider")
+    if "native" in order and args.locagent_checkout is None:
+        raise ValueError("--locagent-checkout is required for the native provider")
     revision_sources = _locagent_revision_sources(args.locagent_checkout)
     preflight = inspect_policy_run_preflight(
         cases,
@@ -328,6 +332,9 @@ def _run_locagent(args: argparse.Namespace) -> int:
             "max_completion_tokens": 4096,
             "reasoning_effort": "none",
             "custom_base_url": bool(args.base_url),
+            "protocol_revision": LOCAGENT_PROTOCOL_REVISION,
+            "protocol_sha256": LOCAGENT_PROTOCOL_SHA256,
+            "policy_runtime": "codenib-native-v1",
         },
     )
     failed = False
@@ -376,12 +383,10 @@ def _run_locagent(args: argparse.Namespace) -> int:
                     dispatch = provider.dispatch
                 result = _run_locagent_loop(
                     case=case,
-                    checkout=args.locagent_checkout,
                     dispatch=dispatch,
                     model=args.model,
                     base_url=args.base_url,
                     max_iterations=args.max_iterations,
-                    locagent_python=args.locagent_python,
                 )
                 result.update(
                     {
@@ -520,6 +525,333 @@ def _score_orcaloca_result(
 def _mean(rows: Sequence[Mapping[str, Any]], key: str) -> float | None:
     values = [float(row[key]) for row in rows if row.get(key) is not None]
     return sum(values) / len(values) if values else None
+
+
+def _locagent_symbol_id(
+    file_path: str,
+    *,
+    class_name: str = "",
+    function_name: str = "",
+) -> str:
+    """Return the ranked ``file:qualified-name`` form used by LocAgent."""
+
+    normalized_path = normalize_file_path(file_path)
+    if not normalized_path:
+        return ""
+    normalized_class = str(class_name or "").strip().replace("::", ".").lstrip(".:")
+    normalized_function = (
+        str(function_name or "")
+        .strip()
+        .strip("`'\" ")
+        .replace("::", ".")
+        .split("(", 1)[0]
+        .strip()
+        .lstrip(".:")
+    )
+    if normalized_function:
+        if normalized_class and not normalized_function.startswith(
+            normalized_class + "."
+        ):
+            normalized_function = f"{normalized_class}.{normalized_function}"
+        if normalized_function.endswith(".__init__"):
+            normalized_function = normalized_function[: -len(".__init__")]
+        symbol = normalized_function
+    else:
+        symbol = normalized_class
+    return f"{normalized_path}:{symbol}" if symbol else ""
+
+
+def _normalize_locagent_target(value: object) -> str:
+    raw = str(value or "").strip()
+    if ":" not in raw:
+        return raw
+    file_path, symbol = raw.split(":", 1)
+    return _locagent_symbol_id(file_path, function_name=symbol)
+
+
+def _locagent_predictions(
+    case: PolicyBenchmarkCase,
+    result: Mapping[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    raw_output = str(result.get("final_output") or result.get("raw_output") or "")
+    locations = parse_locagent_locations(
+        raw_output,
+        valid_files=repository_files(case.repo_path),
+    )
+    files: list[str] = []
+    functions: list[str] = []
+    seen_files: set[str] = set()
+    seen_functions: set[str] = set()
+    for location in locations:
+        file_path = normalize_file_path(location.file_path)
+        if file_path and file_path not in seen_files:
+            seen_files.add(file_path)
+            files.append(file_path)
+        function_id = ""
+        if location.function_name.strip():
+            function_id = _locagent_symbol_id(
+                location.file_path,
+                class_name=location.class_name,
+                function_name=location.function_name,
+            )
+        if function_id and function_id not in seen_functions:
+            seen_functions.add(function_id)
+            functions.append(function_id)
+
+    # Older cells may retain source regions but not the final textual answer.
+    if not files:
+        for region in result.get("regions") or ():
+            if not isinstance(region, Mapping):
+                continue
+            file_path = normalize_file_path(str(region.get("path") or ""))
+            if file_path and file_path not in seen_files:
+                seen_files.add(file_path)
+                files.append(file_path)
+    return tuple(files), tuple(functions)
+
+
+def _score_locagent_result(
+    case: PolicyBenchmarkCase,
+    result: Mapping[str, Any],
+    *,
+    ks: Sequence[int],
+) -> dict[str, Any]:
+    ground_truth = OrcaLocaGroundTruth.from_mapping(case.ground_truth)
+    gold_files = tuple(
+        path
+        for path in (normalize_file_path(value) for value in ground_truth.files)
+        if path
+    )
+    gold_functions = tuple(
+        value
+        for value in (
+            _normalize_locagent_target(target) for target in ground_truth.functions
+        )
+        if value
+    )
+    failed = bool(result.get("error") or result.get("success") is False)
+    predicted_files, predicted_functions = (
+        ((), ()) if failed else _locagent_predictions(case, result)
+    )
+    metrics = {
+        "files": {
+            str(k): (
+                compute_metrics(predicted_files[:k], gold_files) if gold_files else None
+            )
+            for k in ks
+        },
+        "functions": {
+            str(k): (
+                compute_metrics(predicted_functions[:k], gold_functions)
+                if gold_functions
+                else None
+            )
+            for k in ks
+        },
+    }
+    usage = result.get("usage") or {}
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None:
+        total_tokens = usage.get("total_tokens_estimated")
+    return {
+        "instance_id": case.instance_id,
+        "provider": result.get("provider"),
+        "error": result.get("error"),
+        "failed": failed,
+        "missing": bool(result.get("missing", False)),
+        "gold_files": list(gold_files),
+        "predicted_files": list(predicted_files),
+        "gold_functions": list(gold_functions),
+        "predicted_functions": list(predicted_functions),
+        "metrics": metrics,
+        "elapsed_seconds": result.get("elapsed_seconds"),
+        "provider_load_seconds": result.get("provider_load_seconds"),
+        "tool_calls": result.get("tool_calls"),
+        "total_tokens": total_tokens,
+    }
+
+
+def _summarize_locagent_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    provider: str,
+    ks: Sequence[int],
+) -> dict[str, Any]:
+    provider_rows = [row for row in rows if row["provider"] == provider]
+
+    def summarize_scope(scope: str, label_key: str) -> tuple[int, dict[str, Any]]:
+        labeled = [row for row in provider_rows if row[label_key]]
+        per_k: dict[str, Any] = {}
+        for k in ks:
+            values = [row["metrics"][scope][str(k)] for row in labeled]
+            per_k[str(k)] = (
+                {
+                    metric: statistics.fmean(value[metric] for value in values)
+                    for metric in ("accuracy", "precision", "recall", "hits")
+                }
+                if values
+                else None
+            )
+        return len(labeled), per_k
+
+    file_labeled_n, file_metrics = summarize_scope("files", "gold_files")
+    function_labeled_n, function_metrics = summarize_scope(
+        "functions", "gold_functions"
+    )
+    return {
+        "provider": provider,
+        "n": len(provider_rows),
+        "failed_count": sum(bool(row["failed"]) for row in provider_rows),
+        "file_labeled_n": file_labeled_n,
+        "function_labeled_n": function_labeled_n,
+        "file_metrics": file_metrics,
+        "function_metrics": function_metrics,
+        "elapsed_seconds_mean": _mean(provider_rows, "elapsed_seconds"),
+        "total_tokens_mean": _mean(provider_rows, "total_tokens"),
+    }
+
+
+def _run_score_locagent(args: argparse.Namespace) -> int:
+    ks = tuple(sorted(set(int(value) for value in args.k)))
+    if not ks or any(value < 1 for value in ks):
+        raise ValueError("--k values must be positive")
+    case_set = PolicyCaseSet.load(args.cases)
+    cases = case_set.select(args.instance_id)
+    providers = POLICY_PROVIDERS if args.provider == "both" else (args.provider,)
+    results = load_policy_results(
+        args.results_dir,
+        agent="locagent",
+        cases=cases,
+        providers=providers,
+    )
+    coverage = assess_policy_coverage(cases, results, providers=providers)
+    selection_sha256 = case_set.selection_sha256(cases)
+    provenance_audit = audit_policy_provenance(
+        results,
+        source_sha256=case_set.source_sha256,
+        selection_sha256=selection_sha256,
+        instance_ids=[case.instance_id for case in cases],
+    )
+    results_by_key = {
+        (str(result["instance_id"]), str(result["provider"])): result
+        for result in results
+    }
+    rows = []
+    for case in cases:
+        for provider in providers:
+            result = results_by_key.get((case.instance_id, provider))
+            if result is None:
+                result = {
+                    "agent": "locagent",
+                    "provider": provider,
+                    "instance_id": case.instance_id,
+                    "error": "missing result cell",
+                    "missing": True,
+                }
+            rows.append(_score_locagent_result(case, result, ks=ks))
+
+    models = {str(result.get("model") or "") for result in results}
+    models.discard("")
+    if args.model is not None and models - {args.model}:
+        raise ValueError(
+            f"result model mismatch: found {sorted(models)}, expected {args.model}"
+        )
+    if len(models) > 1:
+        raise ValueError(f"cannot aggregate mixed models: {sorted(models)}")
+    model = args.model or (next(iter(models)) if models else None)
+
+    summary = [
+        _summarize_locagent_rows(rows, provider=provider, ks=ks)
+        for provider in providers
+    ]
+    rows_by_key = {(str(row["instance_id"]), str(row["provider"])): row for row in rows}
+    paired = []
+    for case in cases:
+        native = rows_by_key.get((case.instance_id, "native"))
+        codenib = rows_by_key.get((case.instance_id, "codenib"))
+        if native is None or codenib is None:
+            continue
+        if native["failed"] or codenib["failed"]:
+            continue
+        native_tokens = native.get("total_tokens")
+        codenib_tokens = codenib.get("total_tokens")
+        paired.append(
+            {
+                "instance_id": case.instance_id,
+                "same_predicted_files": (
+                    native["predicted_files"] == codenib["predicted_files"]
+                ),
+                "same_predicted_functions": (
+                    native["predicted_functions"] == codenib["predicted_functions"]
+                ),
+                "native_to_codenib_total_tokens_ratio": (
+                    float(native_tokens) / float(codenib_tokens)
+                    if native_tokens is not None
+                    and codenib_tokens is not None
+                    and float(codenib_tokens) > 0
+                    else None
+                ),
+            }
+        )
+    token_ratios = [
+        float(row["native_to_codenib_total_tokens_ratio"])
+        for row in paired
+        if row["native_to_codenib_total_tokens_ratio"] is not None
+    ]
+    payload = {
+        "metric": "Common ranked golden-patch localization",
+        "model": model,
+        "k": list(ks),
+        "comparison_scope": {
+            "provider_compatibility": "ranked golden-patch localization outcomes",
+            "token_and_time_statistics": "single-trajectory descriptive statistics",
+            "performance_inference_supported": False,
+            "reason": (
+                "The runner preserves the upstream policy but does not collect "
+                "repeated trials. Provider semantics require contract tests or "
+                "deterministic tool-output replay."
+            ),
+        },
+        "case_set": {
+            "source_sha256": case_set.source_sha256,
+            "selection_sha256": selection_sha256,
+        },
+        "coverage": coverage.to_record(),
+        "provenance": provenance_audit.to_record(),
+        "rows": rows,
+        "summary": summary,
+        "paired": paired,
+        "paired_summary": {
+            "n": len(paired),
+            "same_predicted_files_count": sum(
+                row["same_predicted_files"] for row in paired
+            ),
+            "same_predicted_functions_count": sum(
+                row["same_predicted_functions"] for row in paired
+            ),
+            "native_to_codenib_total_tokens_ratio_median": (
+                statistics.median(token_ratios) if token_ratios else None
+            ),
+        },
+        "missing": [
+            str(
+                policy_result_path(
+                    args.results_dir,
+                    instance_id=key.instance_id,
+                    agent="locagent",
+                    provider=key.provider,
+                )
+            )
+            for key in coverage.missing
+        ],
+    }
+    if args.output is not None:
+        write_json_atomic(args.output, payload)
+        print(args.output)
+    else:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    incomplete = bool(coverage.missing or coverage.failed or provenance_audit.invalid)
+    return 1 if incomplete and args.require_complete else 0
 
 
 def _run_score_orcaloca(args: argparse.Namespace) -> int:
@@ -909,7 +1241,11 @@ def _build_parser() -> argparse.ArgumentParser:
     locagent.add_argument(
         "--provider", choices=("native", "codenib", "both"), default="both"
     )
-    locagent.add_argument("--locagent-checkout", type=Path, required=True)
+    locagent.add_argument(
+        "--locagent-checkout",
+        type=Path,
+        help="Pinned checkout required only by the optional native provider.",
+    )
     locagent.add_argument("--locagent-python", type=Path)
     locagent.add_argument("--native-index-dir", type=Path)
     locagent.add_argument("--model", required=True)
@@ -924,6 +1260,34 @@ def _build_parser() -> argparse.ArgumentParser:
     worker.add_argument("--instance-id", required=True)
     worker.add_argument("--base-commit", required=True)
     worker.set_defaults(handler=_run_locagent_worker)
+
+    score_locagent = subparsers.add_parser("score-locagent")
+    score_locagent.add_argument("--cases", type=Path, required=True)
+    score_locagent.add_argument("--instance-id", action="append")
+    score_locagent.add_argument("--results-dir", type=Path, required=True)
+    score_locagent.add_argument(
+        "--provider", choices=("native", "codenib", "both"), default="both"
+    )
+    score_locagent.add_argument("--model")
+    score_locagent.add_argument("--k", type=int, nargs="+", default=(1, 3, 5))
+    score_locagent.add_argument("--output", type=Path)
+    locagent_completeness = score_locagent.add_mutually_exclusive_group()
+    locagent_completeness.add_argument(
+        "--require-complete",
+        action="store_true",
+        dest="require_complete",
+        help="Fail when any requested provider cell is missing or failed (default).",
+    )
+    locagent_completeness.add_argument(
+        "--allow-incomplete",
+        action="store_false",
+        dest="require_complete",
+        help="Allow missing or failed cells after writing the coverage audit.",
+    )
+    score_locagent.set_defaults(
+        handler=_run_score_locagent,
+        require_complete=True,
+    )
 
     orcaloca = subparsers.add_parser("orcaloca")
     orcaloca.add_argument("--cases", type=Path, required=True)

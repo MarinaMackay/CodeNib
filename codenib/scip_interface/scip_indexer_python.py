@@ -55,7 +55,7 @@ def _scip_python_index_timeout() -> float:
 
 def _run_checked_with_timeout(cmd, *, timeout, **popen_kwargs):
     """Like ``subprocess.run(cmd, check=True, timeout=...)`` but kills the whole
-    process group on timeout.
+    process group on timeout or caller cancellation.
 
     ``subprocess.run``'s own timeout only SIGKILLs the immediate child. conda
     (libmamba solver) and scip-python (Node) spawn grandchildren that survive
@@ -75,6 +75,19 @@ def _run_checked_with_timeout(cmd, *, timeout, **popen_kwargs):
                 logger.debug("Process group %s already exited before SIGKILL", proc.pid)
             proc.communicate()
             raise
+        except BaseException:
+            # A benchmark cancellation must not orphan the Node indexer. The
+            # next run could otherwise race the old process for the same
+            # output and temporary repository configuration.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                logger.debug(
+                    "Process group %s already exited during cancellation",
+                    proc.pid,
+                )
+            proc.communicate()
+            raise
         retcode = proc.poll()
         if retcode:
             raise subprocess.CalledProcessError(
@@ -91,6 +104,8 @@ class SCIPPythonIndexer(SCIPIndexerBase):
     possible. The historical managed Conda environment remains a fallback for
     development and CI environments that do not expose the tool directly.
     """
+
+    supports_partial_index = True
 
     def __init__(
         self,
@@ -123,6 +138,7 @@ class SCIPPythonIndexer(SCIPIndexerBase):
         self.conda_env_name = "scip-env"
         self.env_file = self.module_dir / "scip-environment.yml"
         self._direct_indexer_path: Optional[str] = None
+        self.index_generation_report: Optional[dict] = None
 
     def _check_indexer_available(self) -> bool:
         """
@@ -262,6 +278,7 @@ class SCIPPythonIndexer(SCIPIndexerBase):
         cwd: Optional[str] = None,
         project_name: Optional[str] = None,
         target_dir: Optional[str] = None,
+        allow_partial_index: bool = False,
         **kwargs,
     ) -> bool:
         """
@@ -274,12 +291,25 @@ class SCIPPythonIndexer(SCIPIndexerBase):
             cwd: Working directory (defaults to project_root)
             project_name: Project name to use in the index
             target_dir: Optional subdirectory to target for indexing
+            allow_partial_index: Preserve a parseable compiler prefix for
+                downstream source-coverage repair.
             **kwargs: Additional arguments (ignored)
 
         Returns:
             bool: True if index generation was successful, False otherwise
         """
+        self.index_generation_report = None
+        if self.index_file.exists():
+            self.index_file.unlink()
+            logger.info("Removed pre-existing SCIP index before generation")
         if not self._check_indexer_available():
+            self.index_generation_report = {
+                "backend": "scip-python",
+                "status": "unavailable",
+                "complete": False,
+                "partial": False,
+                "document_count": 0,
+            }
             return False
 
         cmd = self._build_index_command(
@@ -299,16 +329,62 @@ class SCIPPythonIndexer(SCIPIndexerBase):
         duration = section.duration
 
         if success:
+            document_count = self._usable_index_document_count()
+            self.index_generation_report = {
+                "backend": "scip-python",
+                "status": "complete",
+                "complete": True,
+                "partial": False,
+                "document_count": document_count,
+            }
             logger.info(f"Successfully generated SCIP index at {self.index_file}")
             logger.info(f"Index generation took: {duration:.2f} seconds")
             return True
         else:
             logger.error(f"Index generation failed after {duration:.2f} seconds")
-            # Remove partial index file so pipeline does not continue with broken data
+            document_count = self._usable_index_document_count()
+            if allow_partial_index and document_count > 0:
+                self.index_generation_report = {
+                    "backend": "scip-python",
+                    "status": "partial",
+                    "complete": False,
+                    "partial": True,
+                    "document_count": document_count,
+                }
+                logger.warning(
+                    "Preserving parseable partial SCIP index with %d documents",
+                    document_count,
+                )
+                return False
+            # Never let the generic pipeline mistake an unvalidated partial file
+            # for a complete graph unless the caller explicitly opted into repair.
             if self.index_file.exists():
                 self.index_file.unlink()
                 logger.info("Removed partial index file")
+            self.index_generation_report = {
+                "backend": "scip-python",
+                "status": "failed",
+                "complete": False,
+                "partial": False,
+                "document_count": document_count,
+            }
             return False
+
+    def _usable_index_document_count(self) -> int:
+        """Count path-addressable documents in a parseable SCIP artifact."""
+
+        if not self.index_file.is_file():
+            return 0
+        try:
+            from google.protobuf.message import DecodeError
+
+            from .scip_pb2 import Index
+
+            index = Index()
+            index.ParseFromString(self.index_file.read_bytes())
+        except (OSError, DecodeError, ValueError):
+            return 0
+        return sum(bool(document.relative_path) for document in index.documents)
 
     def run_pipeline(
         self,

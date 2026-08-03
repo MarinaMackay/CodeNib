@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import signal
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,53 @@ import pytest
 from codenib.scip_interface import scip_indexer_base, scip_indexer_python
 from codenib.scip_interface.scip_indexer_python import SCIPPythonIndexer
 from codenib.scip_interface.scip_pb2 import Index
+
+
+def test_checked_run_kills_process_group_when_caller_cancels(monkeypatch):
+    class InterruptedProcess:
+        pid = 1234
+        args = ["scip-python", "index"]
+
+        def __init__(self):
+            self.communicate_calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def communicate(self, timeout=None):
+            self.communicate_calls += 1
+            if timeout is not None:
+                raise KeyboardInterrupt
+            return "", ""
+
+        def poll(self):
+            return None
+
+    process = InterruptedProcess()
+    killed = []
+    monkeypatch.setattr(
+        scip_indexer_python.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    monkeypatch.setattr(scip_indexer_python.os, "getpgid", lambda pid: pid + 1)
+    monkeypatch.setattr(
+        scip_indexer_python.os,
+        "killpg",
+        lambda pgid, sig: killed.append((pgid, sig)),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        scip_indexer_python._run_checked_with_timeout(
+            process.args,
+            timeout=30,
+        )
+
+    assert killed == [(1235, signal.SIGKILL)]
+    assert process.communicate_calls == 2
 
 
 def _captured_subprocess_env(monkeypatch, tmp_path, node_options=None):
@@ -175,3 +223,97 @@ def test_scip_python_preserves_project_owned_pyright_config(tmp_path):
         assert config_path.read_text() == original
 
     assert config_path.read_text() == original
+
+
+@pytest.mark.parametrize("allow_partial", [False, True])
+def test_scip_python_only_preserves_partial_index_when_opted_in(
+    monkeypatch, tmp_path, allow_partial
+):
+    indexer = SCIPPythonIndexer(tmp_path, output_dir=tmp_path / "out")
+    indexer._direct_indexer_path = "/tools/scip-python"
+    monkeypatch.setattr(indexer, "_check_indexer_available", lambda: True)
+
+    def failed_run(*_args, **_kwargs):
+        payload = Index()
+        payload.metadata.tool_info.name = "scip-python"
+        payload.metadata.tool_info.version = "0.6.6"
+        payload.documents.add().relative_path = "partial.py"
+        indexer.index_file.write_bytes(payload.SerializeToString())
+        return False
+
+    monkeypatch.setattr(indexer, "_run_direct", failed_run)
+
+    assert indexer.generate_index(allow_partial_index=allow_partial) is False
+    assert indexer.index_file.exists() is allow_partial
+    assert indexer.index_generation_report == {
+        "backend": "scip-python",
+        "status": "partial" if allow_partial else "failed",
+        "complete": False,
+        "partial": allow_partial,
+        "document_count": 1,
+    }
+
+
+def test_scip_python_rejects_metadata_only_partial_index(monkeypatch, tmp_path):
+    indexer = SCIPPythonIndexer(tmp_path, output_dir=tmp_path / "out")
+    indexer._direct_indexer_path = "/tools/scip-python"
+    monkeypatch.setattr(indexer, "_check_indexer_available", lambda: True)
+
+    def failed_run(*_args, **_kwargs):
+        payload = Index()
+        payload.metadata.tool_info.name = "scip-python"
+        payload.metadata.tool_info.version = "0.6.6"
+        indexer.index_file.write_bytes(payload.SerializeToString())
+        return False
+
+    monkeypatch.setattr(indexer, "_run_direct", failed_run)
+
+    assert indexer.generate_index(allow_partial_index=True) is False
+    assert not indexer.index_file.exists()
+    assert indexer.index_generation_report == {
+        "backend": "scip-python",
+        "status": "failed",
+        "complete": False,
+        "partial": False,
+        "document_count": 0,
+    }
+
+
+def test_scip_python_rejects_pathless_partial_document(monkeypatch, tmp_path):
+    indexer = SCIPPythonIndexer(tmp_path, output_dir=tmp_path / "out")
+    indexer._direct_indexer_path = "/tools/scip-python"
+    monkeypatch.setattr(indexer, "_check_indexer_available", lambda: True)
+
+    def failed_run(*_args, **_kwargs):
+        payload = Index()
+        payload.documents.add()
+        indexer.index_file.write_bytes(payload.SerializeToString())
+        return False
+
+    monkeypatch.setattr(indexer, "_run_direct", failed_run)
+
+    assert indexer.generate_index(allow_partial_index=True) is False
+    assert not indexer.index_file.exists()
+    assert indexer.index_generation_report["status"] == "failed"
+
+
+def test_scip_python_does_not_preserve_an_index_from_an_earlier_run(
+    monkeypatch, tmp_path
+):
+    indexer = SCIPPythonIndexer(tmp_path, output_dir=tmp_path / "out")
+    indexer._direct_indexer_path = "/tools/scip-python"
+    monkeypatch.setattr(indexer, "_check_indexer_available", lambda: True)
+    stale = Index()
+    stale.documents.add().relative_path = "stale.py"
+    indexer.index_file.write_bytes(stale.SerializeToString())
+    monkeypatch.setattr(indexer, "_run_direct", lambda *_args, **_kwargs: False)
+
+    assert indexer.generate_index(allow_partial_index=True) is False
+    assert not indexer.index_file.exists()
+    assert indexer.index_generation_report == {
+        "backend": "scip-python",
+        "status": "failed",
+        "complete": False,
+        "partial": False,
+        "document_count": 0,
+    }

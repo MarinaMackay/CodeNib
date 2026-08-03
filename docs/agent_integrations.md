@@ -8,15 +8,14 @@ an agent-specific graph, BM25 index, or cache directory.
 ## Support Matrix
 
 The support levels below are intentionally separate. **Provider** means CodeNib
-implements the repository-call contract. **Policy** means a pinned upstream
+implements the repository-call contract. **Policy** means a revision-pinned
 agent loop executes with that provider. **Paired evaluation** means the native
 and CodeNib providers can be swapped under one fixed case, model, prompt, and
 budget contract. None of these labels alone claims end-to-end task quality.
 
 | Integration | Status | Required views | Provider contract | Policy and evaluation | Boundary |
 | --- | --- | --- | --- | --- | --- |
-| LocAgent | Revision-pinned supported | Symbol graph + BM25 | Pinned three-tool contract | Pinned prompts and function-calling loop; fixed-case paired runner | Python SWE-bench repositories; reference and type-use are disclosed as conservative relation mappings |
-| Historical OpenHands LocAgent plugin | Contract-only | Symbol graph + BM25 | Python bindings for the pinned plugin revision | Covered through the LocAgent contract; policy is absent from current OpenHands CLI | No compatibility claim for other OpenHands revisions |
+| LocAgent | CodeNib-native, revision-pinned | Symbol graph + BM25 | Pinned three-tool contract | Vendored prompts and function-calling loop; paired runner with strict common file/function@k scoring | Python SWE-bench repositories; reference and type-use are disclosed as conservative relation mappings |
 | OrcaLoca SearchAgent | Revision-pinned supported | Symbol graph | Pinned six-tool and private-hook contract | Upstream `SearchAgent`; fixed-case paired runner and native File/Function Match scorer | Python SWE-bench repositories; empty `TraceAnalysisOutput`; upstream trace generation is not included |
 | SWE-Explore | Reference-only | N/A | No adapter | No policy runner or paired evaluation | Used only to distinguish trajectory-read labels from golden-patch localization metrics |
 
@@ -55,10 +54,9 @@ indexed search, and graph traversal. This checks that the provider boundary is
 language-agnostic; it is not evidence that the pinned Python-only LocAgent or
 OrcaLoca native implementations support those languages.
 
-## LocAgent And OpenHands
+## LocAgent
 
-The LocAgent provider implements the three repository functions used by
-LocAgent and the historical OpenHands integration:
+The LocAgent provider implements the policy's three repository functions:
 
 - `search_code_snippets`
 - `get_entity_contents`
@@ -96,53 +94,9 @@ python examples/integrations/locagent.py \
 ```
 
 `provider.bindings()` returns the same-named Python callables for a runtime
-plugin. This follows the separation in
-[OpenHands PR #7371](https://github.com/OpenHands/OpenHands/pull/7371): the
-agent owns function schemas and action conversion, while the runtime supplies
-the repository functions. CodeNib dispatches calls directly and does not copy
-the historical IPython string-evaluation bridge.
-
-For the historical OpenHands runtime plugin, the complete provider-binding
-change is:
-
-```python
-import os
-
-from codenib.integrations.locagent import LocAgentToolProvider
-
-_provider = LocAgentToolProvider.from_manifest(os.environ["CODENIB_MANIFEST"])
-get_entity_contents = _provider.get_entity_contents
-search_code_snippets = _provider.search_code_snippets
-explore_tree_structure = _provider.explore_tree_structure
-```
-
-The agent-side schemas and action loop remain unchanged. Modern runtimes can
-use `provider.dispatch(name, arguments)` directly instead of constructing
-Python source from model-supplied arguments.
-
-Compatibility is revision-scoped:
-
-| Contract | Pinned revision |
-| --- | --- |
-| LocAgent behavior | `ef170542a5cca88a1bd8463335ec43de222ed5f9` |
-| OpenHands integration | `efe287ce3402706a171b3a5fb40f15914e98ef20` |
-
-Current OpenHands CLI does not contain that historical LocAgent module. The pin
-describes the supported tool contract; it is not a claim that every OpenHands
-CLI revision exposes LocAgent.
-
-Run the optional source-level probe against local upstream checkouts with:
-
-```bash
-LOCAGENT_CHECKOUT=/path/to/LocAgent \
-OPENHANDS_CHECKOUT=/path/to/OpenHands \
-  pytest -q test/integrations/test_locagent_upstream.py
-```
-
-The probe reads files directly from the pinned Git objects and does not import
-either project. To advance compatibility, update the two revision constants,
-refresh the YAML fixture from the reviewed upstream schemas, and run both this
-probe and `test/integrations/test_locagent.py` in the same change.
+plugin. Modern runtimes can use `provider.dispatch(name, arguments)` directly.
+The supported behavior is pinned to LocAgent revision
+`ef170542a5cca88a1bd8463335ec43de222ed5f9`.
 
 ### Relation Semantics
 
@@ -166,8 +120,8 @@ reference or type-use edges as exact call or inheritance facts.
 - Missing, stale, or failed graph and BM25 views produce explicit errors.
 - Tool output is deterministic and bounded by provider-level result, traversal,
   source-line, and character budgets.
-- Loading the provider never invokes LocAgent, OpenHands ACI, NetworkX,
-  LlamaIndex, or an index builder.
+- Loading the provider never invokes LocAgent, NetworkX, LlamaIndex, or an
+  index builder.
 
 ### Shared Benchmark Interface
 
@@ -177,12 +131,15 @@ reasoning loop while replacing its repository data plane with
 `BaselineTask -> locate_code() -> BaselineRunResult` contract as the other
 localization baselines:
 
+```bash
+pip install "codenib[agent,graph]"
+```
+
 ```python
 from codenib.clients.locagent_agent import LocAgentAgent
 
 agent = LocAgentAgent(
     model="openai-compatible-model",
-    locagent_checkout="/path/to/LocAgent",
 )
 result = await agent.locate_code(
     query_text=issue,
@@ -191,11 +148,14 @@ result = await agent.locate_code(
 )
 ```
 
-The adapter extracts the upstream protocol lazily in an isolated subprocess
-and resolves final file, class, function, and 1-based line records through
-CodeNib's language-neutral graph. The main process never imports LocAgent or
-LiteLLM; `--locagent-python` can select a dedicated upstream environment.
-OpenAI is loaded only when the policy executes, and `--base-url` accepts an
+The adapter vendors the prompts and function schemas from the pinned revision,
+runs the policy loop in CodeNib, and resolves final file, class, function, and
+1-based line records through CodeNib's language-neutral graph. Delivery does
+not require a LocAgent checkout or a second Python environment, and it does
+not import LocAgent, LiteLLM, or LlamaIndex. The optional source-level probe
+above checks the vendored contract against pinned Git objects without importing
+upstream packages. OpenAI is loaded only when the policy executes, and
+`--base-url` accepts an
 OpenAI-compatible endpoint such as a LiteLLM proxy.
 
 The common runner reports the same ranked file/symbol accuracy, precision, and
@@ -207,7 +167,6 @@ contract.
 python examples/locagent_loc_agent.py \
   --dataset codenib_base \
   --model "$LOCAGENT_MODEL" \
-  --locagent-checkout /path/to/LocAgent \
   --result-path results/locagent.jsonl
 ```
 
@@ -392,8 +351,8 @@ ORCALOCA_CHECKOUT=/path/to/OrcaLoca \
 The upstream probe is optional and marked `integration`; without
 `ORCALOCA_CHECKOUT`, it skips before importing OrcaLoca.
 
-The base `codenib` package therefore gains no LocAgent, OpenHands, OrcaLoca,
-LlamaIndex, pandas, or NetworkX dependency.
+The base `codenib` package therefore gains no LocAgent, OrcaLoca, LlamaIndex,
+pandas, or NetworkX dependency.
 
 ## Paired Provider Compatibility
 
@@ -412,6 +371,11 @@ python scripts/analysis/compare_agent_integrations.py locagent \
   --native-index-dir /path/to/locagent-index \
   --model "$LOCAGENT_MODEL"
 
+python scripts/analysis/compare_agent_integrations.py score-locagent \
+  --cases /path/to/cases.json \
+  --results-dir results/locagent-paired \
+  --output results/locagent-summary.json
+
 python scripts/analysis/compare_agent_integrations.py orcaloca \
   --cases /path/to/cases.json \
   --output-dir results/orcaloca-paired \
@@ -425,6 +389,82 @@ python scripts/analysis/compare_agent_integrations.py score-orcaloca \
   --output results/orcaloca-summary.json
 ```
 
+The LocAgent checkout, Python, and native-index flags belong only to the
+optional upstream-native comparison cell. A CodeNib-only run uses
+`--provider codenib`, omits all three, and has no LlamaIndex dependency.
+
+### Fixed SWE-bench Lite coverage
+
+Prepare a broad, reproducible CodeNib-only coverage set before running the
+policy:
+
+```bash
+make scip-python-tool
+export PATH="${CODENIB_SCIP_TOOLS_DIR:-/tmp/codenib/scip-tools}:$PATH"
+export CODENIB_SCIP_PYTHON_INDEX_TIMEOUT_SECONDS=900
+
+python scripts/analysis/prepare_swebench_policy_cases.py \
+  --dataset-json ~/.codenib/princeton-nlp__SWE-bench_Lite_test.json \
+  --output-dir results/locagent-swebench-lite-50 \
+  --count 50 \
+  --jobs 4
+
+python scripts/analysis/compare_agent_integrations.py locagent \
+  --cases results/locagent-swebench-lite-50/cases.json \
+  --output-dir results/locagent-swebench-lite-50/results \
+  --provider codenib \
+  --model "$LOCAGENT_MODEL" \
+  --max-iterations 10
+
+python scripts/analysis/compare_agent_integrations.py score-locagent \
+  --cases results/locagent-swebench-lite-50/cases.json \
+  --results-dir results/locagent-swebench-lite-50/results \
+  --provider codenib \
+  --model "$LOCAGENT_MODEL" \
+  --output results/locagent-swebench-lite-50/summary.json
+```
+
+The preparation command pins the official SWE-bench Lite dataset revision and
+the local dataset-file digest. Its label-independent, seeded selection covers
+every repository stratum, creates an isolated checkout for every base commit,
+derives labels from the golden patch, and builds the required BM25 and symbol
+graph views. A label-independent guard requires the graph to represent at
+least 95% of the commit's visible Python source files and rejects paths outside
+that commit. The final audit also requires the checkout to remain clean at its
+declared base commit. Each case report reads the actual SCIP producer and
+version from the persisted index; a failed build leaves a resumable
+`build_failure.json` sidecar. The run writes `selection.json`, `prepare_report.json`,
+`preparation_environment.json`, and `preflight.json`; `cases.json` is published
+only after every selected case is eligible. Re-running the command resumes
+valid artifacts but rejects a changed dataset or selection configuration.
+Preparation performs no model requests.
+The sample is deliberately repository-balanced coverage, not a
+population-weighted estimate over all SWE-bench Lite tasks.
+
+When `scip-python` times out after emitting parseable, path-addressable protobuf
+documents, preparation retains that compiler-derived prefix and applies the
+same label-independent tree-sitter fallback to every missing tracked Python
+file. If no usable compiler document exists, the malformed or metadata-only
+artifact is rejected and the same fallback covers the full tracked surface.
+Each compiler attempt removes any earlier `index.scip` first, so retained
+documents can only come from that attempt. A graph built with source-coverage
+fallback is fully rebuilt on a later commit instead of entering the incremental
+patch path, which keeps its compiler/fallback provenance complete.
+The report distinguishes compiler availability and coverage from supplemented
+files, symbols, and final Git-surface coverage. The manifest also records
+whether generation completed or retained a partial compiler prefix. The
+fallback adds definitions and containment only; it does not synthesize
+compiler reference edges. Graph audits label the resulting surface as
+`compiler`, `compiler-prefix`, `compiler-prefix+syntax`, or `syntax`.
+
+File metrics validate predictions against every tracked repository file and
+retain all 50 selected cases in the denominator, including failed model cells.
+Function rankings include only locations that explicitly name a function;
+class-only locations remain file predictions. Function metrics use the declared
+subset whose golden patch modifies or deletes a function present in the base
+snapshot; pure additions and non-function changes are not silently scored as
+function misses.
+
 Before any model call, the driver checks every requested checkout commit,
 tracked-file state, manifest commit, required capability, and actual loading of
 the required runtime views. Result files bind the selected-case digest, CodeNib
@@ -433,6 +473,14 @@ missing and failed cells in the requested denominator, verifies recorded case
 digests against the active case set, and rejects mixed-model aggregation.
 `--allow-incomplete` writes an explicit partial audit; it does not turn a
 partial matrix into a complete one.
+
+Both scorers require explicit golden-patch `gold_files` and `gold_functions`
+in each case. `score-locagent` reports the common ranked accuracy, precision,
+and recall contract at configurable cutoffs; `score-orcaloca` reports
+OrcaLoca's unranked File Match and Function Match contract. They intentionally
+do not compare the two policies under one metric. A manifest whose persisted
+graph predates the current graph schema fails preflight and must be rebuilt;
+historical successful cells do not count as current delivery evidence.
 
 The OrcaLoca comparison follows the
 [trace-analysis boundary](#trace-analysis-boundary). File Match and Function

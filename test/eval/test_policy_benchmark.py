@@ -18,6 +18,7 @@ import codenib.eval.benchmarks.policy_benchmark as policy_benchmark
 from codenib.eval.benchmarks.policy_benchmark import (
     _activate_orcaloca_checkout,
     _close_provider,
+    _locagent_predictions,
     _run_locagent_loop,
     main,
 )
@@ -75,6 +76,112 @@ def _write_result(results: Path, *, provider: str, model: str = "test-model") ->
             ],
         },
     )
+
+
+def _write_locagent_result(
+    results: Path,
+    *,
+    provider: str,
+    model: str = "test-model",
+) -> None:
+    write_json_atomic(
+        policy_result_path(
+            results,
+            instance_id="demo__repo-1",
+            agent="locagent",
+            provider=provider,
+        ),
+        {
+            "agent": "locagent",
+            "provider": provider,
+            "instance_id": "demo__repo-1",
+            "model": model,
+            "usage": {"total_tokens": 100 if provider == "native" else 80},
+            "final_output": "src/parser.py\nFunctions: parse\n",
+        },
+    )
+
+
+def test_score_locagent_uses_common_ranked_metrics_and_strict_denominator(
+    tmp_path: Path,
+) -> None:
+    cases = tmp_path / "cases.json"
+    results = tmp_path / "results"
+    output = tmp_path / "summary.json"
+    repo = tmp_path / "repo" / "src"
+    repo.mkdir(parents=True)
+    (repo / "parser.py").write_text("def parse():\n    pass\n", encoding="utf-8")
+    _write_cases(cases)
+    payload = json.loads(cases.read_text(encoding="utf-8"))
+    payload["cases"][0]["repo_path"] = "repo"
+    cases.write_text(json.dumps(payload), encoding="utf-8")
+    _write_locagent_result(results, provider="native")
+    base_args = [
+        "score-locagent",
+        "--cases",
+        str(cases),
+        "--results-dir",
+        str(results),
+        "--output",
+        str(output),
+    ]
+
+    assert main(base_args) == 1
+    assert main([*base_args, "--allow-incomplete"]) == 0
+    partial = json.loads(output.read_text(encoding="utf-8"))
+    assert partial["coverage"]["expected_cell_count"] == 2
+    by_provider = {row["provider"]: row for row in partial["summary"]}
+    assert by_provider["native"]["file_metrics"]["1"]["accuracy"] == 1.0
+    assert by_provider["native"]["function_metrics"]["1"]["accuracy"] == 1.0
+    assert by_provider["codenib"]["failed_count"] == 1
+    assert by_provider["codenib"]["file_metrics"]["1"]["accuracy"] == 0.0
+
+    _write_locagent_result(results, provider="codenib")
+    assert main(base_args) == 0
+    complete = json.loads(output.read_text(encoding="utf-8"))
+    assert complete["coverage"]["paired_successful_count"] == 1
+    assert complete["paired_summary"]["n"] == 1
+    assert complete["paired_summary"][
+        "native_to_codenib_total_tokens_ratio_median"
+    ] == pytest.approx(1.25)
+
+
+def test_locagent_predictions_score_repository_files_but_only_named_functions(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "Dockerfile").write_text("FROM python:3.12\n", encoding="utf-8")
+    (repo / "setup.cfg").write_text("[metadata]\n", encoding="utf-8")
+    (repo / "src" / "model.py").write_text(
+        "class Widget:\n    def save(self):\n        pass\n",
+        encoding="utf-8",
+    )
+    case = PolicyBenchmarkCase(
+        instance_id="demo__repo-1",
+        problem_statement="Locate the configuration and save method",
+        repo_path=repo,
+        base_commit="a" * 40,
+        manifest_path=tmp_path / "manifest.json",
+    )
+
+    files, functions = _locagent_predictions(
+        case,
+        {
+            "final_output": (
+                "Dockerfile\n"
+                "setup.cfg\n"
+                "src/model.py\n"
+                "Class: Widget\n"
+                "src/model.py\n"
+                "Class: Widget\n"
+                "Functions: save\n"
+            )
+        },
+    )
+
+    assert files == ("Dockerfile", "setup.cfg", "src/model.py")
+    assert functions == ("src/model.py:Widget.save",)
 
 
 def test_score_command_enforces_the_requested_cell_denominator(tmp_path: Path) -> None:
@@ -297,15 +404,9 @@ def test_failed_orcaloca_cell_is_an_all_miss_with_empty_function_labels(
     assert summary["paired_summary"]["n"] == 0
 
 
-def test_locagent_loop_uses_the_configured_protocol_python(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_locagent_loop_uses_the_vendored_protocol(monkeypatch, tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    python = tmp_path / "locagent-python"
-    python.write_text("", encoding="utf-8")
-    checkout = tmp_path / "LocAgent"
-    checkout.mkdir()
     case = PolicyBenchmarkCase.from_mapping(
         {
             "instance_id": "demo__repo-1",
@@ -317,11 +418,11 @@ def test_locagent_loop_uses_the_configured_protocol_python(
     )
     captured = {}
 
-    def load_protocol(_checkout, **kwargs):
+    def build_protocol(**kwargs):
         captured.update(kwargs)
         return object()
 
-    monkeypatch.setattr(policy_benchmark, "load_locagent_protocol", load_protocol)
+    monkeypatch.setattr(policy_benchmark, "build_locagent_protocol", build_protocol)
     monkeypatch.setattr(
         policy_benchmark,
         "run_locagent_policy",
@@ -340,16 +441,86 @@ def test_locagent_loop_uses_the_configured_protocol_python(
 
     result = _run_locagent_loop(
         case=case,
-        checkout=checkout,
         dispatch=lambda _name, _arguments: "",
         model="test-model",
         base_url=None,
         max_iterations=2,
-        locagent_python=python,
     )
 
-    assert captured["python_executable"] == python
+    assert captured == {
+        "problem_statement": "Locate the parser",
+        "package_name": "demo",
+    }
     assert result["iterations"] == 1
+
+
+def test_codenib_locagent_run_needs_no_upstream_checkout_or_python(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from codenib.integrations.locagent import LocAgentToolProvider
+
+    cases = tmp_path / "cases.json"
+    output_dir = tmp_path / "results"
+    _write_cases(cases)
+
+    class Provider:
+        load_seconds = 0.01
+
+        def dispatch(self, _name, _arguments):
+            return ""
+
+    monkeypatch.setattr(
+        policy_benchmark,
+        "inspect_policy_run_preflight",
+        lambda *_args, **_kwargs: SimpleNamespace(require_eligible=lambda: None),
+    )
+    monkeypatch.setattr(
+        policy_benchmark,
+        "_policy_provenance_by_provider",
+        lambda **_kwargs: {"codenib": {"fixture": True}},
+    )
+    monkeypatch.setattr(
+        LocAgentToolProvider,
+        "from_manifest",
+        lambda _manifest: Provider(),
+    )
+    monkeypatch.setattr(
+        policy_benchmark,
+        "_run_locagent_loop",
+        lambda **_kwargs: {
+            "model": "test-model",
+            "elapsed_seconds": 0.1,
+            "regions": [],
+            "usage": {},
+        },
+    )
+
+    assert (
+        main(
+            [
+                "locagent",
+                "--cases",
+                str(cases),
+                "--output-dir",
+                str(output_dir),
+                "--provider",
+                "codenib",
+                "--model",
+                "test-model",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(
+        policy_result_path(
+            output_dir,
+            instance_id="demo__repo-1",
+            agent="locagent",
+            provider="codenib",
+        ).read_text(encoding="utf-8")
+    )
+    assert result["provider"] == "codenib"
+    assert "error" not in result
 
 
 def test_provider_cleanup_failure_is_recordable() -> None:
