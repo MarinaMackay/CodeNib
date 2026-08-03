@@ -16,10 +16,20 @@ from datasets import Features
 from datasets import Sequence as Seq
 from datasets import Value
 
+from ..git_snapshot import restore_git_worktree
 from ..log_utils import get_logger
 from .base import DatasetBase
 
 logger = get_logger(__name__)
+
+
+def _command_error_detail(exc: subprocess.CalledProcessError | RuntimeError) -> str:
+    stderr = getattr(exc, "stderr", None)
+    if isinstance(stderr, bytes):
+        return stderr.decode("utf-8", errors="replace").strip()
+    if isinstance(stderr, str) and stderr.strip():
+        return stderr.strip()
+    return str(exc)
 
 
 class CodeNibBaseDataset(DatasetBase):
@@ -236,31 +246,18 @@ class CodeNibBaseDataset(DatasetBase):
 
             logger.info(f"Checking out commit {base_commit}")
             try:
-                subprocess.run(
-                    ["git", "reset", "--hard"],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-                subprocess.run(
-                    ["git", "clean", "-fd"],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-                subprocess.run(
-                    ["git", "checkout", "-f", base_commit],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                )
-            except subprocess.CalledProcessError as e:
-                stderr = e.stderr.decode("utf-8")
+                restore = restore_git_worktree(repo_path, base_commit)
+                if restore.removed_ignored_paths:
+                    logger.info(
+                        "Removed %d source-visible generated path(s)",
+                        len(restore.removed_ignored_paths),
+                    )
+            except (subprocess.CalledProcessError, RuntimeError) as e:
                 logger.warning(
                     "Initial checkout failed for %s at %s: %s",
                     repo_name,
                     base_commit,
-                    stderr.strip(),
+                    _command_error_detail(e),
                 )
 
                 # Reused repo caches may be shallow clones from sampling.
@@ -299,15 +296,10 @@ class CodeNibBaseDataset(DatasetBase):
                 )
 
                 try:
-                    subprocess.run(
-                        ["git", "checkout", "-f", base_commit],
-                        check=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                    )
-                except subprocess.CalledProcessError as e2:
+                    restore_git_worktree(repo_path, base_commit)
+                except (subprocess.CalledProcessError, RuntimeError) as e2:
                     logger.error(f"Failed to checkout commit {base_commit}: {e2}")
-                    logger.error(f"STDERR: {e2.stderr.decode('utf-8')}")
+                    logger.error("DETAIL: %s", _command_error_detail(e2))
                     raise RuntimeError(
                         f"Failed to checkout commit {base_commit} for repo {repo_name}"
                     ) from e2

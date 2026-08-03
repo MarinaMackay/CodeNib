@@ -5,12 +5,14 @@
 from __future__ import annotations
 
 import json
+import pickle
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from codenib.compiler.manifest import RepoManifest
+from codenib.compiler.manifest import IndexEntry, RepoManifest
 from codenib.eval.benchmarks.policy_compat import (
     PolicyBenchmarkCase,
     PolicyCaseSet,
@@ -25,6 +27,7 @@ from codenib.eval.benchmarks.policy_compat import (
     source_files,
     write_json_atomic,
 )
+from codenib.graph.code_graph import CodeGraph
 
 COMMIT = "a" * 40
 
@@ -109,10 +112,24 @@ def test_eligibility_checks_checkout_manifest_commit_and_capabilities(
     record = _case_record(tmp_path)
     record["base_commit"] = commit
     record["orcaloca_native_repo_path"] = str(repo)
+    graph_dir = tmp_path / "symbol_graph"
+    graph_dir.mkdir()
+    graph_path = graph_dir / "graph.pkl"
+    CodeGraph(project_root=str(repo)).save_graph(graph_path)
     manifest = RepoManifest(
         repo_path=str(repo),
         commit=commit,
         last_indexed_commit=commit,
+        indexes={
+            "symbol_graph": IndexEntry(
+                index_type="symbol_graph",
+                path=str(graph_dir),
+                built_at="2026-08-02T00:00:00Z",
+                built_at_epoch=0.0,
+                status="fresh",
+                commit=commit,
+            )
+        },
         capabilities={"symbol_navigation": True},
     )
     manifest.save(record["manifest_path"])
@@ -127,6 +144,39 @@ def test_eligibility_checks_checkout_manifest_commit_and_capabilities(
     assert eligible.eligible
     assert eligible.repo_commit == commit
     assert eligible.manifest_commit == commit
+
+    with patch(
+        "codenib.mcp.context.ServerContext.validate_views",
+        side_effect=RuntimeError("probe failed"),
+    ):
+        failed_probe = inspect_case_eligibility(
+            case,
+            agent="orcaloca",
+            provider="codenib",
+            required_capabilities=("symbol_navigation",),
+        )
+    assert not failed_probe.eligible
+    assert any(
+        "runtime view validation failed" in reason for reason in failed_probe.reasons
+    )
+
+    with graph_path.open("rb") as handle:
+        stale_graph = pickle.load(handle)
+    stale_graph["schema_version"] = 4
+    with graph_path.open("wb") as handle:
+        pickle.dump(stale_graph, handle)
+    stale = inspect_case_eligibility(
+        case,
+        agent="orcaloca",
+        provider="codenib",
+        required_capabilities=("symbol_navigation",),
+    )
+    assert not stale.eligible
+    assert any(
+        "manifest capability is unusable at runtime" in reason
+        and "schema_version=4" in reason
+        for reason in stale.reasons
+    )
 
     manifest.capabilities.clear()
     manifest.commit = "b" * 40

@@ -8,7 +8,7 @@
 
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ...code_chunker import CodeChunker, RepoChunkingConfig
 from ...log_utils import get_logger
@@ -16,6 +16,30 @@ from ...profiler import Profiler
 from .vector_store import CodeVectorStore
 
 logger = get_logger(__name__)
+
+
+def _remove_unrequested_model_levels(
+    store_path: Path,
+    embedding_model: str,
+    build_levels: List[str],
+) -> None:
+    model_suffix = embedding_model.replace("/", "__")
+    requested = frozenset(build_levels)
+    for level in ("l0", "l2"):
+        if level in requested:
+            continue
+        level_path = store_path / level
+        for name in (
+            f"config_{model_suffix}.json",
+            f"index_{model_suffix}.faiss",
+            f"documents_{model_suffix}.pkl",
+            f"index_{model_suffix}.pkl",
+        ):
+            (level_path / name).unlink(missing_ok=True)
+        try:
+            level_path.rmdir()
+        except OSError:
+            pass
 
 
 def _profiler_section(profiler, label, metadata=None):
@@ -44,6 +68,7 @@ def build_hierarchical_vector_store(
     ivf_nprobe: int = 8,
     profiler: Optional[Profiler] = None,
     force_rebuild: bool = False,
+    artifact_metadata: Optional[Dict[str, Any]] = None,
 ) -> CodeVectorStore:
     """Build (or load) a hierarchical vector store (L0/L2) for a repository.
 
@@ -55,6 +80,14 @@ def build_hierarchical_vector_store(
     store_path = Path(index_path)
     if plan_name:
         store_path = store_path / plan_name
+
+    normalized_levels = [level.lower() for level in (build_levels or ["l0", "l2"])]
+    if force_rebuild:
+        _remove_unrequested_model_levels(
+            store_path,
+            embedding_model,
+            normalized_levels,
+        )
 
     if not force_rebuild:
         model_suffix = embedding_model.replace("/", "__")
@@ -76,13 +109,14 @@ def build_hierarchical_vector_store(
                 store_path=str(store_path),
                 profiler=profiler,
                 embedding=embedding,
+                artifact_metadata=artifact_metadata,
                 **(embedding_kwargs or {}),
             )
             vector_store.load(str(store_path))
             return vector_store
 
     languages = languages or ["python"]
-    build_levels = [level.lower() for level in (build_levels or ["l0", "l2"])]
+    build_levels = normalized_levels
     repo_cfg = RepoChunkingConfig(languages=languages)
 
     chunks_by_level = {}
@@ -91,7 +125,7 @@ def build_hierarchical_vector_store(
             chunker_kwargs=dict(
                 language=languages[0],
                 repo_config=repo_cfg,
-                max_lines_per_chunk=None,
+                max_lines_per_chunk=max_lines_per_chunk,
                 chunk_depth=0,
                 skeleton_mode=True,
             )
@@ -163,6 +197,7 @@ def build_hierarchical_vector_store(
         store_path=str(store_path),
         profiler=profiler,
         embedding=embedding,
+        artifact_metadata=artifact_metadata,
         **(embedding_kwargs or {}),
     )
 

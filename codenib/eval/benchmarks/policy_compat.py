@@ -28,6 +28,13 @@ from codenib.repository_filters import walk_repository_files
 POLICY_RESULT_SCHEMA_VERSION = 1
 POLICY_PROVIDERS = ("native", "codenib")
 
+_CAPABILITY_RUNTIME_VIEWS = {
+    "sparse_search": frozenset({"bm25"}),
+    "dense_search": frozenset({"vector"}),
+    "hybrid_search": frozenset({"bm25", "vector"}),
+    "symbol_navigation": frozenset({"symbol_graph"}),
+}
+
 _REQUIRED_CASE_FIELDS = {
     "instance_id",
     "problem_statement",
@@ -444,6 +451,42 @@ def inspect_case_eligibility(
                 for capability in required_capabilities:
                     if not manifest.capabilities.get(capability, False):
                         reasons.append(f"manifest lacks capability: {capability}")
+
+                runtime_views = frozenset(
+                    view
+                    for capability in required_capabilities
+                    for view in _CAPABILITY_RUNTIME_VIEWS.get(capability, ())
+                )
+                if runtime_views and not reasons:
+                    from codenib.mcp.context import ServerContext
+
+                    try:
+                        view_errors = ServerContext.validate_views(
+                            manifest,
+                            views=runtime_views,
+                        )
+                    except Exception as exc:
+                        reasons.append(
+                            "runtime view validation failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                    else:
+                        for capability in required_capabilities:
+                            required_views = _CAPABILITY_RUNTIME_VIEWS.get(
+                                capability, ()
+                            )
+                            unavailable = sorted(
+                                view for view in required_views if view in view_errors
+                            )
+                            if not unavailable:
+                                continue
+                            details = "; ".join(
+                                f"{view}: {view_errors[view]}" for view in unavailable
+                            )
+                            reasons.append(
+                                f"manifest capability is unusable at runtime: "
+                                f"{capability} ({details})"
+                            )
 
     return CaseEligibility(
         instance_id=case.instance_id,
