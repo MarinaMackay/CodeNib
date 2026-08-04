@@ -93,8 +93,8 @@ class BM25IndexBuilder:
 
     def artifact_identity(self) -> Dict[str, Any]:
         return {
-            # v4 keeps overloads and bounded large-definition spans separate.
-            "builder_schema": 4,
+            # v6 also fixes source discovery order across filesystems.
+            "builder_schema": 6,
             "languages": list(self.languages),
             "max_k": self.max_k,
             "max_lines_per_chunk": self.max_lines_per_chunk,
@@ -123,6 +123,9 @@ class BM25IndexBuilder:
         )
         os.makedirs(output_dir, exist_ok=True)
         indexer.save_index(output_dir)
+        from .artifact_fingerprints import bm25_artifact_file_fingerprints
+
+        artifact_files = bm25_artifact_file_fingerprints(output_dir)
 
         return IndexStatus(
             index_type="bm25",
@@ -133,6 +136,7 @@ class BM25IndexBuilder:
             path=output_dir,
             metadata={
                 **self.artifact_identity(),
+                "artifact_file_fingerprints": artifact_files,
                 "chunk_count": len(chunks),
                 "source_file_count": len(
                     {chunk.file for chunk in chunks if getattr(chunk, "file", "")}

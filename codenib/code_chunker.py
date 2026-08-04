@@ -407,7 +407,10 @@ class CodeChunker:
                     language = extension_to_language[file_path.suffix]
                     files_to_process.append((file_path, language))
 
-        return files_to_process
+        return sorted(
+            files_to_process,
+            key=lambda item: item[0].relative_to(repo_path).as_posix(),
+        )
 
     def _should_include_directory(self, dir_path: Path) -> bool:
         """Check if a directory should be included in processing."""
@@ -427,8 +430,7 @@ class CodeChunker:
         self, file_path: Path, extension_to_language: Dict[str, str]
     ) -> bool:
         """Check if a file should be processed."""
-        # Check extension
-        if file_path.suffix not in extension_to_language:
+        if not self._should_process_file_path(file_path, extension_to_language):
             return False
 
         # Check file size
@@ -444,6 +446,15 @@ class CodeChunker:
         if self.repo_config.skip_minified:
             if self._is_minified_file(file_path):
                 return False
+
+        return True
+
+    def _should_process_file_path(
+        self, file_path: Path, extension_to_language: Dict[str, str]
+    ) -> bool:
+        """Apply source filters that do not require file contents or metadata."""
+        if file_path.suffix not in extension_to_language:
+            return False
 
         # Check ignore patterns (basic pattern matching)
         file_name = file_path.name

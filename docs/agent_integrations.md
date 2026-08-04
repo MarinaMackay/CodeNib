@@ -17,7 +17,7 @@ budget contract. None of these labels alone claims end-to-end task quality.
 | --- | --- | --- | --- | --- | --- |
 | LocAgent | CodeNib-native, revision-pinned | Symbol graph + BM25 | Pinned three-tool contract | Vendored prompts and function-calling loop; paired runner with strict common file/function@k scoring | Python SWE-bench repositories; reference and type-use are disclosed as conservative relation mappings |
 | OrcaLoca SearchAgent | Revision-pinned supported | Symbol graph | Pinned six-tool and private-hook contract | Upstream `SearchAgent`; fixed-case paired runner and native File/Function Match scorer | Python SWE-bench repositories; empty `TraceAnalysisOutput`; upstream trace generation is not included |
-| SWE-Explore | Reference-only | N/A | No adapter | No policy runner or paired evaluation | Used only to distinguish trajectory-read labels from golden-patch localization metrics |
+| SWE-Explore | Official explorer-compatible, revision-pinned | BM25 | Ranked `ContextRegion` explorer protocol | Official runner adapter, pinned scorer contract, and strict seven-language compatibility run | Trajectory-read localization only; no patch-generation or issue-resolution claim |
 
 ### What Supported Means
 
@@ -28,8 +28,8 @@ A revision-pinned integration must pass four separate gates:
 2. An upstream probe checks the pinned tool signatures and the private hooks
    that the policy actually invokes.
 3. Benchmark preflight verifies clean checkout commits, manifest identity,
-   declared capabilities, and successful loading of every required runtime
-   view before a model call.
+   index-visible untracked files, builder profiles, declared capabilities, and
+   successful loading of every required runtime view before a model call.
 4. The paired runner records every requested cell, keeps failures in the
    denominator, and binds the case-set, CodeNib, upstream, model, and run-option
    identities into result provenance.
@@ -37,6 +37,12 @@ A revision-pinned integration must pass four separate gates:
 Passing these gates supports the stated provider and policy boundary. It does
 not imply compatibility with an arbitrary upstream revision or with stages
 explicitly excluded by the matrix.
+
+For a benchmark integration such as SWE-Explore, the policy gate is replaced
+by its public explorer protocol and evaluator. CodeNib checks every metric
+against the pinned official scorer. Coverage retains preparation failures;
+quality is success-conditioned with its denominator stated explicitly. It does
+not reinterpret trajectory labels as golden-patch labels.
 
 Optional upstream packages are required only for policy execution. Provider
 imports and standalone provider examples remain dependency-free. Exact pinned
@@ -53,6 +59,75 @@ LocAgent provider over one TypeScript/Go manifest, including source ranges,
 indexed search, and graph traversal. This checks that the provider boundary is
 language-agnostic; it is not evidence that the pinned Python-only LocAgent or
 OrcaLoca native implementations support those languages.
+
+## SWE-Explore
+
+CodeNib implements SWE-Explore's ranked-region explorer protocol without
+importing the benchmark at runtime:
+
+```python
+from codenib.integrations.swe_explore import CodeNibSWEExploreExplorer
+
+explorer = CodeNibSWEExploreExplorer.from_repository("/path/to/checkout")
+results = explorer.explore(
+    instance_id="org__repo-123",
+    query="issue text",
+    top_k=20,
+)
+```
+
+The adapter loads only the manifest's BM25 view. It emits repository-relative,
+1-based inclusive regions, clips ranges to source files, rejects escaping
+paths, removes exact duplicate regions, and preserves retrieval order. Index
+construction remains a separate operation.
+
+Compatibility is pinned to SWE-Explore revision
+`3c12dc5a551937038afcbdb6eb6bbf19f3ddd8c1` and released dataset revision
+`bdb0ae45d7c337d9e1dc3ebfe2a0af6bc7c1fbd9`. The release rows contain regions
+but not issue text or `base_commit`, so CodeNib joins them by `instance_id` to
+pinned SWE-bench Verified, Multilingual, and Pro source revisions. The Pro-only
+`instance_` prefix is normalized at that join boundary.
+
+Two different cutoffs remain explicit:
+
+- `top_k` limits the number of ranked regions returned by an explorer.
+- Recall/nDCG at 100, 300, or 500 applies an accumulated source-line budget in
+  the evaluator.
+
+CodeNib's dependency-free scorer reproduces all 17 metrics registered by the
+pinned official runner. Differential checks matched the official evaluator on
+250 generated cases and on all `60` cells from the fixed real-repository run,
+for `1,020/1,020` exact real-output metric values. The loader intentionally
+preserves malformed optional trajectory ranges under upstream semantics: the
+released data contains 455 reversed optional ranges and 8 with `end=0`.
+Silently repairing them would make CodeNib's scores incomparable.
+
+The fixed compatibility subset contains 20 base-commit checkouts across
+Python, Go, Rust, TypeScript, JavaScript, C, and C++. All 20 passed checkout,
+benchmark-digest, BM25-profile, build, load, and query gates. Snapshot checks
+include index-visible untracked and gitignored source files. On the validation machine, median
+first-build, view-load, and query times were 0.81 s, 64 ms, and 67 ms. These are
+compatibility measurements, not a population estimate or a claim of task-level
+agent improvement. The [case set](assets/swe_explore_cases.json)
+and [validation report](evaluation/swe_explore.md) record the exact
+scope.
+
+Run the strict CodeNib harness after preparing clean detached checkouts at the
+joined source commits:
+
+```bash
+codenib-swe-explore-benchmark \
+  --bench /path/to/bench.final.public.jsonl \
+  --case-set docs/assets/swe_explore_cases.json \
+  --repos-root /path/to/repos \
+  --output results/codenib-swe-explore.json \
+  --top-k 5,10,20
+```
+
+The upstream SWE-Explore runner can also select `--explorers codenib`. Its
+native BM25 control has a Python/document-oriented extension allowlist, so the
+seven-language aggregate is useful as an integration smoke test but not as a
+fair cross-language algorithm comparison.
 
 ## LocAgent
 
