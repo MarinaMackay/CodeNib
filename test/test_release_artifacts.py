@@ -23,13 +23,13 @@ def test_project_identity_and_tag_match_release_metadata() -> None:
     name, version = project_identity(root / "pyproject.toml")
 
     assert name == "codenib"
-    assert expected_tag(version) == "v0.1.0"
-    validate_tag("v0.1.0", version)
+    assert expected_tag(version) == "v0.2.0a1"
+    validate_tag("v0.2.0a1", version)
 
 
 def test_release_tag_must_match_project_version() -> None:
     with pytest.raises(ReleaseValidationError, match="does not match"):
-        validate_tag("v0.2.0", "0.1.0")
+        validate_tag("v0.1.0", "0.2.0a1")
 
 
 def test_packaged_readme_requires_the_arxiv_citation() -> None:
@@ -42,6 +42,17 @@ https://arxiv.org/abs/2607.25431
 
     with pytest.raises(ReleaseValidationError, match="citation markers"):
         validate_readme_citation("# CodeNib\n")
+
+
+def test_alpha_release_notes_use_test_registry_and_pages_permissions() -> None:
+    root = Path(__file__).resolve().parents[1]
+    notes = (root / "docs" / "releases" / "0.2.0.md").read_text(encoding="utf-8")
+
+    assert notes.count("--index-url https://test.pypi.org/simple/") == 2
+    assert notes.count("--no-deps --only-binary=:all:") == 2
+    assert "--extra-index-url" not in notes
+    for permission in ("contents: read", "pages: write", "id-token: write"):
+        assert permission in notes
 
 
 def test_registry_publishers_use_separate_workflows() -> None:
