@@ -814,6 +814,7 @@ class RetrieveRerankPipeline:
             embedding_provider=embedding_provider,
             embedding_dimension=embedding_dimension,
             embedding_kwargs=embedding_kwargs,
+            embedding=vector_store.embedding,
             index_metric=self.index_metric,
             profiler=self.profiler,
         )
