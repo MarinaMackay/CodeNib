@@ -29,6 +29,7 @@ from mcp.server import MCPServer
 from pydantic import Field
 
 from ..compiler.manifest import RepoManifest
+from ..log_utils import set_console_log_level
 from .context import ServerContext
 from .prompts import CODENIB_GUIDE
 from .tools._validation import (
@@ -71,22 +72,34 @@ def get_context() -> ServerContext:
     return _ctx
 
 
-mcp = MCPServer(
-    "codenib",
-    instructions=(
-        "CodeNib provides code search over pre-built indexes. "
-        "Start with search_context for planned ranked retrieval over the "
-        "available lexical, dense, and structural views. Use search_semantic "
-        "for direct vector/embedding similarity, "
-        "search_bm25 for keyword lookups, search_regex for CodeGraph "
-        "file/symbol pattern matching, and search_zoekt for fast trigram-based "
-        "substring/regex search across raw file contents. Use "
-        "lsp_definition, lsp_references, and lsp_route for graph-backed "
-        "LSP-shaped symbol navigation."
-        " Use read_source to inspect a bounded source window after search or "
-        "navigation returns a location."
-    ),
-)
+# MCPServer configures the process-wide root logger while it is constructed.
+# Keep imports safe for embedding applications; `main()` configures logging
+# explicitly after parsing the requested CLI level.
+_root_logger = logging.getLogger()
+_import_logging_guard: logging.NullHandler | None = None
+if not _root_logger.handlers:
+    _import_logging_guard = logging.NullHandler()
+    _root_logger.addHandler(_import_logging_guard)
+try:
+    mcp = MCPServer(
+        "codenib",
+        instructions=(
+            "CodeNib provides code search over pre-built indexes. "
+            "Start with search_context for planned ranked retrieval over the "
+            "available lexical, dense, and structural views. Use search_semantic "
+            "for direct vector/embedding similarity, "
+            "search_bm25 for keyword lookups, search_regex for CodeGraph "
+            "file/symbol pattern matching, and search_zoekt for fast trigram-based "
+            "substring/regex search across raw file contents. Use "
+            "lsp_definition, lsp_references, and lsp_route for graph-backed "
+            "LSP-shaped symbol navigation."
+            " Use read_source to inspect a bounded source window after search or "
+            "navigation returns a location."
+        ),
+    )
+finally:
+    if _import_logging_guard is not None:
+        _root_logger.removeHandler(_import_logging_guard)
 
 
 # ------------------------------------------------------------------
@@ -589,6 +602,7 @@ def main(argv: list[str] | None = None) -> None:
     """Run the ``codenib-mcp`` console entry point."""
     program_name = _cli_program_name()
     args = _parse_args(argv)
+    set_console_log_level(args.log_level)
     manifest_path = args.manifest_flag or args.manifest
     if args.artifact and manifest_path:
         logger.error("Choose either a manifest or --artifact, not both")
@@ -602,12 +616,6 @@ def main(argv: list[str] | None = None) -> None:
             program_name,
         )
         sys.exit(1)
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        stream=sys.stderr,
-    )
 
     try:
         if args.artifact:
@@ -638,7 +646,8 @@ def main(argv: list[str] | None = None) -> None:
         logger.error(str(exc))
         sys.exit(1)
     except Exception as exc:
-        logger.error("Failed to start server: %s", exc, exc_info=True)
+        logger.error("Failed to start server: %s", exc)
+        logger.debug("MCP server startup failure", exc_info=True)
         sys.exit(1)
 
 
