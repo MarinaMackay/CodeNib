@@ -6,9 +6,12 @@
 Unit tests for EmbeddingsCache.
 """
 
+import json
+import os
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from codenib.index.incremental.embeddings_cache import EmbeddingsCache
 
@@ -124,3 +127,113 @@ class TestPersistence:
 
         loaded = EmbeddingsCache.load_or_empty(path)
         assert loaded.size() == 1
+
+    @pytest.mark.parametrize("present_suffix", [".json", ".npz"])
+    def test_load_or_empty_rejects_partial_modern_generation_without_pickle(
+        self,
+        tmp_path: Path,
+        present_suffix: str,
+    ):
+        path = tmp_path / "cache.pkl"
+        sidecar = path.with_suffix(present_suffix)
+        sidecar.write_bytes(b"[]" if present_suffix == ".json" else b"partial")
+
+        with pytest.raises(ValueError, match=r"incomplete JSON\+NPZ generation"):
+            EmbeddingsCache.load_or_empty(path)
+
+    def test_load_rejects_hash_vector_generation_mismatch(self, tmp_path: Path):
+        cache = EmbeddingsCache()
+        cache.put("h1", make_vec(1.0))
+        cache.put("h2", make_vec(2.0))
+        path = tmp_path / "cache.pkl"
+        cache.save(path)
+
+        path.with_suffix(".json").write_text(
+            json.dumps(["other1", "other2"]),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="hash order does not match"):
+            EmbeddingsCache.load(path)
+
+    def test_saved_npz_carries_hash_order(self, tmp_path: Path):
+        cache = EmbeddingsCache()
+        cache.put("h1", make_vec(1.0))
+        cache.put("h2", make_vec(2.0))
+        path = tmp_path / "cache.pkl"
+
+        cache.save(path)
+
+        with np.load(path.with_suffix(".npz"), allow_pickle=False) as data:
+            assert data["hashes"].tolist() == ["h1", "h2"]
+
+    def test_legacy_npz_without_embedded_hashes_still_loads(self, tmp_path: Path):
+        path = tmp_path / "cache.pkl"
+        path.with_suffix(".json").write_text(
+            json.dumps(["legacy"]),
+            encoding="utf-8",
+        )
+        np.savez_compressed(
+            path.with_suffix(".npz"),
+            vectors=np.stack([make_vec(3.0)]),
+        )
+
+        loaded = EmbeddingsCache.load(path)
+
+        np.testing.assert_array_equal(loaded.get("legacy"), make_vec(3.0))
+
+    @pytest.mark.parametrize("missing_suffix", [".json", ".npz"])
+    def test_incomplete_modern_generation_does_not_fall_back_to_pickle(
+        self,
+        tmp_path: Path,
+        missing_suffix: str,
+    ):
+        path = tmp_path / "cache.pkl"
+        cache = EmbeddingsCache()
+        cache.put("hash", make_vec(1.0))
+        cache.save(path)
+        path.with_suffix(missing_suffix).unlink()
+
+        with pytest.raises(ValueError, match=r"incomplete JSON\+NPZ generation"):
+            EmbeddingsCache.load(path)
+
+    def test_embedded_hash_index_must_use_saved_string_encoding(self, tmp_path: Path):
+        path = tmp_path / "cache.pkl"
+        cache = EmbeddingsCache()
+        cache.put("1", make_vec(1.0))
+        cache.save(path)
+        np.savez_compressed(
+            path.with_suffix(".npz"),
+            vectors=np.stack([make_vec(1.0)]),
+            hashes=np.asarray([1]),
+        )
+
+        with pytest.raises(ValueError, match="embedded hash index is invalid"):
+            EmbeddingsCache.load(path)
+
+    def test_interrupted_publish_fails_closed(self, tmp_path: Path, monkeypatch):
+        path = tmp_path / "cache.pkl"
+        old_cache = EmbeddingsCache()
+        old_cache.put("old1", make_vec(1.0))
+        old_cache.put("old2", make_vec(2.0))
+        old_cache.save(path)
+
+        new_cache = EmbeddingsCache()
+        new_cache.put("new1", make_vec(3.0))
+        new_cache.put("new2", make_vec(4.0))
+        real_replace = os.replace
+
+        def interrupt_json_replace(source, destination):
+            if Path(destination).suffix == ".json":
+                raise OSError("simulated interruption")
+            real_replace(source, destination)
+
+        monkeypatch.setattr(
+            "codenib.index.incremental.embeddings_cache.os.replace",
+            interrupt_json_replace,
+        )
+
+        with pytest.raises(OSError, match="simulated interruption"):
+            new_cache.save(path)
+        with pytest.raises(ValueError, match="hash order does not match"):
+            EmbeddingsCache.load(path)
