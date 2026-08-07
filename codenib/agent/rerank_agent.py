@@ -7,6 +7,7 @@ Rerank agent for ranking code nodes based on relevance to a query.
 This module uses LLM APIs to rank NodeInfo objects and return QueriedNode objects.
 """
 
+import math
 import re
 from collections import Counter, defaultdict
 from typing import Dict, List, Literal, Optional, Sequence, Tuple
@@ -35,6 +36,7 @@ class RerankResult(BaseModel):
 # Max chars from each candidate's content embedded in a rankgpt-style prompt.
 # Approximate proxy for SweRank's 1024-token cap (≈3-4k chars for code).
 _RANKGPT_MAX_CONTENT_CHARS = 3000
+_LISTWISE_FORMATS = frozenset({"structured", "rankgpt"})
 
 
 class RerankAgent:
@@ -59,6 +61,10 @@ class RerankAgent:
                 (Salesforce/SweRankLLM-*, RankZephyr, etc.) — forcing JSON on
                 them collapses the output to the first index only.
         """
+        if listwise_format not in _LISTWISE_FORMATS:
+            supported = ", ".join(sorted(_LISTWISE_FORMATS))
+            raise ValueError(f"listwise_format must be one of: {supported}")
+
         self.llm = llm
         self.listwise_format = listwise_format
         self.structured_llm = (
@@ -100,6 +106,12 @@ class RerankAgent:
             When a sliding window is configured, each window is reranked independently and
             the averaged scores across all windows determine the final ordering.
         """
+        if top_k is not None and (
+            isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 0
+        ):
+            raise ValueError("top_k must be a non-negative integer or None")
+        if top_k == 0:
+            return []
         if not nodes:
             logger.warning("No nodes provided for reranking")
             return []
@@ -116,16 +128,21 @@ class RerankAgent:
                     valid_nodes.append((i, node))
 
             if not valid_nodes:
-                logger.warning("No nodes with content found for reranking")
-                return []
+                logger.warning(
+                    "No nodes with content found for reranking; preserving "
+                    "the first-stage candidate order."
+                )
+                return self._preserve_first_stage(
+                    nodes,
+                    top_k=top_k,
+                    include_content=include_content,
+                )
 
             logger.info(
                 f"Reranking {len(valid_nodes)} nodes with query: {query[:100]}..."
             )
 
-            node_lookup: Dict[int, NodeInfo] = {
-                original_idx: node for original_idx, node in valid_nodes
-            }
+            node_lookup: Dict[int, NodeInfo] = dict(enumerate(nodes))
 
             total_nodes = len(valid_nodes)
             window_size = window_size or total_nodes
@@ -165,8 +182,10 @@ class RerankAgent:
                     appearance_count[original_idx] += 1
 
             if not aggregated_scores:
-                logger.warning("Reranker did not return any scores.")
-                return []
+                logger.warning(
+                    "Reranker did not return any usable scores; preserving "
+                    "the first-stage candidate order."
+                )
 
             averaged_scores = {
                 idx: aggregated_scores[idx] / appearance_count[idx]
@@ -177,24 +196,28 @@ class RerankAgent:
             sorted_indices = sorted(
                 averaged_scores.items(), key=lambda item: item[1], reverse=True
             )
+            ranked_ids = {idx for idx, _score in sorted_indices}
+            sorted_indices.extend(
+                (
+                    original_idx,
+                    float(node.score) if node.score is not None else 0.0,
+                )
+                for original_idx, node in enumerate(nodes)
+                if original_idx not in ranked_ids
+            )
 
             ranked_nodes: List[QueriedNode] = []
             for original_idx, score in sorted_indices:
                 node = node_lookup.get(original_idx)
                 if not node:
                     continue
-                payload = {
-                    "node_name": node.node_name,
-                    "type": node.type,
-                    "file": node.file,
-                    "node_id": node.node_id,
-                    "start_line": node.start_line,
-                    "end_line": node.end_line,
-                    "score": float(score),
-                }
-                if include_content:
-                    payload["content"] = node.content
-                ranked_nodes.append(QueriedNode(**payload))
+                ranked_nodes.append(
+                    self._to_queried_node(
+                        node,
+                        score=float(score),
+                        include_content=include_content,
+                    )
+                )
                 if top_k and len(ranked_nodes) >= top_k:
                     break
 
@@ -207,7 +230,49 @@ class RerankAgent:
 
         except Exception as e:
             logger.error(f"Error during reranking: {e}")
-            return []
+            return self._preserve_first_stage(
+                nodes,
+                top_k=top_k,
+                include_content=include_content,
+            )
+
+    @staticmethod
+    def _to_queried_node(
+        node: NodeInfo,
+        *,
+        score: float,
+        include_content: bool,
+    ) -> QueriedNode:
+        payload = {
+            "node_name": node.node_name,
+            "type": node.type,
+            "file": node.file,
+            "node_id": node.node_id,
+            "start_line": node.start_line,
+            "end_line": node.end_line,
+            "score": score,
+        }
+        if include_content:
+            payload["content"] = node.content
+        return QueriedNode(**payload)
+
+    @classmethod
+    def _preserve_first_stage(
+        cls,
+        nodes: Sequence[NodeInfo],
+        *,
+        top_k: Optional[int],
+        include_content: bool,
+    ) -> List[QueriedNode]:
+        limit = len(nodes) if top_k is None else top_k
+        return [
+            cls._to_queried_node(
+                node,
+                score=float(node.score) if node.score is not None else 0.0,
+                include_content=include_content,
+            )
+            for node in nodes[:limit]
+        ]
 
     def _rerank_window(
         self, query: str, window_nodes: Sequence[Tuple[int, NodeInfo]]
@@ -266,15 +331,32 @@ class RerankAgent:
             logger.error("LLM rerank invocation failed: %s", exc)
             return []
 
+        ranked_indices = getattr(rerank_result, "ranked_indices", [])
+        scores = getattr(rerank_result, "scores", [])
+        if not isinstance(ranked_indices, Sequence) or isinstance(
+            ranked_indices, (str, bytes)
+        ):
+            return []
+        if not isinstance(scores, Sequence) or isinstance(scores, (str, bytes)):
+            return []
         window_scores: List[Tuple[int, float]] = []
-        for local_position, ranked_idx in enumerate(rerank_result.ranked_indices):
-            if local_position >= len(rerank_result.scores):
-                break
+        seen_indices = set()
+        for ranked_idx, raw_score in zip(ranked_indices, scores, strict=False):
+            if isinstance(ranked_idx, bool) or not isinstance(ranked_idx, int):
+                continue
             if not 0 <= ranked_idx < len(window_nodes):
                 continue
-            score = rerank_result.scores[local_position]
+            if ranked_idx in seen_indices:
+                continue
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(score):
+                continue
+            seen_indices.add(ranked_idx)
             original_idx = window_nodes[ranked_idx][0]
-            window_scores.append((original_idx, float(score)))
+            window_scores.append((original_idx, min(1.0, max(0.0, score))))
 
         logger.debug(
             "Window rerank produced %s scored nodes (window size %s)",
@@ -337,6 +419,13 @@ class RerankAgent:
             return []
 
         permutation = self._parse_rankgpt_permutation(response_text, num)
+        if not permutation:
+            logger.warning(
+                "RankGPT reranker did not return any usable indices; "
+                "preserving the first-stage candidate order."
+            )
+            return []
+
         # Items not mentioned in the permutation keep their original order
         # behind the ranked items (matches SweRank's receive_permutation).
         ranked_set = set(permutation)
