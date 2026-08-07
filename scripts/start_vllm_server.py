@@ -13,22 +13,79 @@ Usage:
 """
 
 import argparse
+import re
+import shlex
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
+from pathlib import Path
+
+_FULL_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+_VLLM_RELEASE = re.compile(r"^(\d+)\.(\d+)\.(\d+)(.*)$")
+# GHSA-8fr4-5q9j-m8gm: trust_remote_code could be bypassed before 0.11.1.
+_MIN_SAFE_VLLM_RELEASE = (0, 11, 1)
 
 
-def start_vllm_server(
+def _require_safe_vllm_version() -> str:
+    """Reject releases affected by vLLM's remote-code trust bypass."""
+
+    try:
+        installed = package_version("vllm")
+    except PackageNotFoundError as exc:
+        raise RuntimeError("vLLM>=0.11.1 is required to start the server") from exc
+
+    match = _VLLM_RELEASE.fullmatch(installed)
+    if match is None:
+        raise RuntimeError(
+            f"cannot verify installed vLLM version {installed!r}; "
+            "install vLLM>=0.11.1"
+        )
+    release = tuple(int(part) for part in match.groups()[:3])
+    suffix = match.group(4)
+    minimum_prerelease = release == _MIN_SAFE_VLLM_RELEASE and suffix not in (
+        "",
+        "+",
+    )
+    minimum_postrelease = suffix.startswith((".post", "+"))
+    if release < _MIN_SAFE_VLLM_RELEASE or (
+        minimum_prerelease and not minimum_postrelease
+    ):
+        raise RuntimeError(
+            f"vLLM>=0.11.1 is required to enforce remote-code policy; "
+            f"found {installed}"
+        )
+    return installed
+
+
+def _build_vllm_command(
     model: str,
+    *,
     host: str = "localhost",
     port: int = 9000,
-    trust_remote_code: bool = True,
-    max_model_len: int = 4096,
-    gpu_memory_utilization: float = 0.8,
-):
-    """Start vLLM server with OpenAI-compatible API."""
+    revision: str | None = None,
+    code_revision: str | None = None,
+    tokenizer_revision: str | None = None,
+    trust_remote_code: bool = False,
+    max_model_len: int = 16384,
+    gpu_memory_utilization: float = 0.5,
+) -> list[str]:
+    """Build a vLLM command without executing it."""
+    is_local_model = Path(model).expanduser().is_dir()
+    if trust_remote_code and not is_local_model:
+        for option, value in (
+            ("--revision", revision),
+            ("--code-revision", code_revision),
+            ("--tokenizer-revision", tokenizer_revision),
+        ):
+            if not isinstance(value, str) or not _FULL_COMMIT_SHA.fullmatch(value):
+                raise ValueError(
+                    f"{option} must be a full 40-character lowercase commit SHA "
+                    "when trusting remote model code"
+                )
 
     cmd = [
-        "python",
+        sys.executable,
         "-m",
         "vllm.entrypoints.openai.api_server",
         "--model",
@@ -43,11 +100,46 @@ def start_vllm_server(
         str(gpu_memory_utilization),
     ]
 
+    for option, value in (
+        ("--revision", revision),
+        ("--code-revision", code_revision),
+        ("--tokenizer-revision", tokenizer_revision),
+    ):
+        if value:
+            cmd.extend((option, value))
     if trust_remote_code:
         cmd.append("--trust-remote-code")
+    return cmd
 
-    print(f"Starting vLLM server with command:")
-    print(" ".join(cmd))
+
+def start_vllm_server(
+    model: str,
+    host: str = "localhost",
+    port: int = 9000,
+    revision: str | None = None,
+    code_revision: str | None = None,
+    tokenizer_revision: str | None = None,
+    trust_remote_code: bool = False,
+    max_model_len: int = 16384,
+    gpu_memory_utilization: float = 0.5,
+):
+    """Start vLLM server with OpenAI-compatible API."""
+
+    cmd = _build_vllm_command(
+        model,
+        host=host,
+        port=port,
+        revision=revision,
+        code_revision=code_revision,
+        tokenizer_revision=tokenizer_revision,
+        trust_remote_code=trust_remote_code,
+        max_model_len=max_model_len,
+        gpu_memory_utilization=gpu_memory_utilization,
+    )
+    _require_safe_vllm_version()
+
+    print("Starting vLLM server with command:")
+    print(shlex.join(cmd))
     print(f"\nServer will be available at: http://{host}:{port}/v1")
     print(
         "API documentation will be available at: http://{}:{}/docs".format(host, port)
@@ -86,10 +178,28 @@ def main():
         "--gpu-memory-utilization",
         type=float,
         default=0.5,
-        help="GPU memory utilization (default: 0.8)",
+        help="GPU memory utilization (default: 0.5)",
     )
     parser.add_argument(
-        "--no-trust-remote-code", action="store_true", help="Disable trust remote code"
+        "--revision",
+        help="Model revision (use a full commit SHA for reproducible serving)",
+    )
+    parser.add_argument(
+        "--code-revision",
+        help="Custom model-code revision on the Hugging Face Hub",
+    )
+    parser.add_argument(
+        "--tokenizer-revision",
+        help="Tokenizer revision on the Hugging Face Hub",
+    )
+    parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help=(
+            "Execute Hugging Face model repository code. Remote models require "
+            "full commit SHAs for --revision, --code-revision, and "
+            "--tokenizer-revision."
+        ),
     )
 
     args = parser.parse_args()
@@ -98,7 +208,10 @@ def main():
         model=args.model,
         host=args.host,
         port=args.port,
-        trust_remote_code=not args.no_trust_remote_code,
+        revision=args.revision,
+        code_revision=args.code_revision,
+        tokenizer_revision=args.tokenizer_revision,
+        trust_remote_code=args.trust_remote_code,
         max_model_len=args.max_model_len,
         gpu_memory_utilization=args.gpu_memory_utilization,
     )
