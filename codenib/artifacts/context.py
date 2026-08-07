@@ -22,6 +22,13 @@ from ..compiler.artifact_fingerprints import bm25_artifact_file_fingerprints
 from ..compiler.checkout_identity import validate_checkout_identity
 from ..compiler.manifest import MANIFEST_FILENAME, RepoManifest
 from ..compiler.snapshot_store import normalize_repo
+from ..index.embedding.artifact_integrity import (
+    VECTOR_PERSISTENCE_SCHEMA,
+    validate_vector_config_artifact,
+    validate_vector_generation_artifacts,
+    vector_config_artifact_record,
+    vector_level_artifact_records,
+)
 from ..provider_routes import resolve_embedding_artifact_route
 from .security import assert_no_credential_fields, assert_publishable_tree, file_sha256
 
@@ -138,12 +145,18 @@ def _normalize_copied_view(
     repo_path: Path,
     view: str,
     relative: str,
+    view_config: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Rewrite view-local machine paths and return identity adjustments."""
 
     target = stage.joinpath(*PurePosixPath(relative).parts)
     if view == "vector":
-        return _normalize_vector_view(target, repo_path)
+        route = resolve_embedding_artifact_route(view_config)
+        return _normalize_vector_view(
+            target,
+            repo_path,
+            embedding_model=route.model,
+        )
     if view != "bm25":
         raise ValueError(
             f"view {view!r} is not yet supported by portable context artifacts; "
@@ -215,9 +228,62 @@ def _convert_vector_documents(path: Path, repo_path: Path) -> Path:
     return output
 
 
-def _normalize_vector_view(target: Path, repo_path: Path) -> dict[str, Any]:
+def _refresh_vector_persistence_records(target: Path) -> None:
+    """Commit the portable JSON/index pairs in copied vector configs."""
+
+    for config_path in sorted(target.glob("config_*.json")):
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError(f"portable vector config must be an object: {config_path}")
+        embedding_model = config.get("embedding_model")
+        if not isinstance(embedding_model, str) or not embedding_model:
+            continue
+        model_suffix = embedding_model.replace("/", "__")
+        level_artifacts: dict[str, dict[str, dict[str, Any]]] = {}
+        has_level_counts = False
+        for level in ("l0", "l2"):
+            count = config.get(f"{level}_documents")
+            if count is None:
+                continue
+            has_level_counts = True
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise ValueError(
+                    f"portable vector config has invalid {level} count: {count!r}"
+                )
+            if count == 0:
+                continue
+            level_path = target / level
+            documents_path = level_path / f"documents_{model_suffix}.json"
+            level_artifacts[level] = vector_level_artifact_records(
+                level_path,
+                model_suffix,
+                documents_file=documents_path.name,
+            )
+        if has_level_counts:
+            config["persistence_schema"] = VECTOR_PERSISTENCE_SCHEMA
+            config["level_artifacts"] = level_artifacts
+            config_path.write_bytes(_json_bytes(config))
+
+
+def _normalize_vector_view(
+    target: Path,
+    repo_path: Path,
+    *,
+    embedding_model: str,
+) -> dict[str, Any]:
     if not target.is_dir():
         raise ValueError("portable vector view must be a directory")
+    interrupted = sorted(target.glob(".config_*.json.save-in-progress"))
+    if interrupted:
+        raise ValueError(
+            "portable vector view contains an interrupted save marker: "
+            f"{interrupted[0].name}"
+        )
+
+    model_suffix = embedding_model.replace("/", "__")
+    # Validate the source generation before replacing its trusted local pickle
+    # with portable JSON. Recomputing records first would bless torn level files.
+    validate_vector_generation_artifacts(target, model_suffix)
 
     # Query serving does not need the mutable state used to build the next
     # commit. Excluding it keeps the downloadable artifact smaller and avoids
@@ -245,9 +311,14 @@ def _normalize_vector_view(target: Path, repo_path: Path) -> dict[str, Any]:
     # Leaving both formats would retain duplicate absolute source paths.
     for legacy in target.glob("l[02]/index_*.pkl"):
         legacy.unlink()
+    _refresh_vector_persistence_records(target)
     return {
         "artifact_scope": "query-serving",
         "portable_document_format": "codenib.vector-documents.v1",
+        "persistence_config_fingerprint": vector_config_artifact_record(
+            target,
+            model_suffix,
+        ),
     }
 
 
@@ -359,14 +430,23 @@ def stage_context_artifact(
                 source=f"view {view!r} metadata",
             )
             if view == "vector":
-                resolve_embedding_artifact_route(entry.config)
+                route = resolve_embedding_artifact_route(entry.config)
             source = _view_source(entry.path, manifest_root, view=view)
+            if view == "vector":
+                expected_config = entry.config.get("persistence_config_fingerprint")
+                if expected_config is not None:
+                    validate_vector_config_artifact(
+                        source,
+                        route.model.replace("/", "__"),
+                        expected_config,
+                    )
             relative = _copy_view(source, stage, view)
             adjustments = _normalize_copied_view(
                 stage,
                 repo_path=repo_path,
                 view=view,
                 relative=relative,
+                view_config=entry.config,
             )
             entry_data = entry.to_dict()
             entry_data["path"] = relative

@@ -10,10 +10,12 @@ of code chunks for semantic similarity search.
 
 import hashlib
 import json
+import os
 import pickle
+import tempfile
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
 
 import faiss
 import numpy as np
@@ -23,10 +25,51 @@ from ...log_utils import get_logger
 from ...profiler import Profiler
 from ...provider_routes import normalize_provider
 from ...types import NodeInfo
+from .artifact_integrity import (
+    VECTOR_PERSISTENCE_SCHEMA,
+    validate_vector_config_artifact,
+    validate_vector_level_artifacts,
+    vector_level_artifact_records,
+)
 
 logger = get_logger(__name__)
 
 Level = Literal["l0", "l2"]
+
+
+def _atomic_replace(target: Path, writer: Callable[[Path], None]) -> None:
+    """Write a sibling temporary file and atomically publish it."""
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        writer(temporary)
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_json_dump(target: Path, value: object) -> None:
+    def _write(path: Path) -> None:
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2)
+            handle.write("\n")
+
+    _atomic_replace(target, _write)
+
+
+def _atomic_pickle_dump(target: Path, value: object) -> None:
+    def _write(path: Path) -> None:
+        with path.open("wb") as handle:
+            pickle.dump(value, handle)
+
+    _atomic_replace(target, _write)
 
 
 class _Document:
@@ -542,26 +585,10 @@ class CodeVectorStore:
     def swap_index(self, path: str) -> None:
         """Hot-swap the FAISS index without reloading the embedding model.
 
-        Frees the current L0/L2 FAISS indices and documents from memory, then
-        loads a new index from *path*.  The embedding model is left intact so
-        the caller can reuse the same model across many instances.
+        The replacement is fully loaded and validated before the current
+        L0/L2 state is released. The embedding model is left intact so the
+        caller can reuse the same model across many instances.
         """
-        # Free current FAISS index memory (GPU or CPU).
-        for index in (self.l0_index, self.l2_index):
-            if index is None:
-                continue
-            reset = getattr(index, "reset", None)
-            if callable(reset):
-                reset()
-
-        # Reinitialise to empty indices (guards against a partially-failed
-        # subsequent load leaving the store in a mixed state).
-        self.l0_index = self._build_faiss_index()
-        self.l0_documents = []
-        self.l2_index = self._build_faiss_index()
-        self.l2_documents = []
-
-        self.store_path = Path(path)
         self.load(path)
 
     def close(self) -> None:
@@ -991,27 +1018,44 @@ class CodeVectorStore:
                     )
             level_state[level] = (index, documents)
 
-        for level, (_index, documents) in level_state.items():
-            if documents:
-                self._save_level(save_path, level, model_suffix)
-            else:
-                self._remove_level_files(save_path, level, model_suffix)
-
-        # Save top-level configuration
         config_path = save_path / f"config_{model_suffix}.json"
-        config = {
-            "embedding_model": self.embedding_model,
-            "embedding_provider": self.embedding_provider,
-            "dimension": self.dimension,
-            "index_type": self.index_type,
-            "index_metric": self.index_metric,
-            "l0_documents": len(self.l0_documents),
-            "l2_documents": len(self.l2_documents),
-        }
-        if self.artifact_metadata:
-            config["artifact"] = self.artifact_metadata
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
+        save_marker = save_path / f".{config_path.name}.save-in-progress"
+        _atomic_json_dump(
+            save_marker,
+            {"persistence_schema": VECTOR_PERSISTENCE_SCHEMA},
+        )
+        try:
+            level_artifacts: dict[str, dict[str, dict[str, Any]]] = {}
+            for level, (_index, documents) in level_state.items():
+                if documents:
+                    level_artifacts[level] = self._save_level(
+                        save_path, level, model_suffix
+                    )
+                else:
+                    self._remove_level_files(save_path, level, model_suffix)
+
+            config = {
+                "embedding_model": self.embedding_model,
+                "embedding_provider": self.embedding_provider,
+                "dimension": self.dimension,
+                "index_type": self.index_type,
+                "index_metric": self.index_metric,
+                "l0_documents": len(self.l0_documents),
+                "l2_documents": len(self.l2_documents),
+                "persistence_schema": VECTOR_PERSISTENCE_SCHEMA,
+                "level_artifacts": level_artifacts,
+            }
+            if self.artifact_metadata:
+                config["artifact"] = self.artifact_metadata
+            # This config is the commit record for both levels. Publishing it
+            # last makes an interrupted multi-file save detectable on load.
+            _atomic_json_dump(config_path, config)
+        except Exception:
+            # Keep the marker so a later load cannot accept a partially
+            # replaced legacy artifact. A successful retry removes it.
+            raise
+        else:
+            save_marker.unlink()
 
         logger.info("Vector store saved successfully")
 
@@ -1033,7 +1077,9 @@ class CodeVectorStore:
         except OSError:
             pass
 
-    def _save_level(self, save_path: Path, level: str, model_suffix: str) -> None:
+    def _save_level(
+        self, save_path: Path, level: str, model_suffix: str
+    ) -> dict[str, dict[str, Any]]:
         """Save a single level (l0 or l2) to disk."""
         index, documents = self._get_index_and_docs(level)
 
@@ -1042,12 +1088,17 @@ class CodeVectorStore:
 
         # Write raw FAISS index
         index_name = f"index_{model_suffix}"
-        faiss.write_index(index, str(level_path / f"{index_name}.faiss"))
+        index_path = level_path / f"{index_name}.faiss"
+        _atomic_replace(index_path, lambda path: faiss.write_index(index, str(path)))
 
         # Save documents (list of _Document)
         docs_path = level_path / f"documents_{model_suffix}.pkl"
-        with open(docs_path, "wb") as f:
-            pickle.dump(documents, f)
+        _atomic_pickle_dump(docs_path, documents)
+        artifacts = vector_level_artifact_records(
+            level_path,
+            model_suffix,
+            documents_file=docs_path.name,
+        )
 
         # Save level config
         config_path = level_path / f"config_{model_suffix}.json"
@@ -1060,10 +1111,10 @@ class CodeVectorStore:
             "level": level,
             "num_documents": len(documents),
         }
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
+        _atomic_json_dump(config_path, config)
 
         logger.info(f"Saved {level.upper()} store with {len(documents)} documents")
+        return artifacts
 
     def load(self, path: Optional[str] = None) -> None:
         """
@@ -1088,8 +1139,23 @@ class CodeVectorStore:
         config_path = load_path / f"config_{model_suffix}.json"
         if not config_path.exists():
             config_path = load_path / "config.json"
+        save_marker = load_path / f".config_{model_suffix}.json.save-in-progress"
+        if save_marker.exists():
+            raise ValueError(
+                f"Vector store has an interrupted save marker: {save_marker}"
+            )
 
         expected_artifact = dict(self.artifact_metadata)
+        expected_config = expected_artifact.get("persistence_config_fingerprint")
+        if expected_config is not None:
+            config_path = validate_vector_config_artifact(
+                load_path,
+                model_suffix,
+                expected_config,
+            )
+        loaded_artifact = expected_artifact
+        expected_counts: Dict[str, Optional[int]] = {"l0": None, "l2": None}
+        committed_levels: Optional[dict[str, object]] = None
         if config_path.exists():
             with open(config_path, "r") as f:
                 config = json.load(f)
@@ -1114,14 +1180,18 @@ class CodeVectorStore:
                     f"Vector config dimension mismatch: expected {self.dimension}, "
                     f"found {saved_dimension}"
                 )
+            saved_index_type = config.get("index_type")
+            if saved_index_type and saved_index_type != self.index_type:
+                raise ValueError(
+                    f"Vector config index type mismatch: expected {self.index_type!r}, "
+                    f"found {saved_index_type!r}"
+                )
             saved_metric = config.get("index_metric")
             if saved_metric and saved_metric != self.index_metric:
-                logger.warning(
-                    "Index metric mismatch: expected %s, got %s",
-                    self.index_metric,
-                    saved_metric,
+                raise ValueError(
+                    f"Vector config metric mismatch: expected {self.index_metric!r}, "
+                    f"found {saved_metric!r}"
                 )
-                self.index_metric = saved_metric
             saved_artifact = config.get("artifact")
             if isinstance(saved_artifact, dict):
                 expected_fingerprint = expected_artifact.get("embedding_fingerprint")
@@ -1133,27 +1203,118 @@ class CodeVectorStore:
                     raise ValueError(
                         "Vector artifact embedding fingerprint does not match manifest"
                     )
-                self.artifact_metadata = dict(saved_artifact)
+                loaded_artifact = dict(saved_artifact)
             elif expected_artifact.get("embedding_fingerprint") is not None:
                 raise ValueError("Vector config is missing embedding artifact identity")
+
+            for level in ("l0", "l2"):
+                value = config.get(f"{level}_documents")
+                if value is None:
+                    continue
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    raise ValueError(
+                        f"Vector config has invalid {level} document count: {value!r}"
+                    )
+                expected_counts[level] = value
+
+            persistence_schema = config.get("persistence_schema")
+            raw_levels = config.get("level_artifacts")
+            if persistence_schema is not None or raw_levels is not None:
+                if persistence_schema != VECTOR_PERSISTENCE_SCHEMA:
+                    raise ValueError(
+                        "Vector config has unsupported persistence schema: "
+                        f"{persistence_schema!r}"
+                    )
+                if not isinstance(raw_levels, dict) or not set(raw_levels) <= {
+                    "l0",
+                    "l2",
+                }:
+                    raise ValueError("Vector config has invalid committed levels")
+                committed_levels = dict(raw_levels)
+                if any(expected_counts[level] is None for level in ("l0", "l2")):
+                    raise ValueError(
+                        "Vector config with committed artifacts requires level counts"
+                    )
         elif expected_artifact.get("embedding_fingerprint") is not None:
             raise ValueError("Vector store is missing its top-level configuration")
 
-        # Load L0
-        l0_path = load_path / "l0"
-        if l0_path.exists():
-            loaded = self._load_level(l0_path, model_suffix)
-            if loaded is not None:
-                self.l0_index, self.l0_documents = loaded
-                logger.info(f"Loaded L0 store with {len(self.l0_documents)} documents")
+        loaded_levels = {}
+        for level in ("l0", "l2"):
+            expected_count = expected_counts[level]
+            level_path = load_path / level
+            faiss_path = level_path / f"index_{model_suffix}.faiss"
+            committed_artifacts = (
+                committed_levels.get(level) if committed_levels is not None else None
+            )
 
-        # Load L2
-        l2_path = load_path / "l2"
-        if l2_path.exists():
-            loaded = self._load_level(l2_path, model_suffix)
-            if loaded is not None:
-                self.l2_index, self.l2_documents = loaded
-                logger.info(f"Loaded L2 store with {len(self.l2_documents)} documents")
+            # A zero count in the top-level config is authoritative. Older
+            # writers could leave stale level files behind after deletions.
+            if expected_count == 0:
+                if committed_artifacts is not None:
+                    raise ValueError(
+                        f"Vector config commits artifacts for empty {level} level"
+                    )
+                loaded_levels[level] = (self._build_faiss_index(), [])
+                continue
+
+            if (
+                committed_levels is not None
+                and expected_count is not None
+                and expected_count > 0
+                and committed_artifacts is None
+            ):
+                raise ValueError(
+                    f"Vector config is missing committed artifacts for {level}"
+                )
+
+            if committed_artifacts is not None or faiss_path.exists():
+                index, documents = self._load_level(
+                    level_path,
+                    model_suffix,
+                    committed_artifacts=committed_artifacts,
+                )
+            elif expected_count is not None and expected_count > 0:
+                raise FileNotFoundError(
+                    f"Vector config expects {expected_count} {level} documents, "
+                    f"but {faiss_path} is missing"
+                )
+            else:
+                index, documents = self._build_faiss_index(), []
+
+            if expected_count is not None and len(documents) != expected_count:
+                raise ValueError(
+                    f"{level} config expects {expected_count} documents, "
+                    f"loaded {len(documents)}"
+                )
+            loaded_levels[level] = (index, documents)
+
+        old_indices = (self.l0_index, self.l2_index)
+        self.l0_index, self.l0_documents = loaded_levels["l0"]
+        self.l2_index, self.l2_documents = loaded_levels["l2"]
+        self.artifact_metadata = loaded_artifact
+        self.store_path = load_path
+
+        for old_index in old_indices:
+            if (
+                old_index is None
+                or old_index is self.l0_index
+                or old_index is self.l2_index
+            ):
+                continue
+            reset = getattr(old_index, "reset", None)
+            if callable(reset):
+                try:
+                    reset()
+                except Exception as exc:
+                    logger.debug("Could not release replaced FAISS index: %s", exc)
+
+        for level, (_index, documents) in loaded_levels.items():
+            if documents:
+                logger.info(
+                    "Loaded %s store with %d documents",
+                    level.upper(),
+                    len(documents),
+                )
 
         total_docs = len(self.l0_documents) + len(self.l2_documents)
         logger.info(
@@ -1162,25 +1323,37 @@ class CodeVectorStore:
         )
 
     def _load_level(
-        self, level_path: Path, model_suffix: str
-    ) -> Optional[tuple[faiss.Index, List[_Document]]]:
+        self,
+        level_path: Path,
+        model_suffix: str,
+        *,
+        committed_artifacts: object = None,
+    ) -> tuple[faiss.Index, List[_Document]]:
         """Load a single level from disk.
 
         Handles both the new format (raw FAISS + _Document list) and the
         legacy LangChain format (FAISS + docstore pkl) transparently.
         """
         index_name = f"index_{model_suffix}"
-        faiss_path = level_path / f"{index_name}.faiss"
+        committed_documents_path = None
+        if committed_artifacts is not None:
+            faiss_path, committed_documents_path = validate_vector_level_artifacts(
+                level_path,
+                model_suffix,
+                committed_artifacts,
+            )
+        else:
+            faiss_path = level_path / f"{index_name}.faiss"
 
         if not faiss_path.exists():
-            logger.warning(f"FAISS index not found at {faiss_path}")
-            return None
+            raise FileNotFoundError(f"FAISS index not found at {faiss_path}")
 
         try:
             index = faiss.read_index(str(faiss_path))
         except Exception as e:
-            logger.warning(f"Could not load FAISS index from {faiss_path}: {e}")
-            return None
+            raise ValueError(
+                f"Could not load FAISS index from {faiss_path}: {e}"
+            ) from e
         if int(index.d) != self.dimension:
             raise ValueError(
                 f"FAISS dimension mismatch at {faiss_path}: "
@@ -1191,40 +1364,67 @@ class CodeVectorStore:
         # never unpickled. Local indexes retain the pickle fallback for
         # compatibility with previously built artifacts.
         json_path = level_path / f"documents_{model_suffix}.json"
-        if json_path.exists():
+        if committed_documents_path is not None:
+            if committed_documents_path.suffix == ".json":
+                documents = self._load_documents_json(committed_documents_path)
+            else:
+                try:
+                    with committed_documents_path.open("rb") as handle:
+                        raw_docs = compat_pickle.load(handle)
+                    documents = [_to_document(document) for document in raw_docs]
+                except Exception as exc:
+                    raise ValueError(
+                        "Could not load committed vector documents from "
+                        f"{committed_documents_path}: {exc}"
+                    ) from exc
+        elif json_path.exists():
             documents = self._load_documents_json(json_path)
-            return index, documents
+        else:
+            documents = None
 
-        # Try loading the local documents pickle (works for both new _Document
-        # and legacy LangChain Document objects via duck-typing conversion).
-        docs_path = level_path / f"documents_{model_suffix}.pkl"
-        if docs_path.exists():
-            try:
-                with open(docs_path, "rb") as f:
-                    raw_docs = compat_pickle.load(f)
-                documents = [_to_document(d) for d in raw_docs]
-                return index, documents
-            except Exception as e:
-                logger.warning(f"Could not load documents from {docs_path}: {e}")
+            # Try loading the local documents pickle (works for both new
+            # _Document and legacy LangChain Document objects).
+            docs_path = level_path / f"documents_{model_suffix}.pkl"
+            if docs_path.exists():
+                try:
+                    with open(docs_path, "rb") as f:
+                        raw_docs = compat_pickle.load(f)
+                    documents = [_to_document(d) for d in raw_docs]
+                except Exception as exc:
+                    logger.warning(
+                        "Could not load documents from %s: %s", docs_path, exc
+                    )
 
-        # Fallback: try LangChain FAISS pkl (index_name.pkl contains
-        # (InMemoryDocstore, index_to_docstore_id) tuple).
-        lc_pkl_path = level_path / f"{index_name}.pkl"
-        if lc_pkl_path.exists():
-            try:
-                documents = self._load_langchain_pkl(lc_pkl_path)
-                logger.info(
-                    "Loaded %d documents from legacy LangChain format",
-                    len(documents),
-                )
-                return index, documents
-            except Exception as e:
-                logger.warning(
-                    f"Could not load legacy LangChain pkl from {lc_pkl_path}: {e}"
-                )
+            # Fallback: LangChain stores use index_name.pkl for their docstore.
+            lc_pkl_path = level_path / f"{index_name}.pkl"
+            if documents is None and lc_pkl_path.exists():
+                try:
+                    documents = self._load_langchain_pkl(lc_pkl_path)
+                    logger.info(
+                        "Loaded %d documents from legacy LangChain format",
+                        len(documents),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not load legacy LangChain pkl from %s: %s",
+                        lc_pkl_path,
+                        exc,
+                    )
 
-        logger.warning(f"No document store found for {level_path}")
-        return index, []
+            if documents is None:
+                if int(index.ntotal) == 0:
+                    documents = []
+                else:
+                    raise ValueError(
+                        f"No readable document store found for {level_path}"
+                    )
+
+        if int(index.ntotal) != len(documents):
+            raise ValueError(
+                f"Misaligned vector level {level_path}: {int(index.ntotal)} vectors "
+                f"for {len(documents)} documents"
+            )
+        return index, documents
 
     @staticmethod
     def _load_documents_json(path: Path) -> List[_Document]:
