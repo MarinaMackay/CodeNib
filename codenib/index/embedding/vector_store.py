@@ -27,6 +27,7 @@ from ...provider_routes import normalize_provider
 from ...types import NodeInfo
 from .artifact_integrity import (
     VECTOR_PERSISTENCE_SCHEMA,
+    require_complete_vector_view,
     validate_vector_config_artifact,
     validate_vector_level_artifacts,
     vector_level_artifact_records,
@@ -1132,6 +1133,7 @@ class CodeVectorStore:
             raise FileNotFoundError(f"Vector store not found at {load_path}")
 
         logger.info(f"Loading vector store from {load_path}")
+        require_complete_vector_view(load_path)
 
         model_suffix = self.embedding_model.replace("/", "__")
 
@@ -1615,13 +1617,15 @@ class CodeVectorStore:
         threshold: float = 0.1,
     ) -> None:
         """
-        Patch the FAISS index in place when the change set is small.
+        Patch a flat FAISS index in place when the change set is small.
 
         When the fraction of changed chunks is below *threshold*, this uses
         ``IndexFlat.remove_ids`` + ``add`` to modify only the affected rows,
-        keeping unchanged vectors and their aligned documents untouched.  If
-        the change ratio exceeds the threshold (or the index is empty), it
-        falls back to a full rebuild via :meth:`rebuild_from_embeddings`.
+        keeping unchanged vectors and their aligned documents untouched. IVF
+        indexes are rebuilt because removing their implicit IDs does not
+        compact the remaining labels to match the document array. If the
+        change ratio exceeds the threshold (or the index is empty), this also
+        falls back to :meth:`rebuild_from_embeddings`.
 
         Args:
             all_documents: The complete desired set of documents for *level*
@@ -1649,6 +1653,7 @@ class CodeVectorStore:
             index is None
             or index.ntotal == 0
             or not current_docs
+            or self.index_type != "flat"
             or change_ratio > threshold
         ):
             logger.info(
