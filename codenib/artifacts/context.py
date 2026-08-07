@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 from .. import compat_pickle
+from .._atomic_directory import publish_staged_directory
 from .._version import package_version
 from ..compiler.artifact_fingerprints import (
     bm25_artifact_file_fingerprints,
@@ -347,7 +348,7 @@ def _selected_views(
 ) -> tuple[str, ...]:
     available = {name for name in manifest.indexes if manifest.index_is_current(name)}
     if requested is None:
-        selected = sorted(available)
+        selected = sorted(available & PORTABLE_CONTEXT_VIEWS)
     else:
         selected = list(dict.fromkeys(str(name).strip() for name in requested))
         missing = sorted(name for name in selected if name not in available)
@@ -356,7 +357,10 @@ def _selected_views(
                 "context artifact requires current views: " + ", ".join(missing)
             )
     if not selected:
-        raise ValueError("context artifact requires at least one current view")
+        raise ValueError(
+            "context artifact requires at least one current view that is portable "
+            "(bm25 or vector)"
+        )
     return tuple(selected)
 
 
@@ -511,9 +515,7 @@ def stage_context_artifact(
             label="context artifact",
         )
 
-        if output_dir.exists():
-            shutil.rmtree(output_dir)
-        os.replace(stage, output_dir)
+        publish_staged_directory(stage, output_dir)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise

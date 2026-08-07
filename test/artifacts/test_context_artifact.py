@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pickle
 from pathlib import Path
 from types import SimpleNamespace
@@ -260,6 +261,74 @@ def test_context_artifact_is_deterministic_for_one_manifest(tmp_path: Path) -> N
     assert _tree(tmp_path / "first" / "context") == _tree(
         tmp_path / "second" / "context"
     )
+
+
+def test_context_artifact_restores_previous_output_on_publish_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, manifest_path, view_path = _fixture_manifest(tmp_path)
+    output = tmp_path / "publish" / "context"
+    stage_context_artifact(
+        repo,
+        manifest_path,
+        output,
+        repository="example/project",
+    )
+    previous = _tree(output)
+    (view_path / "documents.json").write_text("[]\n", encoding="utf-8")
+    real_replace = os.replace
+
+    def fail_final_publish(source, target):
+        source_path = Path(source)
+        if source_path.name.startswith(".context.tmp-") and Path(target) == output:
+            raise OSError("injected context publish failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr("codenib._atomic_directory.os.replace", fail_final_publish)
+
+    with pytest.raises(OSError, match="injected context publish failure"):
+        stage_context_artifact(
+            repo,
+            manifest_path,
+            output,
+            repository="example/project",
+        )
+
+    assert _tree(output) == previous
+    assert not list(output.parent.glob(".context.tmp-*"))
+    assert not list(output.parent.glob(".context.previous-*"))
+
+
+def test_context_artifact_default_ignores_nonportable_current_views(
+    tmp_path: Path,
+) -> None:
+    repo, manifest_path, _view_path = _fixture_manifest(tmp_path)
+    graph = manifest_path.parent / "symbol_graph"
+    graph.mkdir()
+    (graph / "graph.bin").write_bytes(b"nonportable graph")
+    manifest = RepoManifest.load(manifest_path)
+    manifest.indexes["symbol_graph"] = IndexEntry(
+        index_type="symbol_graph",
+        path=str(graph),
+        built_at="2026-08-04T00:00:00+00:00",
+        built_at_epoch=1.0,
+        status="fresh",
+        commit=manifest.commit,
+        source_fingerprint=manifest.source_fingerprint,
+    )
+    manifest.save(manifest_path)
+
+    result = stage_context_artifact(
+        repo,
+        manifest_path,
+        tmp_path / "publish" / "context",
+        repository="example/project",
+    )
+
+    assert result.views == ("bm25",)
+    portable = RepoManifest.load(result.manifest_path)
+    assert set(portable.indexes) == {"bm25"}
 
 
 def test_context_artifact_keeps_only_portable_vector_serving_state(
