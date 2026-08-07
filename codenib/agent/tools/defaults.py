@@ -57,16 +57,20 @@ convention), #153 (1-based boundary).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import select
 import shutil
 import signal
+import stat
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import BinaryIO, Dict, List, Optional, Tuple
 
 from .spec import ToolInputSpec, ToolRegistry, ToolSpec
 
@@ -75,11 +79,25 @@ DEFAULT_TOOL_IDS: frozenset[str] = frozenset({"read", "grep", "glob", "bash"})
 
 # Sensible token-safety caps.
 _MAX_LINES_DEFAULT: int = 200
+_MAX_LINES_LIMIT: int = 2_000
+_READ_MAX_LINE_BYTES: int = 8_000
+_READ_MAX_OUTPUT_CHARS: int = 16_000
+_READ_CHUNK_BYTES: int = 64 * 1024
 _MAX_RESULTS_DEFAULT: int = 50
+_MAX_RESULTS_LIMIT: int = 1_000
 _GLOB_MAX_RESULTS: int = 100  # mirrors the reference Glob's documented cap
 _GREP_TIMEOUT_SECONDS: int = 30
+_GREP_MAX_PATTERN_CHARS: int = 32_000
+_GREP_MAX_LINE_BYTES: int = 8_000
+_GREP_MAX_OUTPUT_CHARS: int = 16_000
+_GREP_MAX_MULTILINE_FILE_BYTES: int = 8 * 1024 * 1024
 _BASH_TIMEOUT_MS_DEFAULT: int = 30_000  # 30s, expressed in ms (reference units)
+_BASH_TIMEOUT_MS_MAX: int = 600_000
+_BASH_MAX_COMMAND_CHARS: int = 32_000
 _BASH_MAX_OUTPUT_CHARS: int = 16_000  # matches runner._MAX_RESULT_CHARS
+_BASH_READ_CHUNK_BYTES: int = 64 * 1024
+_BASH_COMMAND_DISPLAY_CHARS: int = 2_000
+_OUTPUT_TRUNCATED_NOTICE: str = "\n... (output truncated)"
 
 # Directories to skip during recursive search (avoids scanning VCS / cache noise).
 _SKIP_DIR_PREFIXES = frozenset(
@@ -123,9 +141,52 @@ _TYPE_EXTENSIONS = TYPE_EXTENSIONS
 
 _GREP_OUTPUT_MODES = ("content", "files_with_matches", "count")
 
+
+def _bounded_text(
+    text: str,
+    limit: int,
+    notice: str = _OUTPUT_TRUNCATED_NOTICE,
+) -> str:
+    """Return a fixed-size text prefix plus an explicit truncation notice."""
+
+    if len(text) <= limit:
+        return text
+    return text[:limit] + notice
+
+
+def _display_command(command: str, *, quoted: bool = False) -> str:
+    """Render a bounded command label without hiding the command result."""
+
+    truncated = len(command) > _BASH_COMMAND_DISPLAY_CHARS
+    prefix = command[:_BASH_COMMAND_DISPLAY_CHARS]
+    rendered = repr(prefix) if quoted else prefix
+    if truncated:
+        rendered += " ... [command truncated]"
+    return rendered
+
+
 # ---------------------------------------------------------------------------
 # read
 # ---------------------------------------------------------------------------
+
+
+def _bounded_binary_lines(handle: BinaryIO):
+    """Yield bounded physical-line prefixes without materializing long lines."""
+
+    while True:
+        raw = handle.readline(_READ_MAX_LINE_BYTES + 1)
+        if not raw:
+            return
+
+        complete = raw.endswith(b"\n") or len(raw) <= _READ_MAX_LINE_BYTES
+        truncated = len(raw.rstrip(b"\r\n")) > _READ_MAX_LINE_BYTES
+        prefix = raw[:_READ_MAX_LINE_BYTES]
+        if not complete:
+            truncated = True
+            while tail := handle.readline(_READ_CHUNK_BYTES):
+                if tail.endswith(b"\n") or len(tail) < _READ_CHUNK_BYTES:
+                    break
+        yield prefix, truncated
 
 
 def _read(
@@ -144,43 +205,68 @@ def _read(
         file_path: Absolute or repo-relative path to the file.
         offset: First line to read (1-based, inclusive). Defaults to 1. Mirrors
             the reference ``Read.offset``.
-        limit: Hard cap on lines returned for token safety. Defaults to 200. A
-            truncation notice with the next ``offset`` is appended when the cap
-            is reached. Mirrors the reference ``Read.limit``.
+        limit: Hard cap on lines returned for token safety. Defaults to 200 and
+            cannot exceed 2,000. A truncation notice with the next ``offset`` is
+            appended when the line or output cap is reached.
 
     Returns:
         Formatted string, or an error message prefixed with ``"Error: "``.
     """
-    # Coerce inputs up front: a non-integer arg returns an Error string (the
-    # module contract) instead of raising into the caller. `limit` is floored at
-    # 1 so `limit=0` cannot emit a "0 lines; continue at the same offset" notice
-    # that loops forever.
+    if not isinstance(file_path, str) or not file_path:
+        return "Error: file_path must be a non-empty string"
     try:
         start = max(1, int(offset))
         limit = max(1, int(limit))
     except (TypeError, ValueError):
         return "Error: offset and limit must be integers"
+    if limit > _MAX_LINES_LIMIT:
+        return f"Error: limit must not exceed {_MAX_LINES_LIMIT} lines"
 
-    # Stream the file: keep at most `limit` lines in memory and merely *count*
-    # any further lines (for the truncation notice) without storing them, so a
-    # huge file is never fully materialised.
-    selected: List[str] = []
-    extra = 0  # lines present beyond the kept window
-    total = 0
+    path = Path(file_path)
     try:
-        with open(file_path, encoding="utf-8", errors="replace") as fh:
-            for idx, line in enumerate(fh, start=1):
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        return f"Error: file not found: {file_path!r}"
+    except OSError as exc:
+        return f"Error reading {file_path!r}: {exc}"
+    if stat.S_ISDIR(mode):
+        return f"Error: {file_path!r} is a directory, not a file"
+    if not stat.S_ISREG(mode):
+        return f"Error: {file_path!r} is not a regular file"
+
+    selected: List[str] = []
+    selected_chars = 0
+    total = 0
+    has_more = False
+    next_start: int | None = None
+    try:
+        with open(file_path, "rb") as fh:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return f"Error: {file_path!r} is not a regular file"
+            for idx, (raw, line_truncated) in enumerate(
+                _bounded_binary_lines(fh),
+                start=1,
+            ):
                 total = idx
                 if idx < start:
                     continue
-                if len(selected) < limit:
-                    selected.append(line)
-                else:
-                    extra += 1
+                if len(selected) >= limit:
+                    has_more = True
+                    next_start = idx
+                    break
+                content = raw.decode("utf-8", errors="replace").rstrip()
+                if line_truncated:
+                    content += " ... [line truncated]"
+                rendered = f"{idx:6d} | {content}"
+                separator = 1 if selected else 0
+                if selected_chars + separator + len(rendered) > _READ_MAX_OUTPUT_CHARS:
+                    has_more = True
+                    next_start = idx
+                    break
+                selected.append(rendered)
+                selected_chars += separator + len(rendered)
     except FileNotFoundError:
         return f"Error: file not found: {file_path!r}"
-    except IsADirectoryError:
-        return f"Error: {file_path!r} is a directory, not a file"
     except OSError as exc:
         return f"Error reading {file_path!r}: {exc}"
 
@@ -189,15 +275,10 @@ def _read(
     if start > total:
         return f"Error: offset {start} exceeds file length {total} in {file_path!r}"
 
-    lines_out = [
-        f"{lineno:6d} | {line.rstrip()}"
-        for lineno, line in enumerate(selected, start=start)
-    ]
-    result = "\n".join(lines_out)
+    result = "\n".join(selected)
 
-    if extra > 0:
-        next_start = start + limit  # first omitted line (1-based)
-        result += f"\n... ({extra} more lines; " f"use offset={next_start} to continue)"
+    if has_more and next_start is not None:
+        result += f"\n... (more lines; use offset={next_start} to continue)"
 
     return result
 
@@ -214,12 +295,13 @@ Shape mirrors the mainstream Claude Code `Read` tool.
 |------|------|---------|-------------|
 | `file_path` | `str` | *(required)* | Absolute or repo-relative file path. |
 | `offset` | `int` | `1` | First line to read (1-based, inclusive). |
-| `limit` | `int` | `200` | Max lines returned; prevents context blowup. |
+| `limit` | `int` | `200` | Max lines returned (hard maximum 2,000). |
 
 ## Output
 
-Lines formatted as `{lineno:6d} | {content}` (opencode-style, 1-based).
-A truncation notice with the next `offset` is appended when `limit` is reached.
+Lines formatted as `{lineno:6d} | {content}` (opencode-style, 1-based). Long
+physical lines and total output are bounded while streaming. A notice with the
+next `offset` is appended when more lines remain.
 
 ## When to Use
 
@@ -259,7 +341,10 @@ def _build_read_tool() -> ToolSpec:
                 type_hint="int",
                 required=False,
                 default=_MAX_LINES_DEFAULT,
-                description=(f"Max lines returned (default {_MAX_LINES_DEFAULT})."),
+                description=(
+                    f"Max lines returned (1–{_MAX_LINES_LIMIT}; "
+                    f"default {_MAX_LINES_DEFAULT})."
+                ),
             ),
         ],
         executor_fn=_read,
@@ -321,6 +406,10 @@ def _grep_python(
     ``head_limit`` caps the number of emitted rows (matches in content mode,
     files in the other two). A no-match message is returned when nothing hits.
     """
+    if not isinstance(pattern, str) or not pattern:
+        return "Error: pattern must be a non-empty string"
+    if len(pattern) > _GREP_MAX_PATTERN_CHARS:
+        return f"Error: pattern must not exceed {_GREP_MAX_PATTERN_CHARS} characters"
     if output_mode not in _GREP_OUTPUT_MODES:
         return (
             f"Error: invalid output_mode {output_mode!r}; "
@@ -330,6 +419,8 @@ def _grep_python(
         head_limit = max(1, int(head_limit))
     except (TypeError, ValueError):
         return "Error: head_limit must be an integer"
+    if head_limit > _MAX_RESULTS_LIMIT:
+        return f"Error: head_limit must not exceed {_MAX_RESULTS_LIMIT} rows"
 
     flags = 0 if case_insensitive is False else re.IGNORECASE
     if multiline:
@@ -342,10 +433,13 @@ def _grep_python(
     root = Path(path)
     if not root.exists():
         return f"Error: path {path!r} does not exist"
+    if not root.is_dir() and not root.is_file():
+        return f"Error: path {path!r} is not a regular file or directory"
 
     content_rows: List[str] = []  # "{rel}:{lineno}: {line}"
     file_match_count: "Dict[str, int]" = {}  # rel -> match count, insertion order
     capped = False
+    skipped_multiline_files = 0
 
     def _rel(file_path: Path) -> str:
         if root.is_dir():
@@ -357,25 +451,44 @@ def _grep_python(
 
     def _scan(file_path: Path) -> bool:
         """Record matches for *file_path*; return True if the head cap was hit."""
+        nonlocal skipped_multiline_files
         rel = _rel(file_path)
         try:
             if multiline:
+                file_stat = file_path.stat()
+                if not stat.S_ISREG(file_stat.st_mode):
+                    return False
+                if file_stat.st_size > _GREP_MAX_MULTILINE_FILE_BYTES:
+                    skipped_multiline_files += 1
+                    return False
                 text = file_path.read_text(encoding="utf-8", errors="replace")
                 for m in compiled.finditer(text):
                     lineno = text.count("\n", 0, m.start()) + 1
                     snippet = text[m.start() : m.end()].splitlines()[0]
+                    if len(snippet) > _GREP_MAX_LINE_BYTES:
+                        snippet = (
+                            snippet[:_GREP_MAX_LINE_BYTES] + " ... [line truncated]"
+                        )
                     file_match_count[rel] = file_match_count.get(rel, 0) + 1
                     if output_mode == "content":
                         content_rows.append(f"{rel}:{lineno}: {snippet}")
                         if len(content_rows) >= head_limit:
                             return True
             else:
-                with open(file_path, encoding="utf-8", errors="replace") as fh:
-                    for lineno, line in enumerate(fh, start=1):
+                with open(file_path, "rb") as fh:
+                    if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                        return False
+                    for lineno, (raw, line_truncated) in enumerate(
+                        _bounded_binary_lines(fh), start=1
+                    ):
+                        line = raw.decode("utf-8", errors="replace")
                         if compiled.search(line):
                             file_match_count[rel] = file_match_count.get(rel, 0) + 1
                             if output_mode == "content":
-                                content_rows.append(f"{rel}:{lineno}: {line.rstrip()}")
+                                content = line.rstrip()
+                                if line_truncated:
+                                    content += " ... [line truncated]"
+                                content_rows.append(f"{rel}:{lineno}: {content}")
                                 if len(content_rows) >= head_limit:
                                     return True
         except OSError:
@@ -387,7 +500,7 @@ def _grep_python(
         return False
 
     if root.is_file():
-        _scan(root)
+        capped = _scan(root)
     else:
         try:
             for file_path in _grep_candidate_files(root, glob, type):
@@ -398,7 +511,13 @@ def _grep_python(
             return f"Error: invalid glob {glob!r}: {exc}"
 
     if not file_match_count:
-        return "No matches found."
+        text = "No matches found."
+        if skipped_multiline_files:
+            text += (
+                f" ({skipped_multiline_files} file(s) exceeded the "
+                f"{_GREP_MAX_MULTILINE_FILE_BYTES}-byte multiline fallback limit.)"
+            )
+        return text
 
     if output_mode == "content":
         rows = content_rows
@@ -411,7 +530,16 @@ def _grep_python(
         cap_unit = "files"
 
     text = "\n".join(rows)
-    if capped:
+    output_truncated = False
+    if len(text) > _GREP_MAX_OUTPUT_CHARS:
+        text = text[:_GREP_MAX_OUTPUT_CHARS]
+        output_truncated = True
+    if output_truncated:
+        text += (
+            f"\n... ({_GREP_MAX_OUTPUT_CHARS}-character output limit reached; "
+            "narrow with `glob`/`type` or a more specific `pattern`)"
+        )
+    elif capped:
         text += (
             f"\n... (head_limit={head_limit} {cap_unit} reached; "
             "narrow with `glob`/`type` or a more specific `pattern`)"
@@ -421,9 +549,89 @@ def _grep_python(
 
 def _terminate_process_group(proc: subprocess.Popen[bytes]) -> None:
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        # ``start_new_session=True`` makes the child PID its process-group ID.
+        # Use it directly because the group can outlive an already-exited shell.
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (AttributeError, OSError):
+        if proc.poll() is None:
+            proc.kill()
+
+
+def _process_group_alive(proc: subprocess.Popen[bytes]) -> bool:
+    """Return whether the command's original process group still exists."""
+
+    try:
+        os.killpg(proc.pid, 0)
+    except (AttributeError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
     except OSError:
-        proc.kill()
+        return proc.poll() is None
+    return True
+
+
+def _grep_python_isolated(
+    pattern: str,
+    path: str,
+    glob: Optional[str],
+    type_: Optional[str],
+    output_mode: str,
+    case_insensitive: bool,
+    multiline: bool,
+    head_limit: int,
+) -> str:
+    """Run the backtracking Python regex fallback outside the agent process."""
+
+    payload = json.dumps(
+        {
+            "pattern": pattern,
+            "path": path,
+            "glob": glob,
+            "type": type_,
+            "output_mode": output_mode,
+            "case_insensitive": case_insensitive,
+            "multiline": multiline,
+            "head_limit": head_limit,
+        }
+    ).encode("utf-8")
+    command = [sys.executable, "-m", "codenib.agent.tools.grep_worker"]
+    with (
+        tempfile.TemporaryFile() as stdout_file,
+        tempfile.TemporaryFile() as stderr_file,
+    ):
+        try:
+            proc = subprocess.Popen(  # noqa: S603 - fixed interpreter and module
+                command,
+                stdin=subprocess.PIPE,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=True,
+            )
+        except (OSError, ValueError) as exc:
+            return f"Error executing Python grep fallback: {exc}"
+        try:
+            proc.communicate(input=payload, timeout=_GREP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(proc)
+            proc.communicate()
+            return f"Error: grep timed out after {_GREP_TIMEOUT_SECONDS}s"
+
+        stdout_file.seek(0)
+        output = stdout_file.read(_GREP_MAX_OUTPUT_CHARS + 1)
+        stderr_file.seek(0)
+        stderr = stderr_file.read(_GREP_MAX_OUTPUT_CHARS).decode(
+            "utf-8", errors="replace"
+        )
+
+    if proc.returncode != 0:
+        detail = stderr.strip() or f"worker exited with status {proc.returncode}"
+        return f"Error executing Python grep fallback: {detail}"
+    truncated = len(output) > _GREP_MAX_OUTPUT_CHARS
+    text = output[:_GREP_MAX_OUTPUT_CHARS].decode("utf-8", errors="replace")
+    if truncated:
+        text += "\n... (grep output truncated)"
+    return text
 
 
 def _grep_ripgrep(
@@ -445,6 +653,8 @@ def _grep_ripgrep(
         "--hidden",
         "--no-ignore",
         "--text",
+        "--max-columns",
+        str(_GREP_MAX_LINE_BYTES),
     ]
     if case_insensitive is not False:
         command.append("--ignore-case")
@@ -481,65 +691,88 @@ def _grep_ripgrep(
         target = "."
     command.extend(("--", pattern, target))
 
-    with tempfile.TemporaryFile() as stderr_file:
-        try:
-            proc = subprocess.Popen(  # noqa: S603 - fixed executable and argv
-                command,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=stderr_file,
-                bufsize=0,
-                start_new_session=True,
-            )
-        except (OSError, ValueError) as exc:
-            return f"Error executing grep: {exc}"
+    try:
+        proc = subprocess.Popen(  # noqa: S603 - fixed executable and argv
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            start_new_session=True,
+        )
+    except (OSError, ValueError) as exc:
+        return _bounded_text(f"Error executing grep: {exc}", _GREP_MAX_OUTPUT_CHARS)
 
-        assert proc.stdout is not None
-        deadline = time.monotonic() + _GREP_TIMEOUT_SECONDS
-        pending = bytearray()
-        rows: List[str] = []
-        timed_out = False
-        eof = False
-        while len(rows) <= head_limit and not eof:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                break
-            ready, _, _ = select.select((proc.stdout.fileno(),), (), (), remaining)
-            if not ready:
-                timed_out = True
-                break
-            chunk = os.read(proc.stdout.fileno(), 64 * 1024)
-            if not chunk:
-                eof = True
-            else:
-                pending.extend(chunk)
-            while b"\n" in pending and len(rows) <= head_limit:
-                raw, _, remainder = pending.partition(b"\n")
-                pending = bytearray(remainder)
-                rows.append(raw.rstrip(b"\r").decode("utf-8", errors="replace"))
-        if eof and pending and len(rows) <= head_limit:
-            rows.append(bytes(pending).rstrip(b"\r").decode("utf-8", errors="replace"))
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    stderr_capture = _BoundedPipeOutput(_GREP_MAX_OUTPUT_CHARS)
+    stderr_reader = threading.Thread(
+        target=stderr_capture.drain,
+        args=(proc.stderr,),
+        daemon=True,
+    )
+    stderr_reader.start()
 
-        capped = len(rows) > head_limit
-        if timed_out or capped:
-            _terminate_process_group(proc)
+    deadline = time.monotonic() + _GREP_TIMEOUT_SECONDS
+    pending = bytearray()
+    rows: List[str] = []
+    timed_out = False
+    eof = False
+    while len(rows) <= head_limit and not eof:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        ready, _, _ = select.select((proc.stdout.fileno(),), (), (), remaining)
+        if not ready:
+            timed_out = True
+            break
+        chunk = os.read(proc.stdout.fileno(), 64 * 1024)
+        if not chunk:
+            eof = True
+        else:
+            pending.extend(chunk)
+        while b"\n" in pending and len(rows) <= head_limit:
+            raw, _, remainder = pending.partition(b"\n")
+            pending = bytearray(remainder)
+            rows.append(raw.rstrip(b"\r").decode("utf-8", errors="replace"))
+    if eof and pending and len(rows) <= head_limit:
+        rows.append(bytes(pending).rstrip(b"\r").decode("utf-8", errors="replace"))
+
+    capped = len(rows) > head_limit
+    if not timed_out and not capped:
+        remaining = max(0.0, deadline - time.monotonic())
         try:
-            proc.wait(timeout=1)
+            proc.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
-            _terminate_process_group(proc)
-            proc.wait()
-        stderr_file.seek(0)
-        stderr = stderr_file.read().decode("utf-8", errors="replace")
-        proc.stdout.close()
+            timed_out = True
+        if not timed_out:
+            stderr_reader.join(max(0.0, deadline - time.monotonic()))
+            timed_out = stderr_reader.is_alive()
+    if timed_out or capped:
+        _terminate_process_group(proc)
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
+        proc.wait()
+    stderr_reader.join(timeout=1)
+    stderr = stderr_capture.text()
+    proc.stdout.close()
 
     if timed_out:
         return f"Error: grep timed out after {_GREP_TIMEOUT_SECONDS}s"
     if not capped and proc.returncode not in (0, 1):
         detail = stderr.strip() or f"ripgrep exited with status {proc.returncode}"
         if "regex parse error" in detail.lower():
-            return f"Error: invalid regex {pattern!r}: {detail}"
-        return f"Error executing grep for pattern {pattern!r}: {detail}"
+            return _bounded_text(
+                f"Error: invalid regex {pattern!r}: {detail}",
+                _GREP_MAX_OUTPUT_CHARS,
+            )
+        return _bounded_text(
+            f"Error executing grep for pattern {pattern!r}: {detail}",
+            _GREP_MAX_OUTPUT_CHARS,
+        )
 
     rows = rows[:head_limit]
     if output_mode == "content":
@@ -565,7 +798,16 @@ def _grep_ripgrep(
     if not rows:
         return "No matches found."
     text = "\n".join(rows)
-    if capped:
+    output_truncated = False
+    if len(text) > _GREP_MAX_OUTPUT_CHARS:
+        text = text[:_GREP_MAX_OUTPUT_CHARS]
+        output_truncated = True
+    if output_truncated:
+        text += (
+            f"\n... ({_GREP_MAX_OUTPUT_CHARS}-character output limit reached; "
+            "narrow with `glob`/`type` or a more specific `pattern`)"
+        )
+    elif capped:
         cap_unit = "matches" if output_mode == "content" else "files"
         text += (
             f"\n... (head_limit={head_limit} {cap_unit} reached; "
@@ -585,6 +827,10 @@ def _grep(
     head_limit: int = _MAX_RESULTS_DEFAULT,
 ) -> str:
     """Regex content search with a bounded ripgrep backend when available."""
+    if not isinstance(pattern, str) or not pattern:
+        return "Error: pattern must be a non-empty string"
+    if len(pattern) > _GREP_MAX_PATTERN_CHARS:
+        return f"Error: pattern must not exceed {_GREP_MAX_PATTERN_CHARS} characters"
     if output_mode not in _GREP_OUTPUT_MODES:
         return (
             f"Error: invalid output_mode {output_mode!r}; "
@@ -594,6 +840,8 @@ def _grep(
         head_limit = max(1, int(head_limit))
     except (TypeError, ValueError):
         return "Error: head_limit must be an integer"
+    if head_limit > _MAX_RESULTS_LIMIT:
+        return f"Error: head_limit must not exceed {_MAX_RESULTS_LIMIT} rows"
 
     root = Path(path)
     if not root.exists():
@@ -614,15 +862,15 @@ def _grep(
             multiline,
             head_limit,
         )
-    return _grep_python(
+    return _grep_python_isolated(
         pattern,
-        path=path,
-        glob=glob,
-        type=type,
-        output_mode=output_mode,
-        case_insensitive=case_insensitive,
-        multiline=multiline,
-        head_limit=head_limit,
+        path,
+        glob,
+        type,
+        output_mode,
+        case_insensitive,
+        multiline,
+        head_limit,
     )
 
 
@@ -644,7 +892,7 @@ mainstream Claude Code `Grep` tool. Searches use ripgrep when installed, with a
 | `output_mode` | str | `content` | `content` / `files_with_matches` / `count`. |
 | `case_insensitive` | bool | true | Case-insensitive matching (reference `-i`). |
 | `multiline` | bool | false | Let `.`/`^`/`$` span lines (reference `multiline`). |
-| `head_limit` | int | 50 | Cap on rows (matches, or files in the other modes). |
+| `head_limit` | int | 50 | Cap on rows (hard maximum 1,000). |
 
 ## Output
 
@@ -733,7 +981,8 @@ def _build_grep_tool() -> ToolSpec:
                 default=_MAX_RESULTS_DEFAULT,
                 description=(
                     "Cap on rows returned (matches in content mode, files "
-                    f"otherwise; default {_MAX_RESULTS_DEFAULT})."
+                    f"otherwise; 1–{_MAX_RESULTS_LIMIT}, default "
+                    f"{_MAX_RESULTS_DEFAULT})."
                 ),
             ),
         ],
@@ -864,6 +1113,82 @@ def _build_glob_tool() -> ToolSpec:
 # ---------------------------------------------------------------------------
 
 
+class _BoundedPipeOutput:
+    """Drain a subprocess pipe while retaining only a fixed byte prefix."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._buffer = bytearray()
+        self.truncated = False
+
+    def drain(self, stream: BinaryIO) -> None:
+        try:
+            while chunk := stream.read(_BASH_READ_CHUNK_BYTES):
+                remaining = self._limit - len(self._buffer)
+                if remaining > 0:
+                    self._buffer.extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    self.truncated = True
+        except (OSError, ValueError):
+            # Forced process-group cleanup may close a pipe under the reader.
+            pass
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    def text(self) -> str:
+        return bytes(self._buffer).decode("utf-8", errors="replace")
+
+
+def _wait_for_bash(
+    proc: subprocess.Popen[bytes],
+    readers: tuple[threading.Thread, threading.Thread],
+    *,
+    timeout_seconds: float,
+) -> bool:
+    """Wait for both the shell and inherited output pipes until one deadline."""
+
+    deadline = time.monotonic() + timeout_seconds
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+
+    if not timed_out:
+        for reader in readers:
+            reader.join(max(0.0, deadline - time.monotonic()))
+        # A background child can inherit the pipes after its shell exits. Treat
+        # that child as part of the command under the same wall-clock deadline.
+        timed_out = any(reader.is_alive() for reader in readers)
+
+    if not timed_out:
+        # A background child may redirect both inherited pipes before the shell
+        # exits. The readers cannot observe that child, so keep watching the
+        # original process group. ``run_in_background`` is intentionally not a
+        # supported Bash mode; no descendant may escape the command deadline.
+        while _process_group_alive(proc):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            time.sleep(min(0.01, remaining))
+
+    if timed_out:
+        _terminate_process_group(proc)
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=1)
+        for reader in readers:
+            reader.join(timeout=1)
+    return timed_out
+
+
 def _bash(
     command: str,
     timeout: int = _BASH_TIMEOUT_MS_DEFAULT,
@@ -882,51 +1207,103 @@ def _bash(
     accepted for parity with the reference and is otherwise unused. Loose safety
     policy — see the "Safety" section of the skill_doc.
     """
+    if not isinstance(command, str) or not command.strip():
+        return "Error: command must be a non-empty string"
+    if len(command) > _BASH_MAX_COMMAND_CHARS:
+        return f"Error: command exceeds {_BASH_MAX_COMMAND_CHARS} characters"
+    if isinstance(timeout, bool):
+        return "Error: timeout must be an integer (milliseconds)"
     try:
         timeout_ms = int(timeout)
     except (TypeError, ValueError):
         return "Error: timeout must be an integer (milliseconds)"
-    # Convert ms -> whole seconds for subprocess, flooring at 1s so a small
-    # sub-second value never becomes a 0s (i.e. immediate) timeout.
-    timeout_s = max(1, timeout_ms // 1000)
+    if not 1 <= timeout_ms <= _BASH_TIMEOUT_MS_MAX:
+        return f"Error: timeout must be between 1 and {_BASH_TIMEOUT_MS_MAX} ms"
+    timeout_s = timeout_ms / 1000.0
 
     try:
         proc = subprocess.Popen(  # noqa: S602 — loose shell policy by design
             command,
             shell=True,
             cwd=cwd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
         )
-    except (OSError, ValueError) as exc:
-        return f"Error executing command {command!r}: {exc}"
+    except (OSError, TypeError, ValueError) as exc:
+        return _bounded_text(
+            f"Error executing command {_display_command(command, quoted=True)}: "
+            f"{exc}",
+            _BASH_MAX_OUTPUT_CHARS,
+        )
 
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    stdout_capture = _BoundedPipeOutput(_BASH_MAX_OUTPUT_CHARS)
+    stderr_capture = _BoundedPipeOutput(_BASH_MAX_OUTPUT_CHARS)
+    readers = (
+        threading.Thread(
+            target=stdout_capture.drain,
+            args=(proc.stdout,),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=stderr_capture.drain,
+            args=(proc.stderr,),
+            daemon=True,
+        ),
+    )
+    for reader in readers:
+        reader.start()
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        # Kill the whole process group, not just the shell, then reap.
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except OSError:  # incl. ProcessLookupError / PermissionError
-            proc.kill()
-        proc.communicate()
-        return f"Error: command timed out after {timeout_s}s: {command!r}"
+        timed_out = _wait_for_bash(proc, readers, timeout_seconds=timeout_s)
     except (OSError, ValueError) as exc:
-        proc.kill()
-        proc.communicate()
-        return f"Error executing command {command!r}: {exc}"
+        _terminate_process_group(proc)
+        try:
+            proc.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=1)
+                except OSError:
+                    pass
+                except subprocess.TimeoutExpired:
+                    pass
+        for reader in readers:
+            reader.join(timeout=1)
+        return _bounded_text(
+            f"Error executing command {_display_command(command, quoted=True)}: "
+            f"{exc}",
+            _BASH_MAX_OUTPUT_CHARS,
+        )
+    if timed_out:
+        return _bounded_text(
+            f"Error: command timed out after {timeout_s:g}s: "
+            f"{_display_command(command, quoted=True)}",
+            _BASH_MAX_OUTPUT_CHARS,
+        )
 
-    parts: List[str] = [f"$ {command}", f"(exit code: {proc.returncode})"]
+    stdout = stdout_capture.text()
+    stderr = stderr_capture.text()
+
+    parts: List[str] = [
+        f"$ {_display_command(command)}",
+        f"(exit code: {proc.returncode})",
+    ]
     if stdout:
         parts.append(f"--- stdout ---\n{stdout.rstrip()}")
     if stderr:
         parts.append(f"--- stderr ---\n{stderr.rstrip()}")
     text = "\n".join(parts)
 
-    if len(text) > _BASH_MAX_OUTPUT_CHARS:
-        text = text[:_BASH_MAX_OUTPUT_CHARS] + "\n... (output truncated)"
+    if (
+        stdout_capture.truncated
+        or stderr_capture.truncated
+        or len(text) > _BASH_MAX_OUTPUT_CHARS
+    ):
+        text = _bounded_text(text, _BASH_MAX_OUTPUT_CHARS)
     return text
 
 
@@ -941,15 +1318,15 @@ test runners.
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| `command` | str | *required* | Shell command line to run. |
-| `timeout` | int | 30000 | Wall-clock **milliseconds** before kill. |
+| `command` | str | *required* | Shell command line to run (up to 32k chars). |
+| `timeout` | int | 30000 | Wall-clock **milliseconds** before kill (1–600000). |
 | `description` | str | null | Short human label (accepted for parity; unused). |
 | `cwd` | str | null | Working directory for the command. |
 
 ## Output
 
-`$ <cmd>` / `(exit code: N)` / stdout / stderr sections, capped at 16k chars.
-On timeout or spawn failure, an `Error: ...` string.
+`$ <cmd>` / `(exit code: N)` / stdout / stderr sections, capped while streaming
+at 16k chars. On timeout or spawn failure, an `Error: ...` string.
 
 ## Safety
 
@@ -958,8 +1335,9 @@ allow/deny list, and no path jail** — loose by design. An in-process filter is
 either too restrictive (blocks legitimate `pytest`/`git`) or trivially bypassed
 (`bash -c '...'`), so the trust boundary is the *environment*: callers running
 the agent on untrusted input MUST sandbox at the container / VM / process level.
-`timeout` guards against hangs; a 16k-char output cap guards against runaway
-producers (`yes`, `seq`).
+`timeout` guards against hangs; a 16k-char retained-output cap guards against
+runaway producers (`yes`, `seq`), and stdin is closed so commands cannot consume
+the agent's protocol stream.
 
 ## Note vs the reference
 
@@ -986,7 +1364,8 @@ def _build_bash_tool() -> ToolSpec:
                 default=_BASH_TIMEOUT_MS_DEFAULT,
                 description=(
                     "Wall-clock milliseconds before kill "
-                    f"(default {_BASH_TIMEOUT_MS_DEFAULT})."
+                    f"(1–{_BASH_TIMEOUT_MS_MAX}; "
+                    f"default {_BASH_TIMEOUT_MS_DEFAULT})."
                 ),
             ),
             ToolInputSpec(

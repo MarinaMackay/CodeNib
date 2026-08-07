@@ -26,10 +26,14 @@ Test layout:
 
 from __future__ import annotations
 
+import io
 import json
+import os
+import shlex
 import shutil
 import sys
 import textwrap
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -41,8 +45,13 @@ from codenib.agent.skills.registry import SkillRegistry
 from codenib.agent.tool_schema import tool_to_schema
 from codenib.agent.tools.defaults import (
     _BASH_MAX_OUTPUT_CHARS,
+    _GREP_MAX_OUTPUT_CHARS,
+    _MAX_LINES_LIMIT,
+    _MAX_RESULTS_LIMIT,
+    _READ_MAX_OUTPUT_CHARS,
     DEFAULT_TOOL_IDS,
     _bash,
+    _BoundedPipeOutput,
     _glob,
     _grep,
     _read,
@@ -144,6 +153,47 @@ class TestRead:
     def test_offset_beyond_eof_returns_error(self, sample_file):
         assert _read(str(sample_file), offset=9999).startswith("Error:")
 
+    def test_stops_after_detecting_one_omitted_line(self, tmp_path, monkeypatch):
+        source = tmp_path / "source.py"
+        source.write_text("placeholder\n", encoding="utf-8")
+
+        def bounded_lines(_handle):
+            yield b"first\n", False
+            yield b"second\n", False
+            raise AssertionError("read scanned beyond the first omitted line")
+
+        monkeypatch.setattr(
+            "codenib.agent.tools.defaults._bounded_binary_lines",
+            bounded_lines,
+        )
+
+        result = _read(str(source), limit=1)
+
+        assert "first" in result
+        assert "offset=2" in result
+
+    def test_bounds_long_lines_and_total_output(self, tmp_path):
+        source = tmp_path / "long.py"
+        source.write_bytes((b"x" * 1_000_000 + b"\n") * 4)
+
+        result = _read(str(source), limit=4)
+
+        assert "[line truncated]" in result
+        assert len(result) <= _READ_MAX_OUTPUT_CHARS + 100
+        assert "use offset=" in result
+
+    def test_rejects_nonregular_files(self, tmp_path):
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO creation is unavailable")
+        fifo = tmp_path / "input.fifo"
+        os.mkfifo(fifo)
+
+        assert "not a regular file" in _read(str(fifo))
+
+    def test_rejects_unbounded_line_limits(self, sample_file):
+        result = _read(str(sample_file), limit=_MAX_LINES_LIMIT + 1)
+        assert result.startswith("Error: limit must not exceed")
+
 
 # ---------------------------------------------------------------------------
 # grep
@@ -231,6 +281,27 @@ class TestGrep:
         hits = [line for line in result.splitlines() if "many.py" in line]
         assert len(hits) <= 5
 
+    def test_rejects_unbounded_head_limit(self, sample_dir):
+        result = _grep(
+            "foo",
+            path=str(sample_dir),
+            head_limit=_MAX_RESULTS_LIMIT + 1,
+        )
+
+        assert result == f"Error: head_limit must not exceed {_MAX_RESULTS_LIMIT} rows"
+
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep is unavailable")
+    def test_ripgrep_bounds_a_long_matching_line(self, tmp_path):
+        (tmp_path / "long.py").write_text(
+            "needle " + ("x" * 100_000) + "\n",
+            encoding="utf-8",
+        )
+
+        result = _grep("needle", path=str(tmp_path), head_limit=1)
+
+        assert len(result) < 1_000
+        assert "Omitted long matching line" in result
+
     def test_invalid_regex_returns_error(self, sample_dir):
         result = _grep("[invalid", path=str(sample_dir))
         assert result.startswith("Error:") and "invalid regex" in result
@@ -261,6 +332,27 @@ class TestGrep:
 
         assert result == "Error: grep timed out after 0.05s"
 
+    def test_ripgrep_stderr_is_drained_into_a_bounded_prefix(
+        self, tmp_path, monkeypatch
+    ):
+        noisy_rg = tmp_path / "noisy-rg"
+        script = "import sys; sys.stderr.write('x' * 1000000); raise SystemExit(2)"
+        noisy_rg.write_text(
+            f"#!{sys.executable}\n{script}\n",
+            encoding="utf-8",
+        )
+        noisy_rg.chmod(0o755)
+        monkeypatch.setattr(
+            "codenib.agent.tools.defaults.shutil.which",
+            lambda _command: str(noisy_rg),
+        )
+
+        result = _grep("needle", path=str(tmp_path))
+
+        assert result.startswith("Error executing grep")
+        assert "(output truncated)" in result
+        assert len(result) <= _GREP_MAX_OUTPUT_CHARS + 200
+
     def test_invalid_output_mode_returns_error(self, sample_dir):
         result = _grep("x", path=str(sample_dir), output_mode="bogus")
         assert result.startswith("Error:") and "output_mode" in result
@@ -275,6 +367,22 @@ class TestGrep:
         )
         result = _grep("def foo", path=str(sample_dir))
         assert "a.py:1:" in result and "def foo" in result
+
+    def test_python_fallback_timeout_isolated_from_agent(self, tmp_path, monkeypatch):
+        (tmp_path / "catastrophic.txt").write_text(
+            ("a" * 5_000) + "!\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "codenib.agent.tools.defaults.shutil.which", lambda _command: None
+        )
+        monkeypatch.setattr("codenib.agent.tools.defaults._GREP_TIMEOUT_SECONDS", 0.25)
+
+        started = time.monotonic()
+        result = _grep(r"(a+)+$", path=str(tmp_path))
+
+        assert result == "Error: grep timed out after 0.25s"
+        assert time.monotonic() - started < 2
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +449,32 @@ class TestBash:
         result = _bash("sleep 2", timeout=1000)
         assert result.startswith("Error:") and "timed out" in result
 
+    def test_subsecond_timeout_is_not_rounded_to_one_second(self):
+        result = _bash("sleep 2", timeout=100)
+
+        assert result.startswith("Error:")
+        assert "timed out after 0.1s" in result
+
+    def test_timeout_kills_background_process_group(self):
+        started = time.monotonic()
+        result = _bash("sleep 5 &", timeout=1000)
+
+        assert result.startswith("Error:") and "timed out" in result
+        assert time.monotonic() - started < 3
+
+    def test_timeout_kills_background_process_with_redirected_pipes(self, tmp_path):
+        marker = tmp_path / "escaped"
+        command = (
+            f"(sleep 0.5; printf escaped > {shlex.quote(str(marker))}) "
+            ">/dev/null 2>&1 &"
+        )
+
+        result = _bash(command, timeout=100)
+        time.sleep(0.6)
+
+        assert result.startswith("Error:") and "timed out" in result
+        assert not marker.exists()
+
     def test_description_accepted(self):
         """The reference `description` metadata field is accepted and ignored."""
         result = _bash("echo labelled", description="say hello")
@@ -355,6 +489,100 @@ class TestBash:
         result = _bash("yes hello | head -n 20000")
         assert "(output truncated)" in result
         assert len(result) <= _BASH_MAX_OUTPUT_CHARS + 200
+
+    def test_stdout_stderr_and_decode_stay_bounded(self):
+        script = (
+            "import os; "
+            "os.write(1, b'\\xff' * 100000); "
+            "os.write(2, b'\\xfe' * 100000)"
+        )
+        command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+
+        result = _bash(command, timeout=5000)
+
+        assert "(output truncated)" in result
+        assert "\N{REPLACEMENT CHARACTER}" in result
+        assert len(result) <= _BASH_MAX_OUTPUT_CHARS + 200
+
+    def test_long_command_label_does_not_hide_result(self):
+        command = "printf visible #" + ("x" * 30_000)
+
+        result = _bash(command)
+
+        assert "[command truncated]" in result
+        assert "exit code: 0" in result
+        assert "visible" in result
+
+    def test_timeout_error_bounds_long_command(self):
+        command = "sleep 2 #" + ("x" * 30_000)
+
+        result = _bash(command, timeout=100)
+
+        assert result.startswith("Error:") and "[command truncated]" in result
+        assert len(result) <= _BASH_MAX_OUTPUT_CHARS + 200
+
+    def test_spawn_error_is_bounded(self, monkeypatch):
+        def reject_spawn(*_args, **_kwargs):
+            raise OSError("x" * 100_000)
+
+        monkeypatch.setattr(
+            "codenib.agent.tools.defaults.subprocess.Popen", reject_spawn
+        )
+
+        result = _bash("true")
+
+        assert result.startswith("Error executing command")
+        assert "(output truncated)" in result
+        assert len(result) <= _BASH_MAX_OUTPUT_CHARS + 200
+
+    def test_wait_error_kills_command_and_returns_error(self, monkeypatch):
+        def reject_wait(*_args, **_kwargs):
+            raise OSError("wait failed")
+
+        monkeypatch.setattr("codenib.agent.tools.defaults._wait_for_bash", reject_wait)
+
+        result = _bash("sleep 5")
+
+        assert result == "Error executing command 'sleep 5': wait failed"
+
+    def test_output_cap_does_not_cancel_command_side_effects(self, tmp_path):
+        marker = tmp_path / "completed"
+        script = "import sys; sys.stdout.write('x' * 1000000)"
+        command = (
+            f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}; "
+            f"printf done > {shlex.quote(str(marker))}"
+        )
+
+        result = _bash(command, timeout=5000)
+
+        assert "(output truncated)" in result
+        assert marker.read_text(encoding="utf-8") == "done"
+
+    def test_pipe_capture_drains_beyond_retained_prefix(self):
+        class TrackingStream(io.BytesIO):
+            final_position = 0
+
+            def close(self) -> None:
+                self.final_position = self.tell()
+                super().close()
+
+        payload = b"x" * (_BASH_MAX_OUTPUT_CHARS * 8)
+        source = TrackingStream(payload)
+        capture = _BoundedPipeOutput(_BASH_MAX_OUTPUT_CHARS)
+
+        capture.drain(source)
+
+        assert source.final_position == len(payload)
+        assert len(capture.text()) == _BASH_MAX_OUTPUT_CHARS
+        assert capture.truncated is True
+
+    @pytest.mark.parametrize("command", ["", "   ", None])
+    def test_rejects_empty_or_non_string_commands(self, command):
+        assert _bash(command).startswith("Error: command must be")
+
+    @pytest.mark.parametrize("timeout", [False, 0, -1, 600_001])
+    def test_rejects_invalid_timeouts(self, timeout):
+        assert _bash("true", timeout=timeout).startswith("Error: timeout must be")
 
 
 # ---------------------------------------------------------------------------
