@@ -9,9 +9,9 @@ from typing import Any
 
 import pytest
 
+from codenib.compiler.index_builders import BM25IndexBuilder
 from codenib.compiler.manifest import IndexEntry, RepoManifest
 from codenib.graph.code_graph import CodeGraph
-from codenib.index.sparse_idx import BM25CodeIndexer
 from codenib.types import (
     EDGE_TYPE_CONTAIN,
     EDGE_TYPE_IMPORT,
@@ -166,6 +166,19 @@ def build_integration_graph(repo_root: Path) -> CodeGraph:
     return graph
 
 
+def _build_source_bm25(
+    repo_root: Path,
+    languages: list[str],
+    output_dir: Path,
+) -> None:
+    """Build the fixture BM25 view through the production chunk contract."""
+    BM25IndexBuilder(languages=languages).build(
+        scope="current_repo",
+        repo_path=str(repo_root),
+        output_dir=str(output_dir),
+    )
+
+
 @pytest.fixture()
 def integration_manifest(tmp_path: Path) -> Path:
     repo_root = tmp_path / "repo"
@@ -178,10 +191,7 @@ def integration_manifest(tmp_path: Path) -> Path:
     graph.save_graph(str(graph_path))
 
     bm25_dir = tmp_path / "bm25"
-    bm25_dir.mkdir()
-    bm25 = BM25CodeIndexer()
-    bm25.build_index_from_graph(graph)
-    bm25.save_index(str(bm25_dir))
+    _build_source_bm25(repo_root, ["python"], bm25_dir)
 
     manifest = RepoManifest(
         repo_path=str(repo_root),
@@ -280,10 +290,12 @@ def multilanguage_integration_manifest(integration_manifest: Path) -> Path:
     graph.build_range_indexes()
     graph.save_graph(str(graph_path))
 
-    bm25 = BM25CodeIndexer()
-    bm25.build_index_from_graph(graph)
-    bm25.save_index(manifest.indexes["bm25"].path)
     manifest.languages = ["python", "typescript", "go"]
+    _build_source_bm25(
+        repo_root,
+        manifest.languages,
+        Path(manifest.indexes["bm25"].path),
+    )
     manifest.save(integration_manifest)
     return integration_manifest
 
