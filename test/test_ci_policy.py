@@ -15,6 +15,7 @@ import yaml
 from scripts.classify_ci_changes import classify_refs, classify_serial_changes
 
 ROOT = Path(__file__).resolve().parents[1]
+_ACTION_SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 
 
 def _workflow(path: str) -> dict:
@@ -24,6 +25,36 @@ def _workflow(path: str) -> dict:
 def _workflow_triggers(document: dict):
     # PyYAML follows YAML 1.1 and parses the unquoted key `on` as True.
     return document.get("on", document.get(True))
+
+
+def test_external_github_actions_are_pinned_to_full_commit_shas() -> None:
+    offenders: list[str] = []
+    step_groups: list[tuple[Path, list[dict]]] = []
+
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.y*ml")):
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for job in document.get("jobs", {}).values():
+            step_groups.append((path, job.get("steps", [])))
+
+    for path in sorted((ROOT / ".github" / "actions").rglob("action.y*ml")):
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        step_groups.append((path, document.get("runs", {}).get("steps", [])))
+
+    for path, steps in step_groups:
+        for step in steps:
+            reference = str(step.get("uses", ""))
+            if not reference:
+                continue
+            if reference.startswith(("./", "docker://")):
+                continue
+            if "@" not in reference:
+                offenders.append(f"{path.relative_to(ROOT)}: {reference}")
+                continue
+            revision = reference.rsplit("@", 1)[1]
+            if _ACTION_SHA_RE.fullmatch(revision) is None:
+                offenders.append(f"{path.relative_to(ROOT)}: {reference}")
+
+    assert offenders == []
 
 
 def _pyproject(
