@@ -8,31 +8,52 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..types import QueriedNode
 
 
 def normalize_file_path(value: Optional[str]) -> Optional[str]:
-    """Normalize file paths emitted by retrieval to canonical posix format."""
+    """Normalize a repository-relative path to canonical POSIX form.
+
+    Absolute paths and relative paths that escape above the repository root are
+    rejected. Callers that know the checkout root must first relativize through
+    :func:`_rel_norm`.
+    """
     if not value:
         return None
-    normalized = str(Path(value).as_posix())
-    return normalized.lstrip("./")
+    normalized = str(value).strip().replace("\\", "/")
+    if not normalized or "\x00" in normalized:
+        return None
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
+        return None
+
+    parts: List[str] = []
+    for part in normalized.split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts) or None
 
 
 def normalize_symbol_identifier(value: Optional[str]) -> Optional[str]:
     """Normalize ``file:Symbol`` so the file portion matches the retrieved form."""
     if not value:
         return None
+    if re.match(r"^[A-Za-z]:", value):
+        return None
     if ":" not in value:
         return value
     file_part, symbol_part = value.split(":", 1)
     normalized_file = normalize_file_path(file_part)
-    if normalized_file:
-        return f"{normalized_file}:{symbol_part}"
-    return value
+    if not normalized_file:
+        return None
+    return f"{normalized_file}:{symbol_part}"
 
 
 def collect_targets(
@@ -213,6 +234,7 @@ _MD = r"[\s>#*_`\-]*"
 _FILES_LINE = re.compile(rf"(?im)^{_MD}files?{_MD}[:=]{_MD}\s*(.+)$")
 _SYMBOLS_LINE = re.compile(rf"(?im)^{_MD}symbols?{_MD}[:=]{_MD}\s*(.+)$")
 _PATH_TOKEN = re.compile(r"[\w./\\-]+\.[A-Za-z0-9_]+")
+_REJECTED_RANK_PREFIX = "\x00rejected-rank:"
 
 
 def _rel_norm(path: str, repo_path: str) -> Optional[str]:
@@ -221,20 +243,28 @@ def _rel_norm(path: str, repo_path: str) -> Optional[str]:
     if not p:
         return None
     if repo_path and os.path.isabs(p):
+        repo_root = os.path.abspath(repo_path)
         try:
-            p = os.path.relpath(p, repo_path)
+            repo_root_real = os.path.realpath(repo_root)
+            # Resolve the original component sequence. Calling abspath first
+            # would collapse ``symlink/..`` before realpath follows the link.
+            candidate_real = os.path.realpath(p)
+            if os.path.commonpath((repo_root_real, candidate_real)) != repo_root_real:
+                return None
+            p = os.path.relpath(candidate_real, repo_root_real)
         except ValueError:
-            # Path can't be made relative to repo_path (e.g. different drive on
-            # Windows, or an unrelated root): keep the original absolute path and
-            # let normalize_file_path handle it. Non-fatal — scoring tolerates it.
-            pass
+            return None
     return normalize_file_path(p)
 
 
 def _dedup(seq: Sequence[Optional[str]]) -> List[str]:
     seen, out = set(), []
-    for x in seq:
-        if x and x not in seen:
+    for rank, x in enumerate(seq):
+        if x is None:
+            # Invalid predictions are misses, not absent predictions. Preserve
+            # their rank so a later valid path cannot move into a smaller k.
+            out.append(f"{_REJECTED_RANK_PREFIX}{rank}")
+        elif x and x not in seen:
             seen.add(x)
             out.append(x)
     return out
