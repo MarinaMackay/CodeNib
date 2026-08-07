@@ -16,6 +16,9 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import urlsplit
 
+from .limits import MAX_PROXY_RESPONSE_BYTES, MAX_REQUEST_BODY_BYTES
+from .ports import argparse_tcp_port
+
 _HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -26,6 +29,8 @@ _HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+_MAX_PROXY_REQUEST_BYTES = MAX_REQUEST_BODY_BYTES
+_MAX_PROXY_RESPONSE_BYTES = MAX_PROXY_RESPONSE_BYTES
 
 
 def runtime_config(api_base: str) -> bytes:
@@ -92,7 +97,24 @@ class WikiStaticHandler(SimpleHTTPRequestHandler):
             self.send_error(404)
             return
 
-        content_length = int(self.headers.get("Content-Length") or 0)
+        if self.headers.get("Transfer-Encoding"):
+            self._send_proxy_error(
+                400,
+                "Chunked request bodies are not supported by the Wiki proxy.",
+            )
+            return
+        raw_content_length = self.headers.get("Content-Length")
+        try:
+            content_length = int(raw_content_length) if raw_content_length else 0
+        except ValueError:
+            self._send_proxy_error(400, "Invalid Content-Length header.")
+            return
+        if content_length < 0:
+            self._send_proxy_error(400, "Content-Length must not be negative.")
+            return
+        if content_length > _MAX_PROXY_REQUEST_BYTES:
+            self._send_proxy_error(413, "Request body exceeds the Wiki proxy limit.")
+            return
         body = self.rfile.read(content_length) if content_length else None
         headers = {
             name: value
@@ -130,7 +152,38 @@ class WikiStaticHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            payload = b"" if self.command == "HEAD" else response.read()
+            if self.command == "HEAD":
+                payload = b""
+            else:
+                raw_response_length = response.headers.get("Content-Length")
+                try:
+                    response_length = (
+                        int(raw_response_length) if raw_response_length else None
+                    )
+                except ValueError:
+                    self._send_proxy_error(
+                        502, "Invalid upstream Content-Length header."
+                    )
+                    return
+                if response_length is not None and response_length < 0:
+                    self._send_proxy_error(
+                        502, "Upstream Content-Length must not be negative."
+                    )
+                    return
+                if (
+                    response_length is not None
+                    and response_length > _MAX_PROXY_RESPONSE_BYTES
+                ):
+                    self._send_proxy_error(
+                        502, "CodeNib API response exceeds the Wiki proxy limit."
+                    )
+                    return
+                payload = response.read(_MAX_PROXY_RESPONSE_BYTES + 1)
+                if len(payload) > _MAX_PROXY_RESPONSE_BYTES:
+                    self._send_proxy_error(
+                        502, "CodeNib API response exceeds the Wiki proxy limit."
+                    )
+                    return
             self.send_response(response.status)
             for name, value in response.headers.items():
                 if name.lower() in {
@@ -147,6 +200,16 @@ class WikiStaticHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(payload)
         finally:
             response.close()
+
+    def _send_proxy_error(self, status: int, detail: str) -> None:
+        payload = json.dumps({"detail": detail}).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(payload)
 
     def end_headers(self) -> None:
         request_path = urlsplit(self.path).path
@@ -184,14 +247,18 @@ def build_server(
     return ThreadingHTTPServer((host, port), handler)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--api-base", required=True)
     parser.add_argument("--browser-api-base", default="")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=3000)
-    args = parser.parse_args(argv)
+    parser.add_argument("--port", type=argparse_tcp_port, default=3000)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
 
     server = build_server(
         args.directory,

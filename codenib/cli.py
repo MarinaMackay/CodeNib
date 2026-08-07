@@ -27,6 +27,7 @@ from .provider_routes import (
     resolve_inference_route,
 )
 from .repository_filters import DEFAULT_IGNORED_DIRS
+from .web.ports import argparse_tcp_port, validate_local_wiki_ports
 
 _PRESET_VIEWS = {
     "fast": ("bm25",),
@@ -543,6 +544,45 @@ def _publication_environment(credential_env: str | None = None) -> dict[str, str
     return environment
 
 
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return first == second or first in second.parents or second in first.parents
+
+
+def _validate_publish_outputs(
+    repo_path: Path,
+    *,
+    site_output: Path | None,
+    context_output: Path | None,
+) -> None:
+    """Reject destructive publication paths before any index work starts."""
+
+    if (
+        site_output is not None
+        and context_output is not None
+        and _paths_overlap(site_output, context_output)
+    ):
+        raise CLIError("Wiki and context artifact outputs must not overlap")
+
+    from .paths import repo_index_dir
+
+    protected = (
+        (repo_path, "repository"),
+        (repo_index_dir(repo_path).expanduser().resolve(), "index state"),
+    )
+    for output, output_name in (
+        (site_output, "Wiki"),
+        (context_output, "context artifact"),
+    ):
+        if output is None:
+            continue
+        for source, source_name in protected:
+            if _paths_overlap(output, source):
+                raise CLIError(
+                    f"{output_name} output must not overlap the {source_name}: "
+                    f"{output}"
+                )
+
+
 def _run_artifact_pack(args: argparse.Namespace) -> int:
     repo_path = resolve_repo_path(args.repo)
     manifest_path = resolve_manifest_path(str(repo_path))
@@ -679,6 +719,21 @@ def _run_artifact_mcp_config(args: argparse.Namespace) -> int:
 
 
 def _run_publish(args: argparse.Namespace) -> int:
+    repo_path = resolve_repo_path(args.repo)
+    site_output = (
+        Path(args.site_output).expanduser().resolve() if args.site_output else None
+    )
+    context_output = (
+        Path(args.context_output).expanduser().resolve()
+        if args.context_output
+        else None
+    )
+    _validate_publish_outputs(
+        repo_path,
+        site_output=site_output,
+        context_output=context_output,
+    )
+
     selected_views = _selected_views_for_args(args)
     unsupported = sorted(set(selected_views) - {"bm25", "vector"})
     if unsupported:
@@ -690,29 +745,23 @@ def _run_publish(args: argparse.Namespace) -> int:
     if index_result:
         return index_result
 
-    repo_path = resolve_repo_path(args.repo)
     manifest_path = resolve_manifest_path(str(repo_path))
     from .artifacts import stage_context_artifact
     from .compiler.manifest import RepoManifest
     from .web.static_export import export_static_wiki
 
     manifest = RepoManifest.load(manifest_path)
-    site_output = (
-        Path(args.site_output).expanduser().resolve()
-        if args.site_output
-        else _default_distribution_dir(manifest_path, "wiki", manifest.commit)
+    site_output = site_output or _default_distribution_dir(
+        manifest_path, "wiki", manifest.commit
     )
-    context_output = (
-        Path(args.context_output).expanduser().resolve()
-        if args.context_output
-        else _default_distribution_dir(manifest_path, "context", manifest.commit)
+    context_output = context_output or _default_distribution_dir(
+        manifest_path, "context", manifest.commit
     )
-    if (
-        site_output == context_output
-        or site_output in context_output.parents
-        or context_output in site_output.parents
-    ):
-        raise CLIError("Wiki and context artifact outputs must not overlap")
+    _validate_publish_outputs(
+        repo_path,
+        site_output=site_output,
+        context_output=context_output,
+    )
     publication_environment = _publication_environment(args.embedding_api_key_env)
     try:
         site = export_static_wiki(
@@ -871,6 +920,14 @@ def _manifest_embedding_route(
 
 
 def _run_wiki(args: argparse.Namespace) -> int:
+    try:
+        args.port, args.api_port = validate_local_wiki_ports(
+            frontend_port=args.port,
+            api_port=args.api_port,
+        )
+    except ValueError as exc:
+        raise CLIError(str(exc)) from exc
+
     repo_path = resolve_repo_path(args.repo)
     languages = _selected_languages(repo_path, args.language)
     if args.no_index and args.preset == "auto" and not _split_values(args.view):
@@ -1713,9 +1770,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     wiki_parser.add_argument("--host", default="127.0.0.1")
-    wiki_parser.add_argument("--port", type=int, default=3000)
+    wiki_parser.add_argument("--port", type=argparse_tcp_port, default=3000)
     wiki_parser.add_argument("--api-host", default="127.0.0.1")
-    wiki_parser.add_argument("--api-port", type=int, default=8000)
+    wiki_parser.add_argument("--api-port", type=argparse_tcp_port, default=8000)
     wiki_parser.add_argument(
         "--frontend-dir",
         help="path to a prebuilt CodeNib frontend or web source checkout",

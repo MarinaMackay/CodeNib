@@ -7,10 +7,34 @@ from __future__ import annotations
 import http.client
 import json
 import threading
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from codenib.web.static_server import build_server
+import pytest
+
+from codenib.web.static_server import (
+    _MAX_PROXY_REQUEST_BYTES,
+    _parse_args,
+    build_server,
+)
+
+
+@pytest.mark.parametrize("port", ["0", "-1", "65536"])
+def test_static_server_cli_rejects_invalid_tcp_port(port: str) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_args(
+            [
+                "--directory",
+                "/tmp/wiki",
+                "--api-base",
+                "http://127.0.0.1:8000",
+                "--port",
+                port,
+            ]
+        )
+
+    assert exc_info.value.code == 2
 
 
 def test_static_server_uses_same_origin_api_and_falls_back_to_spa(tmp_path):
@@ -119,3 +143,103 @@ def test_static_server_proxies_api_for_remote_browser(tmp_path):
         "path": "/api/chat",
         "body": '{"question":"where?"}',
     }
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected_status", "expected_detail"),
+    [
+        ({"Content-Length": "invalid"}, 400, "Invalid Content-Length"),
+        ({"Content-Length": "-1"}, 400, "must not be negative"),
+        (
+            {"Content-Length": str(_MAX_PROXY_REQUEST_BYTES + 1)},
+            413,
+            "exceeds the Wiki proxy limit",
+        ),
+        ({"Transfer-Encoding": "chunked"}, 400, "Chunked request bodies"),
+    ],
+)
+def test_static_server_rejects_unbounded_proxy_bodies(
+    tmp_path,
+    headers,
+    expected_status,
+    expected_detail,
+):
+    (tmp_path / "index.html").write_text("<title>CodeNib Wiki</title>")
+    server = build_server(
+        tmp_path,
+        api_base="http://127.0.0.1:1",
+        host="127.0.0.1",
+        port=0,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+    try:
+        connection.putrequest("POST", "/api/chat")
+        for name, value in headers.items():
+            connection.putheader(name, value)
+        connection.endheaders()
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert response.status == expected_status
+    assert expected_detail in payload["detail"]
+
+
+@pytest.mark.parametrize("declare_length", [True, False])
+def test_static_server_rejects_unbounded_proxy_responses(
+    tmp_path,
+    monkeypatch,
+    declare_length,
+):
+    response_limit = 32
+    monkeypatch.setattr(
+        "codenib.web.static_server._MAX_PROXY_RESPONSE_BYTES",
+        response_limit,
+    )
+
+    class APIHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib handler contract
+            body = b"x" * (response_limit + 1)
+            self.send_response(200)
+            if declare_length:
+                self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):
+            return
+
+    (tmp_path / "index.html").write_text("<title>CodeNib Wiki</title>")
+    backend = ThreadingHTTPServer(("127.0.0.1", 0), APIHandler)
+    backend_thread = threading.Thread(target=backend.serve_forever, daemon=True)
+    backend_thread.start()
+    server = build_server(
+        tmp_path,
+        api_base=f"http://127.0.0.1:{backend.server_port}",
+        host="127.0.0.1",
+        port=0,
+    )
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/api/oversized"
+            )
+        payload = json.loads(exc_info.value.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
+        backend.shutdown()
+        backend.server_close()
+        backend_thread.join(timeout=2)
+
+    assert exc_info.value.code == 502
+    assert "response exceeds the Wiki proxy limit" in payload["detail"]
