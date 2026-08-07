@@ -9,10 +9,12 @@ of code chunks for semantic similarity search.
 """
 
 import hashlib
+import inspect
 import json
 import os
 import pickle
 import tempfile
+from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple
@@ -32,10 +34,79 @@ from .artifact_integrity import (
     validate_vector_level_artifacts,
     vector_level_artifact_records,
 )
+from .model_policy import (
+    EmbeddingLoadPolicy,
+    resolve_embedding_load_policy_from_options,
+)
 
 logger = get_logger(__name__)
 
 Level = Literal["l0", "l2"]
+
+_UNSET = object()
+_MODEL_IDENTITY_KEYS = frozenset({"code_revision", "revision", "trust_remote_code"})
+_HUGGINGFACE_ONLY_OPTIONS = frozenset(
+    {
+        "config_kwargs",
+        "default_batch_size",
+        "encode_kwargs",
+        "max_seq_length",
+        "model_kwargs",
+        "revision",
+        "tokenizer_kwargs",
+        "trust_remote_code",
+    }
+)
+
+
+def _pop_compatible_model_option(
+    kwargs: Dict[str, Any],
+    model_kwargs: Dict[str, Any],
+    name: str,
+) -> Any:
+    """Resolve an option accepted in either legacy wrapper location."""
+
+    direct = kwargs.pop(name, _UNSET)
+    nested = model_kwargs.pop(name, _UNSET)
+    if direct is not _UNSET and nested is not _UNSET and direct != nested:
+        raise ValueError(f"conflicting {name} values in embedding model options")
+    if direct is not _UNSET:
+        return direct
+    if nested is not _UNSET:
+        return nested
+    return None
+
+
+def _reject_nested_identity_options(value: Any, *, path: str) -> None:
+    """Prevent nested kwargs from overriding the validated model identity."""
+
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            location = f"{path}.{key}" if path else str(key)
+            if key in _MODEL_IDENTITY_KEYS:
+                raise ValueError(
+                    "embedding model identity options must be declared at the "
+                    f"top level, not {location}"
+                )
+            _reject_nested_identity_options(item, path=location)
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _reject_nested_identity_options(item, path=f"{path}[{index}]")
+
+
+def _validate_provider_options(provider: str, options: Mapping[str, Any]) -> str:
+    """Reject local-model controls before they reach a remote SDK client."""
+
+    canonical = normalize_provider(provider)
+    if canonical == "huggingface":
+        return canonical
+    unsupported = sorted(_HUGGINGFACE_ONLY_OPTIONS.intersection(options))
+    if unsupported:
+        raise ValueError(
+            "Hugging Face embedding options require provider='huggingface': "
+            + ", ".join(unsupported)
+        )
+    return canonical
 
 
 def _atomic_replace(target: Path, writer: Callable[[Path], None]) -> None:
@@ -73,6 +144,44 @@ def _atomic_pickle_dump(target: Path, value: object) -> None:
     _atomic_replace(target, _write)
 
 
+def _sentence_transformer_load_kwargs(
+    sentence_transformer: object,
+    load_policy: EmbeddingLoadPolicy,
+) -> Dict[str, Any]:
+    """Return only model-identity options supported by the installed API."""
+
+    try:
+        parameters = inspect.signature(sentence_transformer).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_extra_kwargs = not parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+    def accepts(name: str) -> bool:
+        return accepts_extra_kwargs or name in parameters
+
+    kwargs: Dict[str, Any] = {}
+    trust_remote_code = load_policy.trust_remote_code
+    revision = load_policy.revision
+    if accepts("trust_remote_code"):
+        kwargs["trust_remote_code"] = trust_remote_code
+    elif trust_remote_code:
+        raise RuntimeError(
+            "The installed sentence-transformers cannot enforce trusted remote "
+            "model loading; upgrade sentence-transformers"
+        )
+    if revision is not None:
+        if not accepts("revision"):
+            raise RuntimeError(
+                "The installed sentence-transformers cannot honor the requested "
+                "embedding revision; upgrade sentence-transformers"
+            )
+        kwargs["revision"] = revision
+    return kwargs
+
+
 class _Document:
     """Lightweight document container replacing LangChain Document.
 
@@ -105,9 +214,23 @@ class _HuggingFaceEmbeddingWrapper:
 
         from .prompt_registry import resolve_prompts
 
-        model_kwargs = kwargs.pop("model_kwargs", {})
+        model_kwargs = dict(kwargs.pop("model_kwargs", {}) or {})
         self._encode_kwargs = kwargs.pop("encode_kwargs", {})
         self._default_batch_size: Optional[int] = kwargs.pop("default_batch_size", None)
+
+        revision = _pop_compatible_model_option(kwargs, model_kwargs, "revision")
+        trust_remote_code = _pop_compatible_model_option(
+            kwargs, model_kwargs, "trust_remote_code"
+        )
+        load_policy = resolve_embedding_load_policy_from_options(
+            model_name,
+            {
+                "revision": revision,
+                "trust_remote_code": trust_remote_code,
+            },
+        )
+        _reject_nested_identity_options(model_kwargs, path="model_kwargs")
+        _reject_nested_identity_options(kwargs, path="")
 
         # Pop prompt-related kwargs so they aren't forwarded to
         # SentenceTransformer's __init__. Anything left as None falls back to
@@ -129,9 +252,10 @@ class _HuggingFaceEmbeddingWrapper:
         self._document_prompt = merged["document_prompt"]
 
         # Build SentenceTransformer init kwargs
-        st_kwargs: Dict[str, Any] = {}
-        if kwargs.pop("trust_remote_code", False):
-            st_kwargs["trust_remote_code"] = True
+        st_kwargs = _sentence_transformer_load_kwargs(
+            SentenceTransformer,
+            load_policy,
+        )
         # Forward remaining kwargs (e.g. device, cache_folder)
         st_kwargs.update(kwargs)
         st_kwargs.update(model_kwargs)
@@ -346,7 +470,24 @@ class CodeVectorStore:
             **embedding_kwargs: Additional arguments for embedding model
         """
         self.embedding_model = embedding_model
-        self.embedding_provider = embedding_provider
+        self.embedding_provider = _validate_provider_options(
+            embedding_provider,
+            embedding_kwargs,
+        )
+        self.embedding_load_policy = (
+            resolve_embedding_load_policy_from_options(
+                embedding_model,
+                embedding_kwargs,
+            )
+            if self.embedding_provider == "huggingface"
+            else None
+        )
+        self.embedding_revision = (
+            self.embedding_load_policy.revision if self.embedding_load_policy else None
+        )
+        self.embedding_trust_remote_code = bool(
+            self.embedding_load_policy and self.embedding_load_policy.trust_remote_code
+        )
         self.dimension = dimension
         self.index_type = index_type.lower()
         if self.index_type not in ("flat", "ivf"):
@@ -1038,6 +1179,7 @@ class CodeVectorStore:
             config = {
                 "embedding_model": self.embedding_model,
                 "embedding_provider": self.embedding_provider,
+                "embedding_revision": self.embedding_revision,
                 "dimension": self.dimension,
                 "index_type": self.index_type,
                 "index_metric": self.index_metric,
@@ -1106,6 +1248,7 @@ class CodeVectorStore:
         config = {
             "embedding_model": self.embedding_model,
             "embedding_provider": self.embedding_provider,
+            "embedding_revision": self.embedding_revision,
             "dimension": self.dimension,
             "index_type": self.index_type,
             "index_metric": self.index_metric,
@@ -1175,6 +1318,12 @@ class CodeVectorStore:
                 raise ValueError(
                     "Vector config provider mismatch: expected "
                     f"{self.embedding_provider!r}, found {saved_provider!r}"
+                )
+            saved_revision = config.get("embedding_revision")
+            if saved_revision != self.embedding_revision:
+                raise ValueError(
+                    "Vector config embedding revision mismatch: expected "
+                    f"{self.embedding_revision!r}, found {saved_revision!r}"
                 )
             saved_dimension = config.get("dimension")
             if saved_dimension is not None and saved_dimension != self.dimension:
@@ -1483,6 +1632,7 @@ class CodeVectorStore:
         stats = {
             "embedding_model": self.embedding_model,
             "embedding_provider": self.embedding_provider,
+            "embedding_revision": self.embedding_revision,
             "dimension": self.dimension,
             "index_type": self.index_type,
             "index_metric": self.index_metric,

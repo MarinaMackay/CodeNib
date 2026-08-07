@@ -6,12 +6,18 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 DEFAULT_EMBEDDING_MODEL = "nomic-ai/CodeRankEmbed"
 DEFAULT_EMBEDDING_DIMENSION = 768
 DEFAULT_EMBEDDING_REVISION = "3c4b60807d71f79b43f3c4363786d9493691f8b1"
+
+_IMMUTABLE_REVISION_RE = re.compile(r"[0-9a-f]{40}\Z")
+_UNSET = object()
 
 
 @dataclass(frozen=True)
@@ -36,20 +42,68 @@ def resolve_embedding_load_policy(
     caller explicitly opts in.
     """
 
-    bundled_revision = (
-        DEFAULT_EMBEDDING_REVISION if model == DEFAULT_EMBEDDING_MODEL else None
-    )
+    if revision is not None and not isinstance(revision, str):
+        raise TypeError("embedding revision must be a string or None")
+    if trust_remote_code is not None and not isinstance(trust_remote_code, bool):
+        raise TypeError("trust_remote_code must be a bool or None")
+
+    is_local_model = Path(model).expanduser().is_dir()
+    is_bundled_remote_model = model == DEFAULT_EMBEDDING_MODEL and not is_local_model
+    bundled_revision = DEFAULT_EMBEDDING_REVISION if is_bundled_remote_model else None
     resolved_revision = revision if revision is not None else bundled_revision
     uses_bundled_revision = (
-        model == DEFAULT_EMBEDDING_MODEL
-        and resolved_revision == DEFAULT_EMBEDDING_REVISION
+        is_bundled_remote_model and resolved_revision == DEFAULT_EMBEDDING_REVISION
     )
     resolved_trust = (
-        uses_bundled_revision if trust_remote_code is None else bool(trust_remote_code)
+        uses_bundled_revision if trust_remote_code is None else trust_remote_code
     )
+    if (
+        resolved_trust
+        and not is_local_model
+        and not (
+            resolved_revision and _IMMUTABLE_REVISION_RE.fullmatch(resolved_revision)
+        )
+    ):
+        raise ValueError(
+            "trust_remote_code=True for a remote embedding model requires "
+            "revision to be a full 40-character lowercase commit SHA"
+        )
     return EmbeddingLoadPolicy(
         revision=resolved_revision,
         trust_remote_code=resolved_trust,
+    )
+
+
+def resolve_embedding_load_policy_from_options(
+    model: str,
+    options: Mapping[str, Any] | None,
+) -> EmbeddingLoadPolicy:
+    """Resolve identity controls accepted at either wrapper option level."""
+
+    values = dict(options or {})
+    nested = values.get("model_kwargs") or {}
+    if not isinstance(nested, Mapping):
+        raise TypeError("embedding model_kwargs must be a mapping")
+
+    def select(name: str) -> Any:
+        direct_value = values.get(name, _UNSET)
+        nested_value = nested.get(name, _UNSET)
+        if (
+            direct_value is not _UNSET
+            and nested_value is not _UNSET
+            and direct_value != nested_value
+        ):
+            raise ValueError(f"conflicting {name} values in embedding model options")
+        if direct_value is not _UNSET:
+            return direct_value
+        if nested_value is not _UNSET:
+            return nested_value
+        return None
+
+    return resolve_embedding_load_policy(
+        model,
+        revision=select("revision"),
+        trust_remote_code=select("trust_remote_code"),
     )
 
 
@@ -59,4 +113,5 @@ __all__ = [
     "DEFAULT_EMBEDDING_REVISION",
     "EmbeddingLoadPolicy",
     "resolve_embedding_load_policy",
+    "resolve_embedding_load_policy_from_options",
 ]

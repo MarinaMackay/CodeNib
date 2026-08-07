@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
+
 from codenib.index.embedding.model_policy import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_EMBEDDING_REVISION,
@@ -36,7 +38,7 @@ def test_custom_revision_of_bundled_model_is_not_implicitly_trusted():
 def test_caller_can_explicitly_override_remote_code_policy():
     enabled = resolve_embedding_load_policy(
         "vendor/custom-embedding",
-        revision="immutable-revision",
+        revision="a" * 40,
         trust_remote_code=True,
     )
     disabled = resolve_embedding_load_policy(
@@ -47,3 +49,51 @@ def test_caller_can_explicitly_override_remote_code_policy():
     assert enabled.trust_remote_code is True
     assert disabled.revision == DEFAULT_EMBEDDING_REVISION
     assert disabled.trust_remote_code is False
+
+
+@pytest.mark.parametrize(
+    "revision",
+    [None, "main", "a" * 39, "g" * 40],
+)
+def test_remote_code_requires_full_immutable_revision(revision):
+    with pytest.raises(ValueError, match="full 40-character lowercase commit SHA"):
+        resolve_embedding_load_policy(
+            "vendor/custom-embedding",
+            revision=revision,
+            trust_remote_code=True,
+        )
+
+
+def test_local_model_can_trust_local_code_without_revision(tmp_path):
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+
+    policy = resolve_embedding_load_policy(
+        str(model_path),
+        trust_remote_code=True,
+    )
+
+    assert policy.revision is None
+    assert policy.trust_remote_code is True
+
+
+def test_local_path_named_like_bundled_model_is_not_implicitly_trusted(
+    tmp_path, monkeypatch
+):
+    model_path = tmp_path / DEFAULT_EMBEDDING_MODEL
+    model_path.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    policy = resolve_embedding_load_policy(DEFAULT_EMBEDDING_MODEL)
+
+    assert policy.revision is None
+    assert policy.trust_remote_code is False
+
+
+@pytest.mark.parametrize("value", [1, "false"])
+def test_remote_code_option_requires_boolean(value):
+    with pytest.raises(TypeError, match="must be a bool or None"):
+        resolve_embedding_load_policy(
+            "vendor/custom-embedding",
+            trust_remote_code=value,
+        )
