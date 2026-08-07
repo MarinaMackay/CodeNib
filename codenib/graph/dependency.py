@@ -28,20 +28,23 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..types import is_symbol_node, node_is_reference_only
+from ..types import EDGE_TYPE_REFERENCE, is_symbol_node, node_is_reference_only
 from .code_graph import CodeGraph
-from .traverse_graph import RepoDependencySearcher
+from .traverse_graph import NeighborScanBudget, RepoDependencySearcher
 
 # Call/use edges (X references Y). The other edge type, ``contain`` (file→symbol
 # nesting), is structural, not a dependency — excluded from impact by default.
-_REFERENCE_EDGES = {"reference"}
+_REFERENCE_EDGES = {EDGE_TYPE_REFERENCE}
+_DEFAULT_MAX_EDGES = 1000
 
 
 @dataclass
 class DepNode:
-    """A node in a dependency result (readable label, location, BFS depth)."""
+    """A node in a dependency result (unique label, location, BFS depth)."""
 
-    name: str  # readable unified_name (or canonical when none)
+    # Usually the readable unified_name. Falls back to the canonical identity
+    # when two included nodes would otherwise have the same response label.
+    name: str
     file: Optional[str]
     line: Optional[int]
     kind: str
@@ -59,8 +62,8 @@ class DepNode:
 
 @dataclass
 class DepEdge:
-    source: str  # readable
-    target: str  # readable
+    source: str  # unique result label, usually readable unified_name
+    target: str  # unique result label, usually readable unified_name
     type: str
 
     def to_dict(self) -> Dict[str, Any]:
@@ -71,7 +74,7 @@ class DepEdge:
 class DependencyResult:
     """Structured, frontend-ready dependency/impact result."""
 
-    root: str  # readable label of the queried symbol
+    root: str  # unique result label of the queried symbol
     direction: str  # "callers" | "callees" | "both"
     nodes: List[DepNode] = field(default_factory=list)
     edges: List[DepEdge] = field(default_factory=list)
@@ -107,28 +110,44 @@ class DependencyAnalyzer:
     # -- public API ----------------------------------------------------
 
     def impact(
-        self, symbol: str, max_depth: int = 3, max_nodes: int = 100
+        self,
+        symbol: str,
+        max_depth: int = 3,
+        max_nodes: int = 100,
+        max_edges: int = _DEFAULT_MAX_EDGES,
     ) -> DependencyResult:
         """Blast radius: everything that (transitively) CALLS *symbol*.
 
         "If I change this function, what might break?" — transitive callers.
         """
-        return self._bfs(symbol, "backward", "callers", max_depth, max_nodes)
+        return self._bfs(symbol, "backward", "callers", max_depth, max_nodes, max_edges)
 
     def dependencies(
-        self, symbol: str, max_depth: int = 3, max_nodes: int = 100
+        self,
+        symbol: str,
+        max_depth: int = 3,
+        max_nodes: int = 100,
+        max_edges: int = _DEFAULT_MAX_EDGES,
     ) -> DependencyResult:
         """What *symbol* (transitively) depends on — transitive callees."""
-        return self._bfs(symbol, "forward", "callees", max_depth, max_nodes)
+        return self._bfs(symbol, "forward", "callees", max_depth, max_nodes, max_edges)
 
     def subgraph(
         self,
         symbol: str,
         radius: int = 1,
         max_nodes: int = 200,
+        max_edges: int = _DEFAULT_MAX_EDGES,
     ) -> DependencyResult:
         """Compact callers+callees neighborhood for a frontend dependency view."""
-        return self._bfs(symbol, "both", "both", radius, max_nodes=max_nodes)
+        return self._bfs(
+            symbol,
+            "both",
+            "both",
+            radius,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
 
     def call_path(self, from_symbol: str, to_symbol: str) -> DependencyResult:
         """Shortest call path from *from_symbol* to *to_symbol* (empty if none)."""
@@ -154,14 +173,16 @@ class DependencyAnalyzer:
             res.note = f"no call path from {root} to {self.code_graph.display_name(b)}"
             return res
         names = self._names_for_ids(list(path))
+        labels = self._result_labels(names)
+        res.root = labels.get(a, root)
         for depth, nm in enumerate(names):
-            res.nodes.append(self._node(nm, depth))
+            res.nodes.append(self._node(nm, depth, result_name=labels[nm]))
             if depth:
                 res.edges.append(
                     DepEdge(
-                        self.code_graph.display_name(names[depth - 1]),
-                        self.code_graph.display_name(nm),
-                        "reference",
+                        labels[names[depth - 1]],
+                        labels[nm],
+                        EDGE_TYPE_REFERENCE,
                     )
                 )
         return res
@@ -175,6 +196,7 @@ class DependencyAnalyzer:
         label: str,
         max_depth: int,
         max_nodes: int,
+        max_edges: int,
     ) -> DependencyResult:
         canonical, cands = self.code_graph.resolve_symbol(symbol)
         root = self.code_graph.display_name(canonical) if canonical else symbol
@@ -185,42 +207,102 @@ class DependencyAnalyzer:
             )
             return res
 
+        max_nodes = max(1, int(max_nodes))
+        max_edges = max(1, int(max_edges))
         seen: Set[str] = {canonical}
+        emitted_edges: Set[Tuple[str, str, str]] = set()
+        discovered: List[Tuple[str, int]] = []
+        edge_order: List[Tuple[str, str, str]] = []
         queue: deque[Tuple[str, int]] = deque([(canonical, 0)])
         dirs = ["forward", "backward"] if direction == "both" else [direction]
-        while queue:
+        # Allow one filtered/parallel edge per emitted relationship, plus one
+        # look-ahead, while still bounding adversarial raw-edge fan-out.
+        scan_budget = NeighborScanBudget(max_edges * 2 + 1)
+        edge_budget_exhausted = False
+        while queue and not edge_budget_exhausted:
             node, depth = queue.popleft()
             if depth >= max_depth:
                 continue
             for d in dirs:
-                _, edges = self.searcher.get_neighbors(
-                    node, direction=d, etype_filter=_REFERENCE_EDGES
+                neighbors = self.searcher.iter_neighbors(
+                    node,
+                    direction=d,
+                    etype_filter=_REFERENCE_EDGES,
+                    scan_budget=scan_budget,
                 )
-                for src, tgt, _w, attr in edges:
-                    neighbor = tgt if d == "forward" else src
+                for neighbor, (src, tgt, _w, attr) in neighbors:
+                    # Canonical graph identities are the only safe dedup key:
+                    # ``unified_name`` is a display label and may collide.
+                    edge_key = (
+                        src,
+                        tgt,
+                        attr.get("type", EDGE_TYPE_REFERENCE),
+                    )
+                    if edge_key in emitted_edges:
+                        continue
+                    if len(emitted_edges) >= max_edges:
+                        res.truncated = True
+                        edge_budget_exhausted = True
+                        break
                     if neighbor not in seen:
                         if len(seen) >= max_nodes:
                             res.truncated = True
                             continue
                         seen.add(neighbor)
-                        res.nodes.append(self._node(neighbor, depth + 1))
+                        discovered.append((neighbor, depth + 1))
                         queue.append((neighbor, depth + 1))
-                    res.edges.append(
-                        DepEdge(
-                            self.code_graph.display_name(src),
-                            self.code_graph.display_name(tgt),
-                            attr.get("type", "reference"),
-                        )
-                    )
+                    emitted_edges.add(edge_key)
+                    edge_order.append(edge_key)
+                if scan_budget.exhausted:
+                    res.truncated = True
+                    edge_budget_exhausted = True
+                if edge_budget_exhausted:
+                    neighbors.close()
+                    break
+
+        labels = self._result_labels([canonical, *(name for name, _ in discovered)])
+        res.root = labels[canonical]
+        res.nodes = [
+            self._node(name, depth, result_name=labels[name])
+            for name, depth in discovered
+        ]
+        res.edges = [
+            DepEdge(labels[src], labels[tgt], edge_type)
+            for src, tgt, edge_type in edge_order
+        ]
         return res
 
-    def _node(self, canonical_name: str, depth: int) -> DepNode:
+    def _result_labels(self, canonical_names: List[str]) -> Dict[str, str]:
+        """Choose unique result labels while preferring readable display names."""
+        names = list(dict.fromkeys(canonical_names))
+        canonical_set = set(names)
+        displays = {name: self.code_graph.display_name(name) for name in names}
+        display_counts: Dict[str, int] = {}
+        for display in displays.values():
+            display_counts[display] = display_counts.get(display, 0) + 1
+
+        return {
+            name: (
+                display
+                if display_counts[display] == 1
+                and (display not in canonical_set or display == name)
+                else name
+            )
+            for name, display in displays.items()
+        }
+
+    def _node(
+        self,
+        canonical_name: str,
+        depth: int,
+        result_name: Optional[str] = None,
+    ) -> DepNode:
         info = self.code_graph.get_node_info_by_name(canonical_name) or {}
         has_source = not is_symbol_node(info.get("type")) or not node_is_reference_only(
             info
         )
         return DepNode(
-            name=info.get("unified_name") or canonical_name,
+            name=result_name or info.get("unified_name") or canonical_name,
             file=info.get("file") if has_source else None,
             line=info.get("start_line") if has_source else None,
             kind=info.get("type", ""),

@@ -16,6 +16,7 @@ from typing import Any, Dict
 
 from ...agent.boundary import AGENT_LINE_OFFSET
 from ._validation import (
+    MAX_DEPENDENCY_EDGES,
     MAX_GRAPH_DEPTH,
     MAX_TOOL_RESULTS,
     bounded_integer,
@@ -29,6 +30,7 @@ def dependency_subgraph_impl(
     direction: str = "both",
     depth: int = 2,
     max_nodes: int = 60,
+    max_edges: int = 400,
 ) -> Dict[str, Any]:
     """Return ``DependencyAnalyzer`` output as a JSON dict.
 
@@ -43,6 +45,11 @@ def dependency_subgraph_impl(
         max_nodes,
         name="max_nodes",
         maximum=MAX_TOOL_RESULTS,
+    )
+    max_edges = bounded_integer(
+        max_edges,
+        name="max_edges",
+        maximum=MAX_DEPENDENCY_EDGES,
     )
     direction = (direction or "").strip().lower()
     if direction in {"impact", "callers"}:
@@ -62,16 +69,27 @@ def dependency_subgraph_impl(
 
     analyzer = DependencyAnalyzer(graph)
     if operation == "impact":
-        result = analyzer.impact(symbol, max_depth=depth, max_nodes=max_nodes)
+        result = analyzer.impact(
+            symbol,
+            max_depth=depth,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
     elif operation == "dependencies":
-        result = analyzer.dependencies(symbol, max_depth=depth, max_nodes=max_nodes)
+        result = analyzer.dependencies(
+            symbol,
+            max_depth=depth,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
     else:
-        result = analyzer.subgraph(symbol, radius=depth, max_nodes=max_nodes)
+        result = analyzer.subgraph(
+            symbol,
+            radius=depth,
+            max_nodes=max_nodes,
+            max_edges=max_edges,
+        )
     payload = result.to_dict()
-    max_edges = max_nodes * 4
-    if len(payload["edges"]) > max_edges:
-        payload["edges"] = payload["edges"][:max_edges]
-        payload["truncated"] = True
     for node in payload["nodes"]:
         line = node.get("line")
         if isinstance(line, int) and not isinstance(line, bool):
