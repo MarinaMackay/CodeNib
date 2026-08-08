@@ -170,13 +170,37 @@ Status: in progress.
   transactions, and forward-only migrations.
 - Implement a filesystem SHA-256 object store with atomic writes and verified
   materialization.
+- Encode multi-file query views as deterministic, bounded `view-bundle v1`
+  objects (`bundle.json` plus `payload/`) before registering them in the object
+  store; materialization must verify the complete canonical inventory first.
 - Store namespaces, repositories, source revisions, profiles, objects,
   generations, snapshots, snapshot views, refs, and initial job/lease records.
 - Import one existing cache/manifest as a ready snapshot and export an
   equivalent `RepoManifest` v1.1.
 
 The SQLite/CAS foundation through refs and atomic snapshot sealing is
-implemented.  Schema v2 now adds canonical idempotent job requests, immutable
+implemented.  The deterministic single-object view-bundle bridge now preserves
+multi-file view paths, bytes, and normalized executable modes with bounded,
+fail-closed verification and atomic materialization.  Materialized metadata is
+exactly mode `0644`, payload files are exactly `0644` or `0755` as declared,
+and directory modes are not a portable bundle contract. The destination rename
+is the old tree's ownership linearization point; both the moved old tree and the
+published new tree are revalidated against their full ownership tokens before
+cleanup. Cleanup is fully preflighted: failure before its first unlink/rmdir can
+roll back only while the backup retains the captured moved-root identity. If
+that identity is lost after the new tree is verified, the new output remains
+active; if boundary validation has not succeeded, the suspect new tree is
+quarantined first and the active destination remains absent. Deletion failures
+after cleanup starts also retain the verified new output and preserve the
+partial backup. Secure extraction requires no-follow directory-fd support and
+never writes through the replaceable stage pathname. Archive builders publish
+the verified open temporary inode with a same-filesystem no-clobber link. The
+original destination-to-`.previous-*` rename is the only old-file handoff; after
+publication, builders only revalidate that path against the still-open previous
+descriptor and never reserve, rename, or unlink it. Controlled M5 GC is
+responsible for reclaiming verified old files and missing-destination sentinels.
+Schema v2 now adds
+canonical idempotent job requests, immutable
 per-view request mappings, bounded retry state, and database-clock fenced
 per-ref leases.  Catalog reads revalidate the normalized view rows against the
 canonical request; the M2 publication transaction must repeat that gate before
@@ -244,6 +268,8 @@ Status: pending.
   contamination.
 - Add snapshot leases, pins, retention policy, mark-and-sweep GC, and crash
   recovery.
+- Discover and ownership-validate view-bundle `.previous-*` files before
+  reclaiming verified old outputs and missing-destination sentinels.
 - Add path-aware overlay upsert/delete generations and owner isolation.
 
 ### M6: PostgreSQL and object-storage deployment
