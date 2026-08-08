@@ -260,13 +260,13 @@ def test_forward_migrates_v1_catalog_without_losing_existing_rows(
         sqlite_catalog_module, "LATEST_SCHEMA_VERSION", LATEST_SCHEMA_VERSION
     )
     with SQLiteCatalog(path) as catalog:
-        assert catalog.schema_version == 2
+        assert catalog.schema_version == LATEST_SCHEMA_VERSION
         assert catalog.create_repository("owner/repo") == repository_id
         assert (
             catalog._connection.execute(
                 "SELECT COUNT(*) FROM schema_migrations"
             ).fetchone()[0]
-            == 2
+            == LATEST_SCHEMA_VERSION
         )
         tables = {
             row[0]
@@ -309,6 +309,101 @@ def test_failed_v2_migration_rolls_back_as_one_transaction(
             ).fetchone()[0]
             == 0
         )
+    finally:
+        connection.close()
+
+
+def test_forward_migrates_v2_object_guards_for_existing_rows(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    monkeypatch.setattr(sqlite_catalog_module, "LATEST_SCHEMA_VERSION", 2)
+    with SQLiteCatalog(path) as catalog:
+        digest = catalog.register_object(
+            "a" * 64,
+            storage_key="sha256/aa/object",
+            byte_size=1,
+        )
+        assert catalog.schema_version == 2
+
+    monkeypatch.setattr(
+        sqlite_catalog_module, "LATEST_SCHEMA_VERSION", LATEST_SCHEMA_VERSION
+    )
+    with SQLiteCatalog(path) as catalog:
+        assert catalog.schema_version == LATEST_SCHEMA_VERSION
+        assert (
+            catalog._connection.execute(
+                "SELECT byte_size FROM objects WHERE digest = ?", (digest,)
+            ).fetchone()["byte_size"]
+            == 1
+        )
+        triggers = {
+            row[0]
+            for row in catalog._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            )
+        }
+        assert {
+            "objects_reject_duplicate_inserts",
+            "referenced_objects_cannot_be_deleted",
+            "view_generations_reject_duplicate_inserts",
+            "referenced_view_generations_cannot_be_deleted",
+            "snapshots_reject_duplicate_inserts",
+            "referenced_snapshots_cannot_be_deleted",
+            "refs_reject_duplicate_inserts",
+            "refs_cannot_be_deleted",
+            "ref_identity_is_immutable",
+            "refs_require_ready_snapshot_on_insert",
+            "refs_require_ready_snapshot_on_update",
+        } <= triggers
+
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("PRAGMA recursive_triggers = OFF")
+    with pytest.raises(sqlite3.IntegrityError, match="duplicate object insert"):
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO objects(
+                digest, storage_key, byte_size, media_type, created_at
+            ) VALUES (?, 'sha256/replaced', 2, 'application/evil', 'now')
+            """,
+            (digest,),
+        )
+    connection.close()
+
+
+def test_failed_v3_migration_rolls_back_object_guards(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    monkeypatch.setattr(sqlite_catalog_module, "LATEST_SCHEMA_VERSION", 2)
+    with SQLiteCatalog(path):
+        pass
+
+    broken = dict(sqlite_catalog_module._MIGRATIONS)
+    broken[3] = sqlite_catalog_module._MIGRATIONS[3] + ("THIS IS NOT VALID SQL",)
+    monkeypatch.setattr(sqlite_catalog_module, "_MIGRATIONS", broken)
+    monkeypatch.setattr(sqlite_catalog_module, "LATEST_SCHEMA_VERSION", 3)
+    with pytest.raises(sqlite3.OperationalError):
+        SQLiteCatalog(path)
+
+    connection = sqlite3.connect(path)
+    try:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert (
+            connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+            == 2
+        )
+        triggers = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+            )
+        }
+        assert "objects_reject_duplicate_inserts" not in triggers
+        assert "view_generations_reject_duplicate_inserts" not in triggers
+        assert "snapshots_reject_duplicate_inserts" not in triggers
+        assert "refs_reject_duplicate_inserts" not in triggers
+        assert "refs_require_ready_snapshot_on_insert" in triggers
+        assert "refs_require_ready_snapshot_on_update" in triggers
     finally:
         connection.close()
 
