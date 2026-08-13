@@ -70,6 +70,13 @@ class QAConfig:
     wiki_model: Optional[str] = None
     wiki_api_base: Optional[str] = None
     wiki_api_key: Optional[str] = field(default=None, repr=False)
+    # Optional OpenAI-compatible image/VLM endpoint for materializing planned
+    # Wiki media slots. When unset, pages still expose deterministic slots but
+    # no image/video request is made.
+    wiki_media_model: Optional[str] = None
+    wiki_media_api_base: Optional[str] = None
+    wiki_media_api_key: Optional[str] = field(default=None, repr=False)
+    wiki_media_options: Dict[str, Any] = field(default_factory=dict)
     # Optional OpenAI-compatible endpoint for the Ask agent. Provider-native
     # models (for example Vertex or Anthropic) normally leave these unset.
     model_api_base: Optional[str] = None
@@ -143,6 +150,10 @@ class QAConfig:
             self.wiki_model_options,
             source="wiki_model_options",
         )
+        self.wiki_media_options = validate_model_options(
+            self.wiki_media_options,
+            source="wiki_media_options",
+        )
 
     def index_types(self) -> List[str]:
         return ["bm25", "vector"] if self.mode == "hybrid" else ["bm25"]
@@ -206,6 +217,16 @@ class QAConfig:
 
         return merge_model_options(self.model_options, self.wiki_model_options)
 
+    @property
+    def wiki_media_generation_enabled(self) -> bool:
+        """Whether Wiki media slots can be materialized through a provider."""
+
+        model = str(self.wiki_media_model or "").strip().lower()
+        provider = str((self.wiki_media_options or {}).get("provider") or "").lower()
+        if model in {"local/svg", "local-svg"} or provider in {"local", "local-svg"}:
+            return True
+        return bool(self.wiki_media_model and self.wiki_media_api_base)
+
 
 def load_config(path: Optional[str] = None) -> QAConfig:
     """Load demo config from YAML, applying env overrides."""
@@ -221,6 +242,13 @@ def load_config(path: Optional[str] = None) -> QAConfig:
         wiki_model=data.get("wiki_model"),
         wiki_api_base=data.get("wiki_api_base"),
         wiki_api_key=data.get("wiki_api_key"),
+        wiki_media_model=data.get("wiki_media_model"),
+        wiki_media_api_base=data.get("wiki_media_api_base"),
+        wiki_media_api_key=data.get("wiki_media_api_key"),
+        wiki_media_options=validate_model_options(
+            data.get("wiki_media_options"),
+            source="wiki_media_options",
+        ),
         model_api_base=data.get("model_api_base"),
         model_api_key=data.get("model_api_key"),
         model_options=validate_model_options(
@@ -273,6 +301,12 @@ def load_config(path: Optional[str] = None) -> QAConfig:
         cfg.wiki_api_base = os.environ["CODENIB_DEMO_WIKI_API_BASE"]
     if os.environ.get("CODENIB_DEMO_WIKI_API_KEY"):
         cfg.wiki_api_key = os.environ["CODENIB_DEMO_WIKI_API_KEY"]
+    if os.environ.get("CODENIB_WIKI_MEDIA_MODEL"):
+        cfg.wiki_media_model = os.environ["CODENIB_WIKI_MEDIA_MODEL"]
+    if os.environ.get("CODENIB_WIKI_MEDIA_API_BASE"):
+        cfg.wiki_media_api_base = os.environ["CODENIB_WIKI_MEDIA_API_BASE"]
+    if os.environ.get("CODENIB_WIKI_MEDIA_API_KEY"):
+        cfg.wiki_media_api_key = os.environ["CODENIB_WIKI_MEDIA_API_KEY"]
     if os.environ.get("CODENIB_DEMO_API_BASE"):
         cfg.model_api_base = os.environ["CODENIB_DEMO_API_BASE"]
     if os.environ.get("CODENIB_DEMO_API_KEY"):
@@ -291,6 +325,14 @@ def load_config(path: Optional[str] = None) -> QAConfig:
             parse_model_options_json(
                 os.environ["CODENIB_DEMO_WIKI_MODEL_OPTIONS"],
                 source="CODENIB_DEMO_WIKI_MODEL_OPTIONS",
+            ),
+        )
+    if os.environ.get("CODENIB_WIKI_MEDIA_OPTIONS"):
+        cfg.wiki_media_options = merge_model_options(
+            cfg.wiki_media_options,
+            parse_model_options_json(
+                os.environ["CODENIB_WIKI_MEDIA_OPTIONS"],
+                source="CODENIB_WIKI_MEDIA_OPTIONS",
             ),
         )
     if os.environ.get("CODENIB_DEMO_DATA_DIR"):

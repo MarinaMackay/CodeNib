@@ -107,6 +107,7 @@ def test_wiki_generation_runs_off_event_loop(monkeypatch):
     assert tree == {"repo": "org/repo", "pages": [{"id": "overview"}]}
     assert page == {
         "id": "overview",
+        "media_slots": [],
         "generation": {
             "mode": "offline",
             "model": None,
@@ -121,6 +122,63 @@ def test_wiki_generation_runs_off_event_loop(monkeypatch):
         },
     }
     assert calls == [("page_tree", ()), ("page", ("overview",))]
+
+
+def test_wiki_page_materializes_local_svg_media(tmp_path, monkeypatch):
+    class Builder:
+        def page(self, page_id):
+            return {
+                "id": page_id,
+                "title": "Overview",
+                "markdown": "# Overview",
+                "citations": [],
+                "diagram": "",
+                "media_slots": [
+                    {
+                        "id": "overview-concept-illustration",
+                        "kind": "image",
+                        "placement": "section",
+                        "title": "Overview concept illustration",
+                        "purpose": "Show the source-grounded flow.",
+                        "source_citations": ["src/runtime.py"],
+                        "prompt": "Draw the runtime.",
+                        "human_prior": {"editable": True, "notes": []},
+                    }
+                ],
+            }
+
+    config = SimpleNamespace(
+        data_dir=str(tmp_path),
+        wiki_media_generation_enabled=True,
+        wiki_media_model="local/svg",
+        wiki_media_api_base=None,
+        wiki_media_api_key=None,
+        wiki_media_options={},
+    )
+    monkeypatch.setattr(web_app, "_wiki", lambda _repo_id: Builder())
+    monkeypatch.setattr(web_app, "load_config", lambda: config)
+    monkeypatch.setattr(
+        web_app,
+        "_bundle",
+        lambda _repo_id: SimpleNamespace(entry=SimpleNamespace(repo="org/repo")),
+    )
+
+    page = asyncio.run(web_app.wiki_page("demo", "overview"))
+
+    asset = page["media_slots"][0]["asset"]
+    assert asset["uri"].endswith(
+        "/api/repos/demo/wiki-media/overview/overview-concept-illustration.svg"
+    ) or asset["uri"].endswith(
+        "api/repos/demo/wiki-media/overview/overview-concept-illustration.svg"
+    )
+    asset_response = asyncio.run(
+        web_app.wiki_media_asset(
+            "demo",
+            "overview",
+            "overview-concept-illustration.svg",
+        )
+    )
+    assert asset_response.path.endswith("overview-concept-illustration.svg")
 
 
 def test_template_wiki_disables_narrator(tmp_path):

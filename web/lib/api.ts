@@ -86,6 +86,7 @@ export interface WikiPage {
   markdown: string;
   citations: Citation[];
   diagram: string;
+  media_slots?: WikiMediaSlot[];
   evidence?: {
     items: WikiEvidenceItem[];
     relations: WikiRelationItem[];
@@ -123,6 +124,34 @@ export interface WikiPage {
     planned_claims: number;
     claim_coverage: number;
   };
+}
+
+export interface WikiMediaSlot {
+  id: string;
+  kind: "diagram" | "image" | "storyboard" | "video";
+  placement: "lead" | "section" | "aside" | "appendix";
+  title: string;
+  purpose: string;
+  source_citations: string[];
+  prompt: string;
+  asset?: WikiMediaAsset;
+  human_prior: {
+    editable: boolean;
+    notes: string[];
+    [key: string]: unknown;
+  };
+}
+
+export interface WikiMediaAsset {
+  slot_id: string;
+  kind: "diagram" | "image" | "storyboard" | "video";
+  uri: string;
+  mime_type: string;
+  model: string;
+  provider: string;
+  prompt: string;
+  source_citations: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface WikiEvidenceItem {

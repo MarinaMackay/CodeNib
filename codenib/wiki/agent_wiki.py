@@ -46,6 +46,7 @@ from .evidence import (
     relation_matches_claim,
     remove_promotional_sentences,
 )
+from .multimodal import plan_media_slots
 from .outline import (
     _is_supporting_file,
     _overview_file_score,
@@ -3062,6 +3063,19 @@ class AgentWiki:
         cache_suffix = self._page_cache_suffix(meta)
         cached = self._read_cache(cache_suffix)
         if cached:
+            if "media_slots" not in cached:
+                evidence_meta = cached.get("evidence") or {}
+                cached = {
+                    **cached,
+                    "media_slots": plan_media_slots(
+                        page_id=str(cached.get("id") or meta.get("id") or ""),
+                        title=str(cached.get("title") or meta.get("title") or ""),
+                        citations=cached.get("citations") or (),
+                        diagram=str(cached.get("diagram") or ""),
+                        relations=evidence_meta.get("relations") or (),
+                    ),
+                }
+                self._write_cache(cache_suffix, cached)
             self._pages[page_id] = cached
             return cached
         page = self._generate_page(meta)
@@ -4500,6 +4514,7 @@ class AgentWiki:
                 ),
                 "citations": [],
                 "diagram": "",
+                "media_slots": [],
                 "generation": {
                     "mode": "degraded",
                     "model": self._model,
@@ -4793,6 +4808,12 @@ class AgentWiki:
             "markdown": f"# {meta.get('title', '')}\n\n{markdown}",
             "citations": citations,
             "diagram": "",
+            "media_slots": plan_media_slots(
+                page_id=str(meta.get("id") or ""),
+                title=str(meta.get("title") or meta.get("id") or ""),
+                citations=citations,
+                relations=[item.__dict__ for item in relations],
+            ),
             "evidence": evidence_metadata(evidence, relations),
             "generation": {
                 "mode": "generated" if generated else "degraded",

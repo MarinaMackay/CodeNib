@@ -5,7 +5,7 @@ import Header from "@/components/Header";
 import Markdown from "@/components/Markdown";
 import AskBar from "@/components/AskBar";
 import { AppLink } from "@/lib/router";
-import { isStaticRuntime } from "@/lib/runtime";
+import { assetUrl, isStaticRuntime } from "@/lib/runtime";
 import {
   fetchCommits,
   fetchRepos,
@@ -17,6 +17,7 @@ import {
   type Citation,
   type CommitRef,
   type RepoInfo,
+  type WikiMediaSlot,
   type WikiPage,
   type WikiPageRef,
 } from "@/lib/api";
@@ -122,6 +123,182 @@ function commitEvidence(commits: CommitRef[], selected?: string): string | null 
     parts.push(d === 0 ? "±0 nodes" : `${d > 0 ? "+" : "−"}${Math.abs(d)} nodes`);
   }
   return parts.length ? parts.join(" · ") : null;
+}
+
+function mediaKindLabel(kind: WikiMediaSlot["kind"]): string {
+  switch (kind) {
+    case "diagram":
+      return "Diagram";
+    case "image":
+      return "Illustration";
+    case "storyboard":
+      return "Storyboard";
+    case "video":
+      return "Video";
+    default:
+      return "Media";
+  }
+}
+
+function mediaAssetUrl(uri: string): string {
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(uri)) return uri;
+  return assetUrl(uri);
+}
+
+function MediaPreview({ slot }: { slot: WikiMediaSlot }) {
+  if (slot.asset?.uri) {
+    const src = mediaAssetUrl(slot.asset.uri);
+    if (slot.asset.mime_type.startsWith("video/")) {
+      return (
+        <video className="wiki-media-asset" controls src={src}>
+          Video preview is unavailable in this browser.
+        </video>
+      );
+    }
+    return <img className="wiki-media-asset" src={src} alt={slot.title} />;
+  }
+
+  if (slot.kind === "storyboard" || slot.kind === "video") {
+    return (
+      <div className="wiki-media-storyboard" aria-hidden>
+        <span>Setup</span>
+        <span>Flow</span>
+        <span>Result</span>
+      </div>
+    );
+  }
+
+  if (slot.kind === "diagram") {
+    return (
+      <div className="wiki-media-diagram-preview" aria-hidden>
+        <span className="wiki-media-node">Source</span>
+        <span className="wiki-media-edge" />
+        <span className="wiki-media-node accent">Graph</span>
+        <span className="wiki-media-edge" />
+        <span className="wiki-media-node">Wiki</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="wiki-media-image-preview" aria-hidden>
+      <span className="wiki-media-figure" />
+      <span className="wiki-media-caption-line" />
+      <span className="wiki-media-caption-line short" />
+    </div>
+  );
+}
+
+function MediaStatus({ slot }: { slot: WikiMediaSlot }) {
+  return (
+    <div className="wiki-media-status">
+      <span className={slot.asset ? "ready" : "planned"}>
+        {slot.asset ? "Asset generated" : "Ready to generate"}
+      </span>
+      {slot.asset?.model && <span className="mono">{slot.asset.model}</span>}
+    </div>
+  );
+}
+
+function MultimodalMedia({
+  slots,
+  repo,
+}: {
+  slots: WikiMediaSlot[];
+  repo: RepoInfo | null;
+}) {
+  if (!slots.length) return null;
+  const [primary, ...secondary] = slots;
+
+  return (
+    <section className="wiki-media" aria-labelledby="wiki-media-title">
+      <div className="wiki-media-head">
+        <div>
+          <h2 id="wiki-media-title">Multimodal view</h2>
+          <p>
+            Source-grounded diagrams, illustrations, and storyboard hooks for this wiki page.
+          </p>
+        </div>
+        <span className="wiki-media-count">{slots.length} media slots</span>
+      </div>
+
+      {primary && (
+        <article className="wiki-media-feature">
+          <div className="wiki-media-feature-preview">
+            <MediaPreview slot={primary} />
+          </div>
+          <div className="wiki-media-feature-body">
+            <div className="wiki-media-eyebrow">
+              {mediaKindLabel(primary.kind)} · {primary.placement}
+            </div>
+            <h3>{primary.title}</h3>
+            <p>{primary.purpose}</p>
+            <MediaStatus slot={primary} />
+            {primary.asset?.uri && (
+              <a
+                className="wiki-media-open"
+                href={mediaAssetUrl(primary.asset.uri)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open generated asset ↗
+              </a>
+            )}
+          </div>
+        </article>
+      )}
+
+      <div className="wiki-media-grid">
+        {secondary.map((slot) => (
+          <article className="wiki-media-slot" key={slot.id}>
+            <MediaPreview slot={slot} />
+            <div className="wiki-media-body">
+              <div className="wiki-media-meta">
+                <span>{mediaKindLabel(slot.kind)}</span>
+                <span>{slot.placement}</span>
+                {slot.human_prior?.editable && <span>human-prior ready</span>}
+              </div>
+              <h3>{slot.title}</h3>
+              <p>{slot.purpose}</p>
+              <MediaStatus slot={slot} />
+              {(slot.source_citations ?? []).length > 0 && (
+                <div className="wiki-media-citations">
+                  {(slot.source_citations ?? []).slice(0, 4).map((file) => {
+                    const url = ghFileUrl(
+                      repo?.repo,
+                      repo?.source_url,
+                      repo?.base_commit,
+                      file,
+                    );
+                    return url ? (
+                      <a
+                        className="wiki-media-citation mono"
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        key={file}
+                        title={`Open ${file} on GitHub`}
+                      >
+                        {repoRelative(file)}
+                      </a>
+                    ) : (
+                      <span className="wiki-media-citation mono" key={file}>
+                        {repoRelative(file)}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <details className="wiki-media-prompt">
+                <summary>Generation prompt</summary>
+                <p>{slot.prompt}</p>
+              </details>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 export default function WikiPageView({ repoId }: { repoId: string }) {
@@ -595,6 +772,9 @@ export default function WikiPageView({ repoId }: { repoId: string }) {
                   })()}
                 </details>
               ) : null}
+              {page?.media_slots && page.media_slots.length > 0 && (
+                <MultimodalMedia slots={page.media_slots} repo={repo} />
+              )}
               {page ? (
                 <Markdown
                   citations={page.citations}
