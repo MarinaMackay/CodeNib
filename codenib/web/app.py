@@ -22,15 +22,21 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from functools import partial
+from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from ..log_utils import get_logger
 from ..wiki import WikiBuilder
+from ..wiki.media_generation import (
+    image_generator_from_config,
+    materialize_media_slots,
+)
 from ..wiki.narrator import Narrator
 from .config import load_config
 from .native_authority import authorize_local_manifest_vector
@@ -174,6 +180,60 @@ def _wiki(repo_id: str):
     return cache[repo_id]
 
 
+def _wiki_media_dir(config, repo_id: str, page_id: str) -> Path:
+    root = Path(os.path.abspath(config.data_dir)) / "wiki_media"
+    return root / quote(repo_id, safe="") / quote(page_id, safe="")
+
+
+def _materialize_wiki_media(repo_id: str, page_id: str, page: dict) -> dict:
+    """Attach generated media assets when a wiki media provider is configured."""
+
+    config = load_config()
+    generator = image_generator_from_config(config)
+    if generator is None:
+        return page
+    try:
+        asset_base = (
+            f"api/repos/{quote(repo_id, safe='')}/wiki-media/"
+            f"{quote(page_id, safe='')}"
+        )
+        return materialize_media_slots(
+            page,
+            generator=generator,
+            output_dir=_wiki_media_dir(config, repo_id, page_id),
+            asset_base_path=asset_base,
+        )
+    except Exception as exc:  # noqa: BLE001 - media is optional, wiki still loads
+        logger.warning(
+            "Wiki media generation failed for %s/%s: %s",
+            repo_id,
+            page_id,
+            exc,
+            exc_info=True,
+        )
+        return page
+
+
+def _safe_media_filename(value: str) -> str:
+    path = PurePosixPath(value.replace("\\", "/"))
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise HTTPException(status_code=404, detail="media asset not found")
+    if len(path.parts) != 1:
+        raise HTTPException(status_code=404, detail="media asset not found")
+    filename = path.name
+    if Path(filename).suffix.lower() not in {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".svg",
+        ".mp4",
+        ".webm",
+    }:
+        raise HTTPException(status_code=404, detail="media asset not found")
+    return filename
+
+
 def _edge_labeler(repo_id: str, commit: str | None = None):
     """Build a labeler whose source reader matches the requested graph commit."""
     cache = app.state.edge_labelers
@@ -278,6 +338,10 @@ async def wiki_page(repo_id: str, page_id: str) -> dict:
     page = await asyncio.to_thread(_wiki(repo_id).page, page_id)
     if page is None:
         raise HTTPException(status_code=404, detail=f"Unknown wiki page: {page_id!r}")
+    if "media_slots" not in page:
+        page = {**page, "media_slots": []}
+    if page.get("media_slots"):
+        page = await asyncio.to_thread(_materialize_wiki_media, repo_id, page_id, page)
     if "generation" not in page:
         page = {
             **page,
@@ -295,6 +359,16 @@ async def wiki_page(repo_id: str, page_id: str) -> dict:
             },
         }
     return page
+
+
+@app.get("/api/repos/{repo_id}/wiki-media/{page_id}/{filename:path}")
+async def wiki_media_asset(repo_id: str, page_id: str, filename: str):
+    _bundle(repo_id)  # 404 on unknown repo
+    safe_filename = _safe_media_filename(filename)
+    target = _wiki_media_dir(load_config(), repo_id, page_id) / safe_filename
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="media asset not found")
+    return FileResponse(str(target))
 
 
 @app.get("/api/repos/{repo_id}/wiki/{page_id}/graph")

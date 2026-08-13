@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from ..repository_summary import read_bound_repository_summary, read_repository_summary
+from .multimodal import plan_media_slots
 from .narrator import Narrator
 
 if TYPE_CHECKING:
@@ -859,6 +860,12 @@ class WikiBuilder:
                 "markdown": md,
                 "citations": cites,
                 "diagram": diagram,
+                "media_slots": plan_media_slots(
+                    page_id="overview",
+                    title="Overview",
+                    citations=cites,
+                    diagram=diagram,
+                ),
             }
         if page_id == "architecture":
             md, cites, diagram = self._architecture_md()
@@ -868,6 +875,12 @@ class WikiBuilder:
                 "markdown": md,
                 "citations": cites,
                 "diagram": diagram,
+                "media_slots": plan_media_slots(
+                    page_id="architecture",
+                    title="Architecture",
+                    citations=cites,
+                    diagram=diagram,
+                ),
             }
         if page_id.startswith("mod__"):
             target = page_id[len("mod__") :]
@@ -880,6 +893,12 @@ class WikiBuilder:
                         "markdown": md,
                         "citations": cites,
                         "diagram": diagram,
+                        "media_slots": plan_media_slots(
+                            page_id=page_id,
+                            title=_module_label(m),
+                            citations=cites,
+                            diagram=diagram,
+                        ),
                     }
         return None
 
