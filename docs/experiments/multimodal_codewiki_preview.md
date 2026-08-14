@@ -1,0 +1,101 @@
+<!--
+SPDX-FileCopyrightText: 2025-2026 CodeNib Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Multimodal CodeWiki preview
+
+This note shows how to preview the source-grounded multimodal Wiki layer added
+by this branch.
+
+The change is intentionally provider-neutral: every Wiki page can expose
+planned `media_slots`, and those slots can be materialized either by the local
+deterministic SVG fallback or by an OpenAI-compatible image endpoint. The local
+fallback is the easiest review path because it needs no paid VLM/image key.
+
+![Multimodal CodeWiki preview](../assets/multimodal-codewiki-preview.svg)
+
+## What reviewers should see
+
+Open any generated Wiki page, such as `Overview` or `Architecture`, and look
+for a `Multimodal CodeWiki` section. That section should show planned visual
+assets for the page, including supported assets rendered by the local SVG
+generator when `CODENIB_WIKI_MEDIA_MODEL=local/svg` is set.
+
+Each slot keeps enough metadata for review and later model replacement:
+
+- `kind`, `placement`, `title`, and `purpose`;
+- source citations used to ground the visual asset;
+- a future-facing `evidence_query` contract for graph/fact-backed planning;
+- `human_prior` fields for teaching style and density;
+- generated asset provenance, including provider, model, prompt hash, URI, and
+  source citations.
+
+## Minimal local preview
+
+From this branch:
+
+```bash
+git checkout codex/multimodal-codewiki-media-slots
+export CODENIB_WIKI_MEDIA_MODEL=local/svg
+codenib wiki /path/to/repository
+```
+
+The `codenib wiki` command starts the backend and frontend. After the page
+opens, select a Wiki page and check the `Multimodal CodeWiki` section.
+
+The local SVG path writes generated assets under:
+
+```text
+<data_dir>/wiki_media/
+```
+
+The backend serves those files from:
+
+```text
+/api/repos/{repo_id}/wiki-media/{page_id}/{filename}
+```
+
+## API smoke check
+
+After the local Wiki is running, identify a repo id:
+
+```bash
+curl -s http://127.0.0.1:8000/api/repos | python -m json.tool
+```
+
+Then inspect a Wiki page payload:
+
+```bash
+curl -s http://127.0.0.1:8000/api/repos/<repo_id>/wiki/overview \
+  | python -m json.tool
+```
+
+The response should include `media_slots`. With the local SVG provider enabled,
+supported image-like slots should also include an `asset` object similar to:
+
+```json
+{
+  "provider": "local/svg",
+  "model": "deterministic-svg",
+  "mime_type": "image/svg+xml",
+  "uri": "api/repos/<repo_id>/wiki-media/overview/<slot>.svg",
+  "source_citations": ["..."],
+  "prompt_hash": "sha256:..."
+}
+```
+
+## Optional OpenAI-compatible image endpoint
+
+The same slot contract can be materialized by a provider that implements an
+OpenAI-compatible `/images/generations` endpoint:
+
+```bash
+export CODENIB_WIKI_MEDIA_MODEL=<image-model-name>
+export CODENIB_WIKI_MEDIA_API_BASE=http://127.0.0.1:8080/v1
+export CODENIB_WIKI_MEDIA_API_KEY=<optional-api-key>
+codenib wiki /path/to/repository
+```
+
+The UI and API payload stay the same; only the asset provider/provenance changes.

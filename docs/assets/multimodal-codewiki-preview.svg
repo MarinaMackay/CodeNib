@@ -1,0 +1,79 @@
+<!--
+SPDX-FileCopyrightText: 2025-2026 CodeNib Contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="640" viewBox="0 0 1080 640" role="img" aria-label="Multimodal CodeWiki preview">
+  <defs>
+    <linearGradient id="page" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#eef2ff"/>
+    </linearGradient>
+    <linearGradient id="slot" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f8fafc"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#0f172a" flood-opacity="0.16"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+  <rect width="1080" height="640" fill="url(#page)"/>
+  <circle cx="965" cy="82" r="108" fill="#2563eb" opacity="0.10"/>
+  <circle cx="115" cy="560" r="135" fill="#7c3aed" opacity="0.08"/>
+
+  <g filter="url(#shadow)">
+    <rect x="52" y="44" width="976" height="552" rx="28" fill="#ffffff" stroke="#dbe3ef"/>
+  </g>
+
+  <text x="88" y="98" font-size="14" letter-spacing=".12em" text-transform="uppercase" fill="#2563eb" font-weight="800" font-family="ui-sans-serif, system-ui">CodeNib Wiki Page</text>
+  <text x="88" y="135" font-size="34" fill="#0f172a" font-weight="800" font-family="ui-sans-serif, system-ui">Multimodal CodeWiki</text>
+  <text x="88" y="164" font-size="16" fill="#64748b" font-family="ui-sans-serif, system-ui">Source-grounded media slots rendered locally, with citations and asset provenance.</text>
+
+  <g>
+    <rect x="88" y="204" width="288" height="274" rx="20" fill="url(#slot)" stroke="#cbd5e1"/>
+    <text x="112" y="238" font-size="13" letter-spacing=".08em" fill="#2563eb" font-weight="800" font-family="ui-sans-serif, system-ui">DIAGRAM SLOT</text>
+    <text x="112" y="268" font-size="22" fill="#0f172a" font-weight="750" font-family="ui-sans-serif, system-ui">Architecture flow</text>
+    <rect x="112" y="298" width="94" height="46" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+    <rect x="244" y="298" width="94" height="46" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+    <rect x="178" y="380" width="94" height="46" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+    <path d="M206 321 H244" stroke="#2563eb" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <path d="M291 344 C291 362 252 362 236 380" stroke="#2563eb" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+    <path d="M159 344 C159 362 198 362 214 380" stroke="#2563eb" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+    <text x="138" y="326" font-size="13" fill="#0f172a" font-weight="700" font-family="ui-sans-serif, system-ui">Wiki</text>
+    <text x="266" y="326" font-size="13" fill="#0f172a" font-weight="700" font-family="ui-sans-serif, system-ui">Media</text>
+    <text x="199" y="408" font-size="13" fill="#0f172a" font-weight="700" font-family="ui-sans-serif, system-ui">Asset</text>
+    <text x="112" y="456" font-size="13" fill="#64748b" font-family="ui-sans-serif, system-ui">placement: lead · provider: local/svg</text>
+  </g>
+
+  <g>
+    <rect x="410" y="204" width="288" height="274" rx="20" fill="url(#slot)" stroke="#cbd5e1"/>
+    <text x="434" y="238" font-size="13" letter-spacing=".08em" fill="#7c3aed" font-weight="800" font-family="ui-sans-serif, system-ui">IMAGE SLOT</text>
+    <text x="434" y="268" font-size="22" fill="#0f172a" font-weight="750" font-family="ui-sans-serif, system-ui">Concept illustration</text>
+    <rect x="434" y="300" width="240" height="116" rx="20" fill="#f5f3ff" stroke="#c4b5fd"/>
+    <circle cx="484" cy="358" r="24" fill="#7c3aed" opacity=".20"/>
+    <circle cx="554" cy="358" r="24" fill="#7c3aed" opacity=".20"/>
+    <circle cx="624" cy="358" r="24" fill="#7c3aed" opacity=".20"/>
+    <path d="M508 358 H530" stroke="#7c3aed" stroke-width="3" marker-end="url(#arrow)"/>
+    <path d="M578 358 H600" stroke="#7c3aed" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="462" y="448" font-size="13" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">codenib/wiki/multimodal.py</text>
+  </g>
+
+  <g>
+    <rect x="732" y="204" width="248" height="274" rx="20" fill="url(#slot)" stroke="#cbd5e1"/>
+    <text x="756" y="238" font-size="13" letter-spacing=".08em" fill="#0f766e" font-weight="800" font-family="ui-sans-serif, system-ui">STORYBOARD SLOT</text>
+    <text x="756" y="268" font-size="22" fill="#0f172a" font-weight="750" font-family="ui-sans-serif, system-ui">Future video hook</text>
+    <rect x="756" y="304" width="58" height="80" rx="12" fill="#ecfeff" stroke="#5eead4"/>
+    <rect x="832" y="304" width="58" height="80" rx="12" fill="#ecfeff" stroke="#5eead4"/>
+    <rect x="908" y="304" width="48" height="80" rx="12" fill="#ecfeff" stroke="#5eead4"/>
+    <text x="776" y="350" font-size="20" fill="#0f766e" font-weight="800" font-family="ui-sans-serif, system-ui">1</text>
+    <text x="852" y="350" font-size="20" fill="#0f766e" font-weight="800" font-family="ui-sans-serif, system-ui">2</text>
+    <text x="925" y="350" font-size="20" fill="#0f766e" font-weight="800" font-family="ui-sans-serif, system-ui">3</text>
+    <text x="756" y="424" font-size="13" fill="#64748b" font-family="ui-sans-serif, system-ui">planned now, VLM/video later</text>
+  </g>
+
+  <rect x="88" y="514" width="892" height="42" rx="14" fill="#f8fafc" stroke="#dbe3ef"/>
+  <text x="112" y="540" font-size="14" fill="#334155" font-family="ui-sans-serif, system-ui">Every rendered asset keeps source citations, evidence-query metadata, prompt hash, provider, model, and URI.</text>
+</svg>
