@@ -10,13 +10,41 @@ import base64
 import hashlib
 import html
 import json
+import math
+import os
 import re
+import stat
+import tempfile
+import threading
 import urllib.request
+import weakref
 from dataclasses import asdict, dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.parse import urlsplit
 
 _GENERATABLE_IMAGE_KINDS = frozenset({"diagram", "image", "storyboard"})
+_MAX_MEDIA_SLOTS = 12
+_MAX_PROMPT_BYTES = 32 * 1024
+_MAX_IMAGE_RESPONSE_BYTES = 32 * 1024 * 1024
+_MAX_IMAGE_BYTES = 16 * 1024 * 1024
+_MAX_MANIFEST_BYTES = 256 * 1024
+_MAX_MODEL_LENGTH = 256
+_MAX_PROVIDER_LENGTH = 128
+_MAX_URL_LENGTH = 4096
+_MAX_TIMEOUT_SECONDS = 600.0
+_MAX_IMAGE_DIMENSION = 4096
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+_ASSET_LOCKS_GUARD = threading.Lock()
+_ASSET_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
 
 
 @dataclass(frozen=True)
@@ -61,22 +89,22 @@ class OpenAICompatibleImageGenerator:
     ) -> None:
         self.model = str(model or "").strip()
         self.api_base = str(api_base or "").strip()
-        self.api_key = api_key
-        self.size = size
-        self.timeout = timeout
-        self.provider = provider
+        self.api_key = _validated_api_key(api_key)
+        self.size = _validated_image_size(size)
+        self.timeout = _validated_timeout(timeout)
+        self.provider = str(provider or "").strip()
         self._urlopen = urlopen or urllib.request.urlopen
         if not self.model:
             raise ValueError("wiki media model is required")
-        if not self.api_base:
-            raise ValueError("wiki media api_base is required")
+        if len(self.model) > _MAX_MODEL_LENGTH:
+            raise ValueError("wiki media model is too long")
+        if not self.provider or len(self.provider) > _MAX_PROVIDER_LENGTH:
+            raise ValueError("wiki media provider is invalid")
+        self._endpoint = _image_generation_endpoint(self.api_base)
 
     @property
     def endpoint(self) -> str:
-        base = self.api_base.rstrip("/")
-        if base.endswith("/images/generations"):
-            return base
-        return f"{base}/images/generations"
+        return self._endpoint
 
     def generate(
         self,
@@ -86,74 +114,89 @@ class OpenAICompatibleImageGenerator:
         asset_base_path: str = "assets/wiki-media",
         reuse_existing: bool = True,
     ) -> dict[str, Any]:
+        slot = _normalized_slot(slot)
         kind = str(slot.get("kind") or "").strip()
         if kind not in _GENERATABLE_IMAGE_KINDS:
             raise ValueError(f"unsupported image media slot kind: {kind!r}")
         slot_id = str(slot.get("id") or "").strip()
         if not slot_id:
             raise ValueError("media slot id is required")
+        if output_dir is None:
+            raise ValueError("output_dir is required for image generation")
 
         prompt = _generation_prompt(slot)
+        render_sha256 = _slot_render_sha256(slot)
         filename = f"{_safe_filename(slot_id)}.png"
-        cached = _read_cached_asset(
-            output_dir,
-            filename,
-            expected={
-                "slot_id": slot_id,
+        with _asset_lock(output_dir, filename):
+            cached = _read_cached_asset(
+                output_dir,
+                filename,
+                expected={
+                    "slot_id": slot_id,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "prompt_sha256": _sha256_text(prompt),
+                    "render_sha256": render_sha256,
+                    "size": self.size,
+                },
+            )
+            if cached is not None and reuse_existing:
+                return cached
+
+            payload = {
                 "model": self.model,
-                "provider": self.provider,
-                "prompt_sha256": _sha256_text(prompt),
+                "prompt": prompt,
+                "n": 1,
                 "size": self.size,
-            },
-        )
-        if cached is not None and reuse_existing:
-            return cached
+                "response_format": "b64_json",
+            }
+            response = self._post_json(payload)
+            item = _first_image_response(response)
+            citations = _source_citations(slot)
+            content_sha256 = None
 
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "n": 1,
-            "size": self.size,
-            "response_format": "b64_json",
-        }
-        response = self._post_json(payload)
-        item = _first_image_response(response)
-        citations = tuple(str(value) for value in slot.get("source_citations") or ())
+            if item.get("b64_json"):
+                encoded = str(item["b64_json"])
+                if len(encoded) > ((_MAX_IMAGE_BYTES + 2) // 3) * 4:
+                    raise ValueError("generated image exceeds the byte limit")
+                data = base64.b64decode(encoded, validate=True)
+                if len(data) > _MAX_IMAGE_BYTES:
+                    raise ValueError("generated image exceeds the byte limit")
+                if not data.startswith(_PNG_SIGNATURE):
+                    raise ValueError("generated image is not a PNG payload")
+                target_dir = Path(output_dir)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target = target_dir / filename
+                _atomic_write_bytes(target, data)
+                content_sha256 = hashlib.sha256(data).hexdigest()
+                uri = f"{asset_base_path.rstrip('/')}/{filename}"
+                mime_type = "image/png"
+            elif item.get("url"):
+                uri = _validated_remote_asset_url(str(item["url"]))
+                mime_type = "image/*"
+            else:
+                raise ValueError("image response must contain b64_json or url")
 
-        if item.get("b64_json"):
-            data = base64.b64decode(str(item["b64_json"]), validate=True)
-            if output_dir is None:
-                raise ValueError("output_dir is required for b64_json image responses")
-            target_dir = Path(output_dir)
-            target_dir.mkdir(parents=True, exist_ok=True)
-            target = target_dir / filename
-            target.write_bytes(data)
-            uri = f"{asset_base_path.rstrip('/')}/{filename}"
-            mime_type = "image/png"
-        elif item.get("url"):
-            uri = str(item["url"])
-            mime_type = "image/*"
-        else:
-            raise ValueError("image response must contain b64_json or url")
-
-        asset = WikiMediaAsset(
-            slot_id=slot_id,
-            kind=kind,
-            uri=uri,
-            mime_type=mime_type,
-            model=self.model,
-            provider=self.provider,
-            prompt=prompt,
-            source_citations=citations,
-            metadata={"size": self.size},
-        ).to_dict()
-        _write_asset_manifest(
-            output_dir,
-            filename,
-            asset,
-            prompt_sha256=_sha256_text(prompt),
-        )
-        return asset
+            asset = WikiMediaAsset(
+                slot_id=slot_id,
+                kind=kind,
+                uri=uri,
+                mime_type=mime_type,
+                model=self.model,
+                provider=self.provider,
+                prompt=prompt,
+                source_citations=citations,
+                metadata={"size": self.size},
+            ).to_dict()
+            _write_asset_manifest(
+                output_dir,
+                filename,
+                asset,
+                prompt_sha256=_sha256_text(prompt),
+                render_sha256=render_sha256,
+                content_sha256=content_sha256,
+            )
+            return asset
 
     def _post_json(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         headers = {"Content-Type": "application/json"}
@@ -166,7 +209,9 @@ class OpenAICompatibleImageGenerator:
             method="POST",
         )
         with self._urlopen(request, timeout=self.timeout) as response:
-            raw = response.read()
+            raw = response.read(_MAX_IMAGE_RESPONSE_BYTES + 1)
+        if len(raw) > _MAX_IMAGE_RESPONSE_BYTES:
+            raise ValueError("image response exceeds the byte limit")
         data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError("image response must be a JSON object")
@@ -193,6 +238,7 @@ class DeterministicSvgMediaGenerator:
         asset_base_path: str = "assets/wiki-media",
         reuse_existing: bool = True,
     ) -> dict[str, Any]:
+        slot = _normalized_slot(slot)
         kind = str(slot.get("kind") or "").strip()
         if kind not in _GENERATABLE_IMAGE_KINDS:
             raise ValueError(f"unsupported image media slot kind: {kind!r}")
@@ -203,43 +249,51 @@ class DeterministicSvgMediaGenerator:
             raise ValueError("output_dir is required for local SVG generation")
 
         prompt = _generation_prompt(slot)
+        render_sha256 = _slot_render_sha256(slot)
         filename = f"{_safe_filename(slot_id)}.svg"
-        cached = _read_cached_asset(
-            output_dir,
-            filename,
-            expected={
-                "slot_id": slot_id,
-                "model": self.model,
-                "provider": self.provider,
-                "prompt_sha256": _sha256_text(prompt),
-            },
-        )
-        if cached is not None and reuse_existing:
-            return cached
+        with _asset_lock(output_dir, filename):
+            cached = _read_cached_asset(
+                output_dir,
+                filename,
+                expected={
+                    "slot_id": slot_id,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "prompt_sha256": _sha256_text(prompt),
+                    "render_sha256": render_sha256,
+                },
+            )
+            if cached is not None and reuse_existing:
+                return cached
 
-        target_dir = Path(output_dir)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / filename
-        target.write_text(_svg_for_slot(slot), encoding="utf-8")
-        citations = tuple(str(value) for value in slot.get("source_citations") or ())
-        asset = WikiMediaAsset(
-            slot_id=slot_id,
-            kind=kind,
-            uri=f"{asset_base_path.rstrip('/')}/{filename}",
-            mime_type="image/svg+xml",
-            model=self.model,
-            provider=self.provider,
-            prompt=prompt,
-            source_citations=citations,
-            metadata={"deterministic": True},
-        ).to_dict()
-        _write_asset_manifest(
-            output_dir,
-            filename,
-            asset,
-            prompt_sha256=_sha256_text(prompt),
-        )
-        return asset
+            target_dir = Path(output_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / filename
+            svg = _svg_for_slot(slot).encode("utf-8")
+            if len(svg) > _MAX_IMAGE_BYTES:
+                raise ValueError("generated SVG exceeds the byte limit")
+            _atomic_write_bytes(target, svg)
+            citations = _source_citations(slot)
+            asset = WikiMediaAsset(
+                slot_id=slot_id,
+                kind=kind,
+                uri=f"{asset_base_path.rstrip('/')}/{filename}",
+                mime_type="image/svg+xml",
+                model=self.model,
+                provider=self.provider,
+                prompt=prompt,
+                source_citations=citations,
+                metadata={"deterministic": True},
+            ).to_dict()
+            _write_asset_manifest(
+                output_dir,
+                filename,
+                asset,
+                prompt_sha256=_sha256_text(prompt),
+                render_sha256=render_sha256,
+                content_sha256=hashlib.sha256(svg).hexdigest(),
+            )
+            return asset
 
 
 def materialize_media_slots(
@@ -251,11 +305,20 @@ def materialize_media_slots(
 ) -> dict[str, Any]:
     """Generate assets for supported slots and attach them to a page payload."""
 
+    raw_slots = page.get("media_slots") or ()
+    if isinstance(raw_slots, (str, bytes, bytearray)):
+        raise ValueError("wiki media slots must be a sequence of objects")
+    try:
+        slots_to_materialize = list(islice(iter(raw_slots), _MAX_MEDIA_SLOTS + 1))
+    except TypeError as exc:
+        raise ValueError("wiki media slots must be an iterable of objects") from exc
+    if len(slots_to_materialize) > _MAX_MEDIA_SLOTS:
+        raise ValueError("wiki media slot count exceeds the limit")
     slots = []
-    for slot in page.get("media_slots") or ():
+    for slot in slots_to_materialize:
         if not isinstance(slot, Mapping):
             continue
-        updated = dict(slot)
+        updated = _normalized_slot(slot)
         if "asset" not in updated:
             kind = str(updated.get("kind") or "")
             if kind in _GENERATABLE_IMAGE_KINDS:
@@ -275,7 +338,7 @@ def image_generator_from_config(
 
     if not bool(getattr(config, "wiki_media_generation_enabled", False)):
         return None
-    model = str(getattr(config, "wiki_media_model") or "").strip()
+    model = str(config.wiki_media_model or "").strip()
     options = dict(getattr(config, "wiki_media_options", {}) or {})
     provider = str(options.get("provider") or "").strip().lower()
     if model.lower() in {"local/svg", "local-svg"} or provider in {
@@ -285,12 +348,18 @@ def image_generator_from_config(
         return DeterministicSvgMediaGenerator()
     return OpenAICompatibleImageGenerator(
         model=model,
-        api_base=str(getattr(config, "wiki_media_api_base") or ""),
+        api_base=str(config.wiki_media_api_base or ""),
         api_key=getattr(config, "wiki_media_api_key", None),
         size=str(options.get("size") or "1024x1024"),
-        timeout=float(options.get("timeout") or 120.0),
+        timeout=options.get("timeout", 120.0),
         provider=str(options.get("provider") or "openai-compatible"),
     )
+
+
+def read_generated_media_asset(output_dir: str | Path, filename: str) -> bytes | None:
+    """Read one generated asset without following links or exceeding its cap."""
+
+    return _read_regular_bytes(Path(output_dir) / filename, max_bytes=_MAX_IMAGE_BYTES)
 
 
 def _generation_prompt(slot: Mapping[str, Any]) -> str:
@@ -298,10 +367,52 @@ def _generation_prompt(slot: Mapping[str, Any]) -> str:
     purpose = str(slot.get("purpose") or "").strip()
     if purpose:
         parts.append(f"Purpose: {purpose}")
-    citations = [str(value) for value in slot.get("source_citations") or ()]
+    citations = _source_citations(slot)
     if citations:
         parts.append("Source citations: " + ", ".join(citations))
-    return "\n\n".join(part for part in parts if part)
+    prompt = "\n\n".join(part for part in parts if part)
+    if len(prompt.encode("utf-8")) > _MAX_PROMPT_BYTES:
+        raise ValueError("wiki media prompt exceeds the byte limit")
+    return prompt
+
+
+def _source_citations(slot: Mapping[str, Any]) -> tuple[str, ...]:
+    citation_values = slot.get("source_citations") or ()
+    if isinstance(citation_values, (str, bytes, bytearray)):
+        raise ValueError("wiki media source citations must be a sequence")
+    citations = []
+    for value in citation_values:
+        citation = str(value)
+        if len(citation.encode("utf-8")) > 4096:
+            raise ValueError("wiki media source citation exceeds the byte limit")
+        citations.append(citation)
+        if len(citations) >= 6:
+            break
+    return tuple(citations)
+
+
+def _normalized_slot(slot: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(slot)
+    normalized["source_citations"] = list(_source_citations(slot))
+    return normalized
+
+
+def _slot_render_sha256(slot: Mapping[str, Any]) -> str:
+    title = str(slot.get("title") or "")
+    if len(title.encode("utf-8")) > 4096:
+        raise ValueError("wiki media title exceeds the byte limit")
+    payload = {
+        "id": str(slot.get("id") or ""),
+        "kind": str(slot.get("kind") or ""),
+        "title": title,
+        "purpose": str(slot.get("purpose") or ""),
+        "prompt": str(slot.get("prompt") or ""),
+        "source_citations": list(_source_citations(slot)),
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _first_image_response(response: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -311,9 +422,163 @@ def _first_image_response(response: Mapping[str, Any]) -> Mapping[str, Any]:
     return data[0]
 
 
+def _validated_timeout(value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError("wiki media timeout must be a positive number")
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("wiki media timeout must be a positive number") from exc
+    if not math.isfinite(timeout) or not 0 < timeout <= _MAX_TIMEOUT_SECONDS:
+        raise ValueError(
+            f"wiki media timeout must be between 0 and {_MAX_TIMEOUT_SECONDS:g} seconds"
+        )
+    return timeout
+
+
+def _validated_api_key(value: Any) -> str | None:
+    if value is None:
+        return None
+    api_key = str(value)
+    if len(api_key) > 8192 or any(
+        ord(character) < 0x20 or ord(character) == 0x7F for character in api_key
+    ):
+        raise ValueError("wiki media API key is invalid")
+    return api_key
+
+
+def _validated_image_size(value: Any) -> str:
+    size = str(value or "").strip()
+    match = re.fullmatch(r"([1-9][0-9]{0,4})x([1-9][0-9]{0,4})", size)
+    if match is None:
+        raise ValueError("wiki media size must use WIDTHxHEIGHT positive integers")
+    if any(int(dimension) > _MAX_IMAGE_DIMENSION for dimension in match.groups()):
+        raise ValueError(
+            f"wiki media dimensions must not exceed {_MAX_IMAGE_DIMENSION} pixels"
+        )
+    return size
+
+
+def _validated_http_url(value: str, *, label: str) -> str:
+    url = str(value or "").strip()
+    if not url or len(url) > _MAX_URL_LENGTH:
+        raise ValueError(f"{label} is invalid")
+    if any(
+        character.isspace() or ord(character) < 0x20 or ord(character) == 0x7F
+        for character in url
+    ):
+        raise ValueError(f"{label} is invalid")
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{label} is invalid") from exc
+    if parsed.scheme.lower() not in {"http", "https"} or not hostname:
+        raise ValueError(f"{label} must be an HTTP(S) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{label} must not contain credentials")
+    return url
+
+
+def _image_generation_endpoint(api_base: str) -> str:
+    base = _validated_http_url(api_base, label="wiki media api_base")
+    parsed = urlsplit(base)
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/images/generations"):
+        path = f"{path}/images/generations"
+    return parsed._replace(path=path, fragment="").geturl()
+
+
+def _validated_remote_asset_url(value: str) -> str:
+    return _validated_http_url(value, label="generated image URL")
+
+
+def _asset_lock(output_dir: str | Path | None, filename: str) -> threading.Lock:
+    base = os.path.abspath(os.fspath(output_dir)) if output_dir is not None else ""
+    key = os.path.join(base, filename)
+    with _ASSET_LOCKS_GUARD:
+        lock = _ASSET_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _ASSET_LOCKS[key] = lock
+        return lock
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _read_regular_bytes(path: Path, *, max_bytes: int) -> bytes | None:
+    try:
+        before = path.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_size > max_bytes
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            return None
+        chunks = []
+        remaining = max_bytes + 1
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        finished = os.fstat(descriptor)
+        if (
+            finished.st_size,
+            finished.st_mtime_ns,
+            finished.st_ctime_ns,
+        ) != (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns):
+            return None
+        payload = b"".join(chunks)
+        return payload if len(payload) <= max_bytes else None
+    finally:
+        os.close(descriptor)
+
+
 def _safe_filename(value: str) -> str:
+    if len(value.encode("utf-8")) > 4096:
+        raise ValueError("media slot id exceeds the byte limit")
     name = re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip(".-")
-    return name or "wiki-media"
+    name = name or "wiki-media"
+    stem = name.split(".", 1)[0].upper()
+    if name != value or len(name) > 128 or stem in _WINDOWS_RESERVED_NAMES:
+        digest = _sha256_text(value)[:12]
+        name = f"{name[:96].rstrip('.-') or 'wiki-media'}-{digest}"
+    return name
 
 
 def _sha256_text(value: str) -> str:
@@ -333,21 +598,38 @@ def _read_cached_asset(
     expected: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     manifest_path = _manifest_path(output_dir, filename)
-    if manifest_path is None or not manifest_path.is_file():
+    if manifest_path is None:
         return None
-    asset_path = Path(output_dir) / filename
-    if not asset_path.is_file():
+    raw_manifest = _read_regular_bytes(manifest_path, max_bytes=_MAX_MANIFEST_BYTES)
+    if raw_manifest is None:
         return None
     try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = json.loads(raw_manifest.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     if not isinstance(payload, dict):
         return None
     if any(payload.get(key) != value for key, value in expected.items()):
         return None
     asset = payload.get("asset")
-    return dict(asset) if isinstance(asset, Mapping) else None
+    if not isinstance(asset, Mapping):
+        return None
+    content_sha256 = payload.get("content_sha256")
+    if content_sha256 is None:
+        try:
+            _validated_remote_asset_url(str(asset.get("uri") or ""))
+        except ValueError:
+            return None
+    elif isinstance(content_sha256, str) and re.fullmatch(
+        r"[0-9a-f]{64}", content_sha256
+    ):
+        asset_path = Path(output_dir) / filename
+        content = _read_regular_bytes(asset_path, max_bytes=_MAX_IMAGE_BYTES)
+        if content is None or hashlib.sha256(content).hexdigest() != content_sha256:
+            return None
+    else:
+        return None
+    return dict(asset)
 
 
 def _write_asset_manifest(
@@ -356,6 +638,8 @@ def _write_asset_manifest(
     asset: Mapping[str, Any],
     *,
     prompt_sha256: str,
+    render_sha256: str,
+    content_sha256: str | None,
 ) -> None:
     manifest_path = _manifest_path(output_dir, filename)
     if manifest_path is None:
@@ -365,21 +649,28 @@ def _write_asset_manifest(
         "model": asset.get("model"),
         "provider": asset.get("provider"),
         "prompt_sha256": prompt_sha256,
+        "render_sha256": render_sha256,
         "size": (asset.get("metadata") or {}).get("size"),
+        "content_sha256": content_sha256,
         "asset": dict(asset),
     }
-    manifest_path.write_text(
-        json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    encoded = (
+        json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if len(encoded) > _MAX_MANIFEST_BYTES:
+        raise ValueError("wiki media manifest exceeds the byte limit")
+    _atomic_write_bytes(
+        manifest_path,
+        encoded,
     )
 
 
 def _svg_for_slot(slot: Mapping[str, Any]) -> str:
     title = html.escape(str(slot.get("title") or "Wiki media"))
     kind = html.escape(str(slot.get("kind") or "media").title())
-    purpose = html.escape(str(slot.get("purpose") or "Source-grounded visual"))
-    citations = [str(value) for value in slot.get("source_citations") or ()][:4]
-    files = citations or ["source evidence"]
+    purpose = str(slot.get("purpose") or "Source-grounded visual")
+    citations = _source_citations(slot)[:4]
+    files = list(citations) or ["source evidence"]
     palette = {
         "diagram": ("#2563eb", "#eff6ff"),
         "image": ("#7c3aed", "#f5f3ff"),
@@ -591,4 +882,5 @@ __all__ = [
     "WikiMediaAsset",
     "image_generator_from_config",
     "materialize_media_slots",
+    "read_generated_media_asset",
 ]

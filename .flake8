@@ -24,3 +24,9 @@ exclude =
     docs/_build
 
 max-complexity = 12
+
+# The deterministic SVG renderer contains literal XML attribute quoting and
+# intentionally long markup lines; these two Bugbear style checks do not map
+# cleanly to generated XML templates.
+per-file-ignores =
+    codenib/wiki/media_generation.py:B907,B950

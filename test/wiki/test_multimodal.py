@@ -40,3 +40,19 @@ def test_media_slots_plan_storyboard_when_relations_are_available():
     assert [slot["kind"] for slot in slots] == ["image", "storyboard"]
     assert slots[1]["id"] == "runtime-flow-storyboard"
     assert "components hand work" in slots[1]["purpose"]
+
+
+def test_media_slot_planning_only_probes_one_relation_and_skips_bad_citations():
+    def relations():
+        yield {"source": "A", "target": "B"}
+        raise AssertionError("relation planning consumed more than one item")
+
+    slots = plan_media_slots(
+        page_id="runtime",
+        title="Runtime",
+        citations=[None, {"file": "x" * 5000}, {"file": "src/runtime.py"}],
+        relations=relations(),
+    )
+
+    assert [slot["kind"] for slot in slots] == ["image", "storyboard"]
+    assert slots[0]["source_citations"] == ["src/runtime.py"]

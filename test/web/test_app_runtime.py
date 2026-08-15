@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 import codenib.web.app as web_app
+import codenib.wiki.media_generation as media_generation
 
 
 def test_lifespan_injects_local_native_authority_resolver(monkeypatch):
@@ -178,7 +180,69 @@ def test_wiki_page_materializes_local_svg_media(tmp_path, monkeypatch):
             "overview-concept-illustration.svg",
         )
     )
-    assert asset_response.path.endswith("overview-concept-illustration.svg")
+    assert asset_response.body.startswith(b"<svg")
+    assert asset_response.media_type == "image/svg+xml"
+    assert asset_response.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in asset_response.headers["content-security-policy"]
+
+
+def test_wiki_media_storage_keys_cannot_traverse_data_root(tmp_path):
+    config = SimpleNamespace(data_dir=str(tmp_path))
+    root = tmp_path / "wiki_media"
+
+    target = web_app._wiki_media_dir(config, "..", "../secret")
+
+    assert target.is_relative_to(root)
+    assert target != root
+    assert ".." not in target.parts
+
+    with pytest.raises(web_app.HTTPException):
+        web_app._safe_media_filename("asset\x00.svg")
+
+
+def test_wiki_media_asset_rejects_links_and_oversized_files(tmp_path, monkeypatch):
+    config = SimpleNamespace(data_dir=str(tmp_path))
+    monkeypatch.setattr(web_app, "load_config", lambda: config)
+    monkeypatch.setattr(web_app, "_bundle", lambda _repo_id: object())
+    media_dir = web_app._wiki_media_dir(config, "demo", "overview")
+    media_dir.mkdir(parents=True)
+    secret = tmp_path / "secret.svg"
+    secret.write_text("<svg>secret</svg>", encoding="utf-8")
+    linked = media_dir / "linked.svg"
+    try:
+        linked.symlink_to(secret)
+    except (NotImplementedError, OSError):
+        pytest.skip("symbolic links are unavailable")
+
+    with pytest.raises(web_app.HTTPException) as linked_error:
+        asyncio.run(web_app.wiki_media_asset("demo", "overview", "linked.svg"))
+    assert linked_error.value.status_code == 404
+
+    monkeypatch.setattr(media_generation, "_MAX_IMAGE_BYTES", 4)
+    (media_dir / "large.png").write_bytes(b"12345")
+    with pytest.raises(web_app.HTTPException) as large_error:
+        asyncio.run(web_app.wiki_media_asset("demo", "overview", "large.png"))
+    assert large_error.value.status_code == 404
+
+
+def test_wiki_media_materialization_does_not_swallow_memory_error(
+    tmp_path, monkeypatch
+):
+    config = SimpleNamespace(data_dir=str(tmp_path))
+    monkeypatch.setattr(web_app, "load_config", lambda: config)
+    monkeypatch.setattr(
+        web_app, "image_generator_from_config", lambda _config: object()
+    )
+
+    def fail_materialization(*_args, **_kwargs):
+        raise MemoryError("out of memory")
+
+    monkeypatch.setattr(web_app, "materialize_media_slots", fail_materialization)
+
+    with pytest.raises(MemoryError, match="out of memory"):
+        web_app._materialize_wiki_media(
+            "demo", "overview", {"media_slots": [{"id": "asset"}]}
+        )
 
 
 def test_template_wiki_disables_narrator(tmp_path):
