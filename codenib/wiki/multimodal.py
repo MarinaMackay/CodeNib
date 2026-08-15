@@ -12,7 +12,7 @@ these slots and write concrete assets while preserving the same page contract.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Mapping
 
 MediaKind = Literal["diagram", "image", "storyboard", "video"]
 MediaPlacement = Literal["lead", "section", "aside", "appendix"]
@@ -45,8 +45,10 @@ def _citation_files(citations: Iterable[dict[str, Any]]) -> tuple[str, ...]:
     files = []
     seen = set()
     for citation in citations or ():
+        if not isinstance(citation, Mapping):
+            continue
         file = str(citation.get("file") or "").strip()
-        if not file or file in seen:
+        if not file or len(file.encode("utf-8")) > 4096 or file in seen:
             continue
         seen.add(file)
         files.append(file)
@@ -71,8 +73,9 @@ def plan_media_slots(
     """
 
     citation_files = _citation_files(citations)
-    relation_items = list(relations or ())
-    if not citation_files and not diagram and not relation_items:
+    relation_iterator = iter(relations or ())
+    has_relations = next(relation_iterator, None) is not None
+    if not citation_files and not diagram and not has_relations:
         return []
 
     page_slug = page_id or "page"
@@ -118,7 +121,7 @@ def plan_media_slots(
             )
         )
 
-    if relation_items:
+    if has_relations:
         slots.append(
             WikiMediaSlot(
                 id=f"{page_slug}-flow-storyboard",

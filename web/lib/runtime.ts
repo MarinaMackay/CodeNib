@@ -54,6 +54,26 @@ export function assetUrl(path: string): string {
   return withBasePath(path);
 }
 
+export function mediaAssetUrl(path: string): string | null {
+  const value = path.trim();
+  if (!value || /[\\\u0000-\u001f\u007f]/.test(value)) return null;
+  if (/^https?:/i.test(value)) {
+    try {
+      const url = new URL(value);
+      if (!url.hostname || url.username || url.password) return null;
+      return url.protocol === "http:" || url.protocol === "https:" ? value : null;
+    } catch {
+      return null;
+    }
+  }
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(value)) return null;
+  const pathname = value.split(/[?#]/, 1)[0];
+  if (pathname.split("/").some((segment) => segment === "." || segment === "..")) {
+    return null;
+  }
+  return assetUrl(value);
+}
+
 export function staticDataUrl(...segments: string[]): string {
   const configured =
     typeof window !== "undefined" ? window.__CODENIB_RUNTIME__?.dataBase : undefined;

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  mediaAssetUrl,
   normalizeRuntimeBasePath,
   restoreStaticRoute,
   staticDataUrl,
@@ -47,6 +48,21 @@ describe("runtime base paths", () => {
     expect(staticDataUrl("repos", "demo", "pages", "overview.json")).toBe(
       "/project/data/repos/demo/pages/overview.json",
     );
+  });
+
+  it("allows only local or HTTP(S) wiki media assets", () => {
+    staticWindow();
+
+    expect(mediaAssetUrl("api/repos/demo/wiki-media/page/asset.svg")).toBe(
+      "/project/api/repos/demo/wiki-media/page/asset.svg",
+    );
+    expect(mediaAssetUrl("https://media.example/asset.png")).toBe(
+      "https://media.example/asset.png",
+    );
+    expect(mediaAssetUrl("javascript:alert(1)")).toBeNull();
+    expect(mediaAssetUrl("https://user:secret@media.example/asset.png")).toBeNull();
+    expect(mediaAssetUrl("../secret.svg")).toBeNull();
+    expect(mediaAssetUrl("//media.example/asset.png")).toBeNull();
   });
 
   it("restores a route redirected through the static 404 page", () => {

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import os
 from contextlib import asynccontextmanager
 from functools import partial
@@ -29,13 +30,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from ..log_utils import get_logger
 from ..wiki import WikiBuilder
 from ..wiki.media_generation import (
     image_generator_from_config,
     materialize_media_slots,
+    read_generated_media_asset,
 )
 from ..wiki.narrator import Narrator
 from .config import load_config
@@ -52,6 +54,11 @@ from .schemas import (
     RepoInfo,
     agent_result_to_response,
 )
+
+_WIKI_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+}
 
 logger = get_logger(__name__)
 
@@ -182,7 +189,9 @@ def _wiki(repo_id: str):
 
 def _wiki_media_dir(config, repo_id: str, page_id: str) -> Path:
     root = Path(os.path.abspath(config.data_dir)) / "wiki_media"
-    return root / quote(repo_id, safe="") / quote(page_id, safe="")
+    repo_key = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
+    page_key = hashlib.sha256(page_id.encode("utf-8")).hexdigest()
+    return root / repo_key / page_key
 
 
 def _materialize_wiki_media(repo_id: str, page_id: str, page: dict) -> dict:
@@ -203,6 +212,8 @@ def _materialize_wiki_media(repo_id: str, page_id: str, page: dict) -> dict:
             output_dir=_wiki_media_dir(config, repo_id, page_id),
             asset_base_path=asset_base,
         )
+    except MemoryError:
+        raise
     except Exception as exc:  # noqa: BLE001 - media is optional, wiki still loads
         logger.warning(
             "Wiki media generation failed for %s/%s: %s",
@@ -215,21 +226,20 @@ def _materialize_wiki_media(repo_id: str, page_id: str, page: dict) -> dict:
 
 
 def _safe_media_filename(value: str) -> str:
+    if (
+        not value
+        or len(value.encode("utf-8")) > 256
+        or not value.isascii()
+        or any(not (character.isalnum() or character in "._-") for character in value)
+    ):
+        raise HTTPException(status_code=404, detail="media asset not found")
     path = PurePosixPath(value.replace("\\", "/"))
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise HTTPException(status_code=404, detail="media asset not found")
     if len(path.parts) != 1:
         raise HTTPException(status_code=404, detail="media asset not found")
     filename = path.name
-    if Path(filename).suffix.lower() not in {
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".webp",
-        ".svg",
-        ".mp4",
-        ".webm",
-    }:
+    if Path(filename).suffix.lower() not in _WIKI_MEDIA_TYPES:
         raise HTTPException(status_code=404, detail="media asset not found")
     return filename
 
@@ -365,10 +375,21 @@ async def wiki_page(repo_id: str, page_id: str) -> dict:
 async def wiki_media_asset(repo_id: str, page_id: str, filename: str):
     _bundle(repo_id)  # 404 on unknown repo
     safe_filename = _safe_media_filename(filename)
-    target = _wiki_media_dir(load_config(), repo_id, page_id) / safe_filename
-    if not target.is_file():
+    payload = read_generated_media_asset(
+        _wiki_media_dir(load_config(), repo_id, page_id), safe_filename
+    )
+    if payload is None:
         raise HTTPException(status_code=404, detail="media asset not found")
-    return FileResponse(str(target))
+    suffix = Path(safe_filename).suffix.lower()
+    headers = {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if suffix == ".svg":
+        headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return Response(
+        content=payload, media_type=_WIKI_MEDIA_TYPES[suffix], headers=headers
+    )
 
 
 @app.get("/api/repos/{repo_id}/wiki/{page_id}/graph")

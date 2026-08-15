@@ -5,7 +5,7 @@ import Header from "@/components/Header";
 import Markdown from "@/components/Markdown";
 import AskBar from "@/components/AskBar";
 import { AppLink } from "@/lib/router";
-import { assetUrl, isStaticRuntime } from "@/lib/runtime";
+import { isStaticRuntime, mediaAssetUrl } from "@/lib/runtime";
 import {
   fetchCommits,
   fetchRepos,
@@ -140,22 +140,29 @@ function mediaKindLabel(kind: WikiMediaSlot["kind"]): string {
   }
 }
 
-function mediaAssetUrl(uri: string): string {
-  if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(uri)) return uri;
-  return assetUrl(uri);
-}
-
 function MediaPreview({ slot }: { slot: WikiMediaSlot }) {
-  if (slot.asset?.uri) {
-    const src = mediaAssetUrl(slot.asset.uri);
-    if (slot.asset.mime_type.startsWith("video/")) {
+  const asset = slot.asset;
+  const src = asset?.uri ? mediaAssetUrl(asset.uri) : null;
+  if (src && asset) {
+    if (asset.mime_type.startsWith("video/")) {
       return (
-        <video className="wiki-media-asset" controls src={src}>
+        <video
+          className="wiki-media-asset"
+          controls
+          src={src}
+        >
           Video preview is unavailable in this browser.
         </video>
       );
     }
-    return <img className="wiki-media-asset" src={src} alt={slot.title} />;
+    return (
+      <img
+        className="wiki-media-asset"
+        src={src}
+        alt={slot.title}
+        referrerPolicy="no-referrer"
+      />
+    );
   }
 
   if (slot.kind === "storyboard" || slot.kind === "video") {
@@ -190,12 +197,13 @@ function MediaPreview({ slot }: { slot: WikiMediaSlot }) {
 }
 
 function MediaStatus({ slot }: { slot: WikiMediaSlot }) {
+  const ready = Boolean(slot.asset?.uri && mediaAssetUrl(slot.asset.uri));
   return (
     <div className="wiki-media-status">
-      <span className={slot.asset ? "ready" : "planned"}>
-        {slot.asset ? "Asset generated" : "Ready to generate"}
+      <span className={ready ? "ready" : "planned"}>
+        {ready ? "Asset generated" : "Ready to generate"}
       </span>
-      {slot.asset?.model && <span className="mono">{slot.asset.model}</span>}
+      {ready && slot.asset?.model && <span className="mono">{slot.asset.model}</span>}
     </div>
   );
 }
@@ -209,12 +217,15 @@ function MultimodalMedia({
 }) {
   if (!slots.length) return null;
   const [primary, ...secondary] = slots;
+  const primaryAssetUrl = primary?.asset?.uri
+    ? mediaAssetUrl(primary.asset.uri)
+    : null;
 
   return (
     <section className="wiki-media" aria-labelledby="wiki-media-title">
       <div className="wiki-media-head">
         <div>
-          <h2 id="wiki-media-title">Multimodal view</h2>
+          <h2 id="wiki-media-title">Multimodal CodeWiki</h2>
           <p>
             Source-grounded diagrams, illustrations, and storyboard hooks for this wiki page.
           </p>
@@ -234,10 +245,10 @@ function MultimodalMedia({
             <h3>{primary.title}</h3>
             <p>{primary.purpose}</p>
             <MediaStatus slot={primary} />
-            {primary.asset?.uri && (
+            {primaryAssetUrl && (
               <a
                 className="wiki-media-open"
-                href={mediaAssetUrl(primary.asset.uri)}
+                href={primaryAssetUrl}
                 target="_blank"
                 rel="noreferrer"
               >
