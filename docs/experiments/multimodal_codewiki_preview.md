@@ -13,7 +13,7 @@ planned `media_slots`, and those slots can be materialized either by the local
 deterministic SVG fallback or by an OpenAI-compatible image endpoint. The local
 fallback is the easiest review path because it needs no paid VLM/image key.
 
-![Multimodal CodeWiki preview](../assets/multimodal-codewiki-preview.svg)
+![Multimodal CodeWiki preview](multimodal-codewiki-preview.svg)
 
 ## What reviewers should see
 

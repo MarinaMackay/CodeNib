@@ -3,6 +3,7 @@ SPDX-FileCopyrightText: 2025-2026 CodeNib Contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
+<!-- Internal experiment preview; excluded from the public MkDocs site. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="640" viewBox="0 0 1080 640" role="img" aria-label="Multimodal CodeWiki preview">
   <defs>
     <linearGradient id="page" x1="0" x2="1" y1="0" y2="1">
