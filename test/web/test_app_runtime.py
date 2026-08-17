@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,24 @@ from fastapi.testclient import TestClient
 
 import codenib.web.app as web_app
 import codenib.wiki.media_generation as media_generation
+from codenib.web.schemas import ChatRequest, ChatResponse
+
+
+def test_request_timing_header_and_slow_log_exclude_query(monkeypatch, caplog):
+    ticks = iter((10.0, 12.5))
+    monkeypatch.setattr(web_app, "perf_counter", lambda: next(ticks))
+
+    with caplog.at_level(logging.INFO, logger=web_app.logger.name):
+        response = TestClient(web_app.app).get("/api/health?secret=query")
+
+    assert response.headers["server-timing"] == "codenib;dur=2500.0"
+    app_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == web_app.logger.name
+    ]
+    assert "Slow API request: GET /api/health 2500.0 ms" in app_messages
+    assert all("secret=query" not in message for message in app_messages)
 
 
 def test_lifespan_injects_local_native_authority_resolver(monkeypatch):
@@ -59,6 +78,7 @@ def test_lifespan_injects_local_native_authority_resolver(monkeypatch):
     assert captured == {
         "config": config,
         "native_index_authorization_resolver": resolver,
+        "allow_missing_native_index_authorization": True,
         "loaded": True,
     }
 
@@ -78,6 +98,56 @@ def test_oversized_chat_request_is_rejected_before_runtime_lookup(monkeypatch):
     )
 
     assert response.status_code == 422
+
+
+def test_chat_maps_citations_off_loop_from_the_served_checkout(monkeypatch):
+    calls = []
+    runner_result = object()
+
+    class Runner:
+        def run(self, query, *, chat_history):
+            assert query == "Where is runtime?"
+            assert chat_history == []
+            return runner_result
+
+    bundle = SimpleNamespace(
+        entry=SimpleNamespace(
+            repo_dir="/served/checkout",
+            base_commit="a" * 40,
+        ),
+        runner=Runner(),
+        ensure_runtime=lambda: None,
+    )
+
+    class Registry:
+        def get(self, repo_id):
+            return bundle if repo_id == "repo" else None
+
+    def fake_mapping(result, *, repo_path, repo_commit):
+        assert result is runner_result
+        assert repo_path == "/served/checkout"
+        assert repo_commit == "a" * 40
+        return ChatResponse(answer="answer")
+
+    async def fake_to_thread(func, *args, **kwargs):
+        calls.append(func)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(web_app, "_registry", Registry)
+    monkeypatch.setattr(web_app, "agent_result_to_response", fake_mapping)
+    monkeypatch.setattr(web_app.asyncio, "to_thread", fake_to_thread)
+
+    response = asyncio.run(
+        web_app.chat(
+            ChatRequest(
+                repo_id="repo",
+                messages=[{"role": "user", "content": "Where is runtime?"}],
+            )
+        )
+    )
+
+    assert response.answer == "answer"
+    assert calls == [bundle.ensure_runtime, bundle.runner.run, fake_mapping]
 
 
 def test_wiki_generation_runs_off_event_loop(monkeypatch):
@@ -124,6 +194,30 @@ def test_wiki_generation_runs_off_event_loop(monkeypatch):
         },
     }
     assert calls == [("page_tree", ()), ("page", ("overview",))]
+
+
+def test_cached_wiki_tree_does_not_generate_a_missing_outline(monkeypatch):
+    calls = []
+
+    class Builder:
+        def cached_page_tree(self):
+            calls.append("cached_page_tree")
+            return None
+
+        def page_tree(self):
+            raise AssertionError("cached-only Wiki lookup must not generate")
+
+    monkeypatch.setattr(web_app, "_wiki", lambda _repo_id: Builder())
+    monkeypatch.setattr(
+        web_app,
+        "_bundle",
+        lambda _repo_id: SimpleNamespace(entry=SimpleNamespace(repo="org/repo")),
+    )
+
+    tree = asyncio.run(web_app.wiki_tree("repo", cached_only=True))
+
+    assert tree == {"repo": "org/repo", "pages": []}
+    assert calls == ["cached_page_tree"]
 
 
 def test_wiki_page_materializes_local_svg_media(tmp_path, monkeypatch):
@@ -186,6 +280,37 @@ def test_wiki_page_materializes_local_svg_media(tmp_path, monkeypatch):
     assert "sandbox" in asset_response.headers["content-security-policy"]
 
 
+def test_wiki_page_can_skip_media_materialization_for_preload(monkeypatch):
+    slot = {
+        "id": "overview-concept-illustration",
+        "kind": "image",
+        "prompt": "Draw the runtime.",
+    }
+
+    class Builder:
+        def page(self, page_id):
+            return {
+                "id": page_id,
+                "title": "Overview",
+                "markdown": "# Overview",
+                "citations": [],
+                "diagram": "",
+                "media_slots": [slot],
+            }
+
+    monkeypatch.setattr(web_app, "_wiki", lambda _repo_id: Builder())
+    monkeypatch.setattr(
+        web_app,
+        "_materialize_wiki_media",
+        lambda *_args: pytest.fail("read-only preload must not generate media"),
+    )
+
+    page = asyncio.run(web_app.wiki_page("demo", "overview", materialize_media=False))
+
+    assert page["media_slots"] == [slot]
+    assert "asset" not in page["media_slots"][0]
+
+
 def test_wiki_media_storage_keys_cannot_traverse_data_root(tmp_path):
     config = SimpleNamespace(data_dir=str(tmp_path))
     root = tmp_path / "wiki_media"
@@ -243,6 +368,34 @@ def test_wiki_media_materialization_does_not_swallow_memory_error(
         web_app._materialize_wiki_media(
             "demo", "overview", {"media_slots": [{"id": "asset"}]}
         )
+
+
+def test_wiki_page_graph_reports_why_the_graph_is_unavailable(monkeypatch):
+    class Builder:
+        def page_citations(self, page_id):
+            return []
+
+        def page(self, page_id):
+            raise AssertionError("page graph must not generate prose")
+
+    bundle = SimpleNamespace(
+        code_graph=lambda: None,
+        graph_unavailable_note=lambda: (
+            "Dependency graph uses schema 4, but this server requires schema 5."
+        ),
+    )
+    monkeypatch.setattr(web_app, "_wiki", lambda _repo_id: Builder())
+    monkeypatch.setattr(web_app, "_bundle", lambda _repo_id: bundle)
+
+    result = asyncio.run(web_app.wiki_page_graph("repo", "overview"))
+
+    assert result == {
+        "available": False,
+        "nodes": [],
+        "edges": [],
+        "mermaid": "",
+        "note": "Dependency graph uses schema 4, but this server requires schema 5.",
+    }
 
 
 def test_template_wiki_disables_narrator(tmp_path):

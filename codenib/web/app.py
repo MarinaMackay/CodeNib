@@ -24,6 +24,7 @@ import os
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path, PurePosixPath
+from time import perf_counter
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
@@ -99,6 +100,11 @@ async def lifespan(app: FastAPI):
     registry = RepoRegistry(
         config,
         native_index_authorization_resolver=authorize_local_manifest_vector,
+        # The Web demo may serve BM25 when a legacy/missing vector view cannot
+        # be authorized. The vector bytes are never opened on this path; strict
+        # authorization and integrity failures still fail closed once a v2
+        # source-bound capability is present.
+        allow_missing_native_index_authorization=True,
     )
     logger.info("Loading QA repos from %s ...", config.registry_path)
     registry.load_all()
@@ -128,6 +134,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_request_timing(request: Request, call_next):
+    """Expose backend time and log slow API paths without query contents."""
+
+    started_at = perf_counter()
+    response = await call_next(request)
+    duration_ms = (perf_counter() - started_at) * 1000
+    response.headers.append("Server-Timing", f"codenib;dur={duration_ms:.1f}")
+    if request.url.path.startswith("/api/") and duration_ms >= 2_000:
+        logger.info(
+            "Slow API request: %s %s %.1f ms",
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+    return response
 
 
 @app.exception_handler(RequestValidationError)
@@ -337,20 +361,33 @@ async def list_repos() -> list[RepoInfo]:
 
 
 @app.get("/api/repos/{repo_id}/wiki")
-async def wiki_tree(repo_id: str) -> dict:
+async def wiki_tree(repo_id: str, cached_only: bool = False) -> dict:
     builder = _wiki(repo_id)
-    pages = await asyncio.to_thread(builder.page_tree)
+    if cached_only:
+        cached_page_tree = getattr(builder, "cached_page_tree", None)
+        pages = (
+            await asyncio.to_thread(cached_page_tree)
+            if callable(cached_page_tree)
+            else None
+        )
+        pages = pages or []
+    else:
+        pages = await asyncio.to_thread(builder.page_tree)
     return {"repo": _bundle(repo_id).entry.repo, "pages": pages}
 
 
 @app.get("/api/repos/{repo_id}/wiki/{page_id}")
-async def wiki_page(repo_id: str, page_id: str) -> dict:
+async def wiki_page(
+    repo_id: str,
+    page_id: str,
+    materialize_media: bool = True,
+) -> dict:
     page = await asyncio.to_thread(_wiki(repo_id).page, page_id)
     if page is None:
         raise HTTPException(status_code=404, detail=f"Unknown wiki page: {page_id!r}")
     if "media_slots" not in page:
         page = {**page, "media_slots": []}
-    if page.get("media_slots"):
+    if materialize_media and page.get("media_slots"):
         page = await asyncio.to_thread(_materialize_wiki_media, repo_id, page_id, page)
     if "generation" not in page:
         page = {
@@ -399,17 +436,38 @@ async def wiki_page_graph(repo_id: str, page_id: str) -> dict:
     Lets a wiki page render as a *view over the graph* (subsystem symbols + how
     they connect), using the same ``{nodes, edges}`` payload as ``/codemap``.
     """
-    page = await asyncio.to_thread(_wiki(repo_id).page, page_id)
-    if page is None:
-        raise HTTPException(status_code=404, detail=f"Unknown wiki page: {page_id!r}")
+    builder = _wiki(repo_id)
+    page_citations = getattr(builder, "page_citations", None)
+    if callable(page_citations):
+        citations = await asyncio.to_thread(page_citations, page_id)
+        if citations is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown wiki page: {page_id!r}",
+            )
+    else:
+        # The deterministic WikiBuilder does not make a model call, so its
+        # existing page contract remains a safe compatibility fallback.
+        page = await asyncio.to_thread(builder.page, page_id)
+        if page is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown wiki page: {page_id!r}",
+            )
+        citations = page.get("citations", []) if isinstance(page, dict) else []
     bundle = _bundle(repo_id)
     graph = await asyncio.to_thread(bundle.code_graph)
     if graph is None:
-        return {"available": False, "nodes": [], "edges": [], "mermaid": ""}
+        return {
+            "available": False,
+            "nodes": [],
+            "edges": [],
+            "mermaid": "",
+            "note": bundle.graph_unavailable_note(),
+        }
     from .codemap import build_page_subgraph
 
     hierarchy_graph = await asyncio.to_thread(bundle.hierarchical_graph)
-    citations = page.get("citations", []) if isinstance(page, dict) else []
     return await asyncio.to_thread(
         build_page_subgraph,
         graph,
@@ -677,8 +735,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
         logger.error("agent run failed for %r: %s", req.repo_id, exc, exc_info=True)
         raise HTTPException(status_code=500, detail="agent run failed") from exc
 
-    return agent_result_to_response(
-        result, repo_path=getattr(bundle.manifest, "repo_path", "")
+    return await asyncio.to_thread(
+        agent_result_to_response,
+        result,
+        repo_path=getattr(bundle.entry, "repo_dir", ""),
+        repo_commit=getattr(bundle.entry, "base_commit", ""),
     )
 
 

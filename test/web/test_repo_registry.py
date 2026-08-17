@@ -4,6 +4,9 @@
 
 """Tests for per-repo skill-registry isolation, config, and the QA registry."""
 
+import pickle
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 from types import SimpleNamespace
 
 import pytest
@@ -63,6 +66,8 @@ def test_ask_prompt_requires_resolving_discovered_identifiers():
     assert "targeted search" in _DEMO_SYSTEM_PROMPT
     assert "exact identifier and defining file" in _DEMO_SYSTEM_PROMPT
     assert "unresolved candidate identifier" in _DEMO_SYSTEM_PROMPT
+    assert "combine every unresolved identifier" in _DEMO_SYSTEM_PROMPT
+    assert "under 500 words" in _DEMO_SYSTEM_PROMPT
 
 
 def test_bundle_loads_views_without_constructing_agent_runtime():
@@ -84,6 +89,35 @@ def test_bundle_loads_views_without_constructing_agent_runtime():
     bundle.ensure_runtime()
 
     assert calls == [("views", bundle), ("runtime", bundle)]
+
+
+def test_bundle_can_release_and_reload_maintenance_views():
+    calls = []
+
+    class Vector:
+        def close(self):
+            calls.append("closed")
+
+    def load_views(target):
+        calls.append("loaded")
+        target.vector_store = Vector()
+        target.bm25 = object()
+
+    bundle = RepoBundle(
+        entry=SimpleNamespace(),
+        manifest=SimpleNamespace(),
+        view_loader=load_views,
+        runtime_loader=lambda _target: None,
+    )
+
+    bundle.ensure_views()
+    assert bundle.release_views() is True
+    assert bundle.vector_store is None
+    assert bundle.bm25 is None
+
+    bundle.ensure_views()
+
+    assert calls == ["loaded", "closed", "loaded"]
 
 
 def test_bundle_reports_indexed_source_files_instead_of_repository_files():
@@ -231,6 +265,79 @@ def test_bundle_accepts_legacy_graph_beside_current_vector_view(tmp_path):
     assert bundle._graph_path() == str(graph_path)
 
 
+def test_bundle_explains_schema_mismatch_without_advertising_codemap(
+    tmp_path, monkeypatch
+):
+    graph_dir = tmp_path / "symbol_graph"
+    graph_dir.mkdir()
+    with (graph_dir / "graph.pkl").open("wb") as handle:
+        pickle.dump({"schema_version": 4}, handle)
+    bundle = RepoBundle(
+        entry=SimpleNamespace(
+            instance_id="org__repo",
+            repo="org/repo",
+            commit_short="abc12345",
+            base_commit="abc123456789",
+            language="python",
+            problem_statement="",
+            repo_dir=str(tmp_path),
+        ),
+        manifest=SimpleNamespace(
+            capabilities={"symbol_navigation": True},
+            languages=["python"],
+            file_count=1,
+            source_fingerprint="",
+            indexes={
+                "symbol_graph": SimpleNamespace(
+                    status="fresh",
+                    commit="abc123456789",
+                    path=str(graph_dir),
+                    metadata={},
+                )
+            },
+            commit="abc123456789",
+        ),
+    )
+
+    def reject_old_graph(_path):
+        raise ValueError(
+            "graph.pkl at /private/index has schema_version=4, expected 5. Rebuild."
+        )
+
+    monkeypatch.setattr(
+        "codenib.graph.code_graph.CodeGraph.load_graph", reject_old_graph
+    )
+    monkeypatch.setattr("codenib.web.repo_registry.find_spec", lambda _name: object())
+
+    assert bundle.info().capabilities["codemap"] is False
+    assert bundle.graph_unavailable_note() == (
+        "Dependency graph uses schema 4, but this server requires schema 5. "
+        "Rebuild symbol_graph for this repository."
+    )
+    assert bundle.code_graph() is None
+    assert bundle.graph_unavailable_note() == (
+        "Dependency graph uses schema 4, but this server requires schema 5. "
+        "Rebuild symbol_graph for this repository."
+    )
+    assert bundle.info().capabilities["codemap"] is False
+
+
+def test_bundle_graph_diagnostic_does_not_import_optional_igraph(monkeypatch):
+    bundle = RepoBundle(
+        entry=SimpleNamespace(),
+        manifest=SimpleNamespace(indexes={}),
+    )
+    monkeypatch.setattr(
+        "codenib.web.repo_registry.find_spec",
+        lambda name: None if name == "igraph" else object(),
+    )
+
+    assert bundle.graph_unavailable_note() == (
+        "Dependency graph support is unavailable. Install CodeNib with the "
+        "graph extra to inspect symbol_graph artifacts."
+    )
+
+
 def test_config_index_types_for_mode():
     assert QAConfig(mode="sparse").index_types() == ["bm25"]
     assert QAConfig(mode="hybrid").index_types() == ["bm25", "vector"]
@@ -328,6 +435,56 @@ def test_repo_views_keep_bm25_only_for_explicit_optional_authority_policy(
     assert bundle.vector_store is None
 
 
+@pytest.mark.parametrize(
+    "source_fingerprint",
+    ["", f"sha256:{'a' * 64}"],
+)
+def test_repo_views_keep_bm25_only_for_legacy_source_fingerprint(
+    monkeypatch,
+    source_fingerprint,
+):
+    class FakeBM25:
+        def load_index(self, path):
+            self.path = path
+
+    monkeypatch.setattr(
+        "codenib.index.sparse_idx.bm25_index.BM25CodeIndexer",
+        FakeBM25,
+    )
+    monkeypatch.setattr(
+        "codenib.web.repo_registry.require_bm25_manifest_artifact",
+        lambda _entry: None,
+    )
+    monkeypatch.setattr(
+        "codenib.web.repo_registry._vector_store_type",
+        lambda: pytest.fail(
+            "legacy vector must be skipped before model initialization"
+        ),
+    )
+
+    def unexpected_resolver(_repo_entry, _manifest, _vector_entry):
+        pytest.fail("legacy vector must be skipped before authorization")
+
+    bm25_entry = SimpleNamespace(path="/idx/bm25", config={})
+    vector_entry = SimpleNamespace(path="/idx/vector", config={})
+    manifest = SimpleNamespace(
+        source_fingerprint=source_fingerprint,
+        indexes={"bm25": bm25_entry, "vector": vector_entry},
+        index_is_current=lambda _index_type: True,
+    )
+    bundle = SimpleNamespace(entry=SimpleNamespace(), manifest=manifest)
+    registry = RepoRegistry(
+        QAConfig(mode="hybrid"),
+        native_index_authorization_resolver=unexpected_resolver,
+        allow_missing_native_index_authorization=True,
+    )
+
+    registry._load_repo_views(bundle)
+
+    assert bundle.bm25.path == "/idx/bm25"
+    assert bundle.vector_store is None
+
+
 @pytest.mark.parametrize("resolver_kind", ["missing", "declines"])
 def test_repo_views_fail_closed_when_required_authority_is_missing(
     monkeypatch,
@@ -385,6 +542,7 @@ def test_repo_views_propagate_resolver_rejection_before_model_initialization(
 
     vector_entry = SimpleNamespace(path="/idx/vector", config={})
     manifest = SimpleNamespace(
+        source_fingerprint=f"sha256-v2:{'a' * 64}",
         indexes={"vector": vector_entry},
         index_is_current=lambda _index_type: True,
     )
@@ -405,6 +563,7 @@ def test_repo_views_propagate_vector_integrity_failures(
 ):
     vector_entry = SimpleNamespace(path="/idx/vector", config={})
     manifest = SimpleNamespace(
+        source_fingerprint=f"sha256-v2:{'b' * 64}",
         indexes={"vector": vector_entry},
         index_is_current=lambda _index_type: True,
     )
@@ -702,6 +861,67 @@ def test_vector_store_uses_provider_config_and_reuses_client(
     assert first.kwargs["api_key"] == "secret"
     assert first.kwargs["dimension"] == 768
     assert second.kwargs["embedding"] is first.embedding
+
+
+def test_concurrent_vector_loads_initialize_shared_embedding_once(
+    monkeypatch,
+    native_authorization,
+):
+    first_load_started = Event()
+    allow_first_load = Event()
+    duplicate_construction = Event()
+    construction_lock = Lock()
+    cold_embeddings = []
+
+    class FakeVectorStore:
+        def __init__(self, **kwargs):
+            embedding = kwargs.get("embedding")
+            if embedding is None:
+                embedding = object()
+                with construction_lock:
+                    cold_embeddings.append(embedding)
+                    if len(cold_embeddings) > 1:
+                        duplicate_construction.set()
+            self.embedding = embedding
+
+        def load(self, _path, **_kwargs):
+            if not first_load_started.is_set():
+                first_load_started.set()
+                assert allow_first_load.wait(timeout=2)
+
+    monkeypatch.setattr(
+        "codenib.web.repo_registry._vector_store_type",
+        lambda: FakeVectorStore,
+    )
+    registry = RepoRegistry(QAConfig(embedding_provider="huggingface"))
+    entry = SimpleNamespace(
+        path="/tmp/vector",
+        config={
+            "embedding_model": "vendor/model",
+            "embedding_provider": "huggingface",
+            "embedding_dimension": 384,
+        },
+    )
+
+    def load():
+        return registry._load_vector_store(
+            entry,
+            native_index_authorization=native_authorization,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(load)
+        assert first_load_started.wait(timeout=2)
+        second_future = executor.submit(load)
+        try:
+            assert not duplicate_construction.wait(timeout=0.2)
+        finally:
+            allow_first_load.set()
+        first = first_future.result(timeout=2)
+        second = second_future.result(timeout=2)
+
+    assert cold_embeddings == [first.embedding]
+    assert second.embedding is first.embedding
 
 
 def test_vector_load_failure_does_not_publish_embedding_and_retains_cleanup_owner(

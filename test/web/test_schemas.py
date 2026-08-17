@@ -290,6 +290,109 @@ def test_citations_fall_back_to_five_retrieval_results():
     ]
 
 
+def test_citations_embed_exact_live_source_and_drop_empty_tabs(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "runtime.py").write_text(
+        "# heading\ndef load_runtime():\n    return 'ready'\n",
+        encoding="utf-8",
+    )
+    result = AgentResult(
+        answer=(
+            "`load_runtime()` is implemented in `src/runtime.py`; "
+            "`missing_runtime()` is not in this checkout."
+        ),
+        tool_calls=[
+            ToolCallRecord(
+                "1",
+                "repository_search",
+                {},
+                result=[
+                    _node(
+                        "src/runtime.py",
+                        1,
+                        2,
+                        "src/runtime.py:load_runtime()",
+                    ),
+                    _node(
+                        "src/missing.py",
+                        1,
+                        2,
+                        "src/missing.py:missing_runtime()",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    response = agent_result_to_response(result, repo_path=str(tmp_path))
+
+    assert len(response.citations) == 1
+    assert response.citations[0].file == "src/runtime.py"
+    assert response.citations[0].start_line == 2
+    assert response.citations[0].end_line == 3
+    assert response.citations[0].content == (
+        "def load_runtime():\n    return 'ready'\n"
+    )
+
+
+def test_citations_read_from_the_indexed_commit_instead_of_live_source(
+    monkeypatch,
+):
+    commit = "a" * 40
+    calls = []
+
+    def snapshot_slice(repo_path, repo_commit, file, start, end):
+        calls.append((repo_path, repo_commit, file, start, end))
+        return {
+            "file": file,
+            "start_line": start,
+            "end_line": end,
+            "content": "def indexed_runtime():\n    return 'snapshot'\n",
+        }
+
+    def reject_live_read(*_args, **_kwargs):
+        raise AssertionError("chat citation read from the mutable checkout")
+
+    monkeypatch.setattr(
+        "codenib.web.schemas.git_source_slice",
+        snapshot_slice,
+    )
+    monkeypatch.setattr(
+        "codenib.web.schemas.live_source_slice",
+        reject_live_read,
+    )
+    result = AgentResult(
+        answer="`indexed_runtime()` is implemented in `src/runtime.py`.",
+        tool_calls=[
+            ToolCallRecord(
+                "1",
+                "repository_search",
+                {},
+                result=[
+                    _node(
+                        "src/runtime.py",
+                        1,
+                        2,
+                        "src/runtime.py:indexed_runtime()",
+                    )
+                ],
+            )
+        ],
+    )
+
+    response = agent_result_to_response(
+        result,
+        repo_path="/served/checkout",
+        repo_commit=commit,
+    )
+
+    assert calls == [("/served/checkout", commit, "src/runtime.py", 2, 3)]
+    assert response.citations[0].content == (
+        "def indexed_runtime():\n    return 'snapshot'\n"
+    )
+
+
 def test_plain_prose_does_not_match_a_generic_main_symbol():
     result = AgentResult(
         answer="The main entry point delegates to `index_repository()`.",

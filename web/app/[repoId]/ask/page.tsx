@@ -8,11 +8,14 @@ import CodePanel from "@/components/CodePanel";
 import {
   askQuestion,
   fetchRepos,
+  fetchWikiTree,
   type ChatMessage,
   type ChatResponse,
   type RepoInfo,
+  type WikiPageRef,
 } from "@/lib/api";
 import { codeRefs } from "@/lib/citations";
+import { relatedWikiPages } from "@/lib/relatedWiki";
 import { AppLink } from "@/lib/router";
 
 // DeepWiki clamps the question to ~200 chars before "Show full text".
@@ -29,17 +32,48 @@ function AskAnswer({ repoId, query }: { repoId: string; query: string }) {
   const q = query.trim();
 
   const [repo, setRepo] = useState<RepoInfo | null>(null);
+  const [wikiPages, setWikiPages] = useState<WikiPageRef[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingSeconds, setLoadingSeconds] = useState(0);
   // Bumped whenever the thread resets so in-flight answers from a previous
   // conversation can't land in the new one.
   const genRef = useRef(0);
 
   useEffect(() => {
+    let cancelled = false;
+    setWikiPages([]);
     fetchRepos()
-      .then((rs) => setRepo(rs.find((r) => r.id === repoId) ?? null))
+      .then((rs) => {
+        if (!cancelled) setRepo(rs.find((r) => r.id === repoId) ?? null);
+      })
       .catch(() => {});
+    // Related links are optional here. Ask must never trigger an outline model
+    // call merely because the page was opened.
+    fetchWikiTree(repoId, { cachedOnly: true })
+      .then((tree) => {
+        if (!cancelled) setWikiPages(tree.pages ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setWikiPages([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [repoId]);
+
+  useEffect(() => {
+    if (!loading) {
+      setLoadingSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = window.setInterval(
+      () => setLoadingSeconds(Math.floor((Date.now() - startedAt) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [loading]);
 
   // Append a turn and fetch its answer. The request carries the prior turns
   // plus this question as the final user message (DeepWiki-style) so the agent
@@ -99,6 +133,18 @@ function AskAnswer({ repoId, query }: { repoId: string; query: string }) {
   const turnRefs = useMemo(
     () => turns.map((t) => codeRefs(t.resp?.citations ?? [])),
     [turns]
+  );
+  const relatedByTurn = useMemo(
+    () =>
+      turns.map((turn, index) =>
+        relatedWikiPages(
+          wikiPages,
+          turn.q,
+          turn.resp?.answer ?? "",
+          turnRefs[index] ?? [],
+        ),
+      ),
+    [turns, turnRefs, wikiPages],
   );
   // Which turn's citations the code pane shows + the highlighted one.
   const [activeTurn, setActiveTurn] = useState(0);
@@ -191,7 +237,19 @@ function AskAnswer({ repoId, query }: { repoId: string; query: string }) {
                 )}
 
                 {!t.resp && !t.err && (
-                  <p className="muted ask-thinking">Searching {repoName}…</p>
+                  <div className="muted ask-thinking" role="status" aria-live="polite">
+                    <div>
+                      {loadingSeconds < 5
+                        ? `Searching ${repoName}…`
+                        : "Reviewing retrieved code and refining the answer…"}
+                    </div>
+                    {loadingSeconds >= 5 && (
+                      <div className="ask-thinking-detail">
+                        Multi-step agent run
+                        <span className="mono"> · {loadingSeconds}s</span>
+                      </div>
+                    )}
+                  </div>
                 )}
                 {t.err && (
                   <p className="muted">
@@ -208,6 +266,22 @@ function AskAnswer({ repoId, query }: { repoId: string; query: string }) {
                         {t.resp.answer || "(no answer)"}
                       </Markdown>
                     </article>
+                    {relatedByTurn[i]?.length > 0 && (
+                      <nav className="ask-related" aria-label="Related Wiki pages">
+                        <span className="ask-related-label">Related wiki</span>
+                        {relatedByTurn[i].map((related) => (
+                          <AppLink
+                            className="ask-related-link"
+                            href={`/${encodeURIComponent(repoId)}?p=${encodeURIComponent(related.id)}`}
+                            key={related.id}
+                            title={related.breadcrumb}
+                          >
+                            {related.title}
+                            <span aria-hidden> →</span>
+                          </AppLink>
+                        ))}
+                      </nav>
+                    )}
                     <div className="ask-tools muted small">
                       {t.resp.tool_calls.length} tool calls · {t.resp.total_turns}{" "}
                       turns · {Math.round(t.resp.total_duration_ms)} ms ·{" "}
@@ -230,6 +304,7 @@ function AskAnswer({ repoId, query }: { repoId: string; query: string }) {
               commit={repo?.base_commit}
               active={active}
               onSelect={(i) => selectCitation(activeTurn, i)}
+              onVisibleChange={setActive}
               scrollSignal={scrollSignal}
             />
           </aside>

@@ -131,8 +131,10 @@ pre {
   /* Match the page gutter below so the brand aligns with the left rail. */
   padding: 0 clamp(24px, 4vw, 80px);
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
-  backdrop-filter: blur(12px);
+  /* Sticky chrome can pass over prose and source while the page scrolls. It
+     must be fully opaque or comments remain visible through its labels. */
+  background: var(--bg-surface);
+  backdrop-filter: none;
 }
 .site-header .brand {
   display: flex;
@@ -657,7 +659,9 @@ pre {
   font-size: 13.5px;
 }
 .toc-link {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 7px;
   width: 100%;
   text-align: left;
   background: transparent;
@@ -672,6 +676,28 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
   transition: background-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+}
+.toc-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.toc-cache-state {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 999px;
+  background: var(--border);
+}
+.toc-cache-state.ready {
+  background: #42a36b;
+}
+.toc-cache-state.retryable {
+  background: #d99928;
+}
+.toc-cache-state.degraded {
+  background: #c35b43;
 }
 .toc-link:hover {
   background: var(--bg-subtle);
@@ -784,6 +810,40 @@ pre {
   font-size: 12px;
   color: var(--muted);
   margin-bottom: 8px;
+}
+
+.page-load-error {
+  color: #b3541e;
+  background: rgba(240, 136, 62, 0.08);
+  border: 1px solid rgba(240, 136, 62, 0.3);
+  border-radius: 10px;
+  padding: 12px 16px;
+}
+.page-load-error p {
+  margin: 0;
+}
+.page-load-error-detail {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.page-loading-state {
+  border-left: 3px solid var(--accent);
+  padding: 10px 14px;
+  color: var(--text);
+}
+.page-loading-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.page-loading-detail,
+.ask-thinking-detail {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .wiki-modeswitch {
@@ -1547,6 +1607,37 @@ pre {
 }
 .ask-tools {
   margin-top: 16px;
+}
+.ask-related {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.ask-related-label {
+  margin-right: 2px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ask-related-link {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-decoration: none;
+}
+.ask-related-link:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  text-decoration: none;
 }
 
 /* ===== Codemap mode (dependency / call graph) ===== */
@@ -3123,7 +3214,10 @@ a.evidence-row:hover {
 .ask-code {
   position: sticky;
   top: var(--top-h);
-  height: calc(100vh - var(--top-h));
+  /* The fixed composer owns the bottom strip of the viewport. Keeping the
+     source pane above it means its last lines remain readable and clickable. */
+  height: calc(100vh - var(--top-h) - var(--askbar-h));
+  height: calc(100dvh - var(--top-h) - var(--askbar-h));
   overflow: hidden;
   background: #ffffff;
   display: flex;
@@ -3703,6 +3797,9 @@ a.codepanel-name:hover {
   padding: 40px;
 }
 .codepane-nav {
+  position: relative;
+  z-index: 2;
+  isolation: isolate;
   flex: 0 0 auto;
   display: flex;
   gap: 5px;
@@ -3740,13 +3837,16 @@ a.codepanel-name:hover {
 .frag {
   border-bottom: 1px solid var(--border);
 }
-/* Selected fragment: a blue band across the whole cited range (DeepWiki-style).
-   The code's own backgrounds are made transparent so the tint shows through. */
+/* Selected fragment: an opaque blue surface across the cited range. Keeping
+   alpha out of this scrolling layer prevents comments beneath a moving source
+   label from visually bleeding through it. */
 .frag.active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: var(--code-line-active);
   box-shadow: inset 3px 0 var(--accent);
 }
-.frag.active .hl-code,
+.frag.active .hl-code {
+  background: var(--code-line-active);
+}
 .frag.active .hl-pre,
 .frag.active .hl-gutter {
   background: transparent;
@@ -3754,10 +3854,14 @@ a.codepanel-name:hover {
 .frag-head {
   position: sticky;
   top: 0;
-  z-index: 1;
+  /* `.hl-pre` and `.hl-gutter` are positioned at z-index: 1. Keep the whole
+     sticky source label above them so code cannot paint through its surface. */
+  z-index: 3;
+  isolation: isolate;
   padding: 8px 14px;
-  background: var(--surface-2);
+  background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 var(--border);
   display: flex;
   flex-direction: column;
   gap: 2px;

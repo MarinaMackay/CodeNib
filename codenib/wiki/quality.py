@@ -15,6 +15,7 @@ from .evidence import (
     describes_private_entry,
     evidence_matches_claim,
     infer_claim_role,
+    is_entry_only_section_title,
     is_interaction_claim,
     is_internal_wiki_navigation,
     promotional_phrases,
@@ -46,6 +47,31 @@ _REFERENCE_NARRATION = re.compile(
     re.IGNORECASE,
 )
 _FRAMING_SECTION_TITLES = frozenset({"purpose and scope", "at a glance"})
+_PROTECTED_SENTENCE_FRAGMENT = re.compile(
+    r"`[^`\n]*`|(?<!\w)'[^'\n]+'(?!\w)|(?<!\w)\"[^\"\n]+\"(?!\w)|"
+    r"\b(?:e\.g|i\.e|vs|etc)\.",
+    re.IGNORECASE,
+)
+_SENTENCE_LITERAL_TRANSLATION = str.maketrans(
+    {".": "\ue000", "!": "\ue001", "?": "\ue002"}
+)
+_SENTENCE_LITERAL_RESTORE = str.maketrans({"\ue000": ".", "\ue001": "!", "\ue002": "?"})
+
+
+def sentence_boundary_count(text: str) -> int:
+    """Count prose sentence endings without treating literals as prose.
+
+    Fact-plan claims routinely describe prompts such as ``'Overwrite? (y/N):'``
+    or code containing punctuation.  Those literals belong to the surrounding
+    sentence; counting their punctuation as another sentence creates an
+    impossible repair loop for otherwise valid source-backed claims.
+    """
+
+    scrubbed = _PROTECTED_SENTENCE_FRAGMENT.sub(
+        lambda match: re.sub(r"[.!?]", "", match.group(0)),
+        text or "",
+    )
+    return len(re.findall(r"[.!?](?=\s|$)", scrubbed))
 
 
 def _without_internal_wiki_navigation(markdown: str) -> str:
@@ -91,8 +117,13 @@ def _prose_sentences(markdown: str) -> list[str]:
         without_fences,
         flags=re.MULTILINE,
     )
+    protected = _PROTECTED_SENTENCE_FRAGMENT.sub(
+        lambda match: match.group(0).translate(_SENTENCE_LITERAL_TRANSLATION),
+        without_headings,
+    )
     sentences = []
-    for sentence in re.split(r"(?<=[.!?])\s+", without_headings):
+    for sentence in re.split(r"(?<=[.!?])\s+", protected):
+        sentence = sentence.translate(_SENTENCE_LITERAL_RESTORE)
         cleaned = _EVIDENCE_MARKER.sub("", sentence)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         plain = re.sub(r"[`*_[\]()#>-]", "", cleaned).strip()
@@ -165,6 +196,24 @@ def leading_code_subject(text: str) -> str:
     return re.sub(r"\([^)]*\)$", "", match.group(1)).casefold()
 
 
+def leading_parallel_subject(text: str) -> str:
+    """Return a short subject from a leading ``For ...`` comparison clause."""
+
+    match = re.match(r"^\s*for\s+([a-z][a-z0-9_-]*)\b", text, re.IGNORECASE)
+    return match.group(1).casefold() if match else ""
+
+
+def leading_condition_terms(text: str) -> set[str]:
+    """Return normalized terms from a leading conditional clause."""
+
+    match = re.match(
+        r"^\s*(?:if|unless|when|while)\s+(.+?)(?:,\s|$)",
+        text,
+        re.IGNORECASE,
+    )
+    return redundancy_terms(match.group(1)) if match else set()
+
+
 def duplicate_prose_blocks(markdown: str) -> List[List[int]]:
     """Find paragraph pairs where one largely restates the other."""
 
@@ -175,6 +224,7 @@ def duplicate_prose_blocks(markdown: str) -> List[List[int]]:
     )
     terms = []
     subjects = []
+    identifiers = []
     for raw in re.split(r"\n\s*\n", without_fences):
         block = raw.strip()
         if not block or block.startswith("#"):
@@ -183,6 +233,12 @@ def duplicate_prose_blocks(markdown: str) -> List[List[int]]:
         if len(block_terms) >= 6:
             terms.append(block_terms)
             subjects.append(leading_code_subject(block))
+            identifiers.append(
+                {
+                    re.sub(r"\([^)]*\)$", "", item).casefold()
+                    for item in re.findall(r"`([^`\n]+)`", block)
+                }
+            )
 
     duplicates: List[List[int]] = []
     for left in range(len(terms)):
@@ -192,7 +248,23 @@ def duplicate_prose_blocks(markdown: str) -> List[List[int]]:
             distinct_named_subjects = bool(
                 subjects[left] and subjects[right] and subjects[left] != subjects[right]
             )
-            if overlap >= 0.85 and not distinct_named_subjects:
+            named_elaboration = bool(
+                (not identifiers[left] and len(identifiers[right]) >= 2)
+                or (not identifiers[right] and len(identifiers[left]) >= 2)
+            )
+            expanded_named_context = bool(
+                identifiers[left]
+                and identifiers[right]
+                and identifiers[left] != identifiers[right]
+                and max(len(terms[left]), len(terms[right]))
+                >= min(len(terms[left]), len(terms[right])) + 8
+            )
+            if (
+                overlap >= 0.85
+                and not distinct_named_subjects
+                and not named_elaboration
+                and not expanded_named_context
+            ):
                 duplicates.append([left + 1, right + 1])
     return duplicates
 
@@ -254,8 +326,14 @@ def section_narrative_report(markdown: str) -> dict[str, Any]:
         re.finditer(r"^##\s+(.+?)\s*$", without_fences, flags=re.MULTILINE)
     )
     intro_end = section_matches[0].start() if section_matches else len(without_fences)
-    intro_terms = prose_terms(without_fences[:intro_end])
-    prior = [("intro", intro_terms)]
+    intro_body = without_fences[:intro_end]
+    intro_terms = prose_terms(intro_body)
+    intro_subjects = {
+        subject
+        for sentence in _prose_sentences(intro_body)
+        if (subject := leading_code_subject(sentence))
+    }
+    prior = [("intro", intro_terms, intro_subjects)]
     redundant_sections: List[str] = []
     comparisons: dict[str, dict[str, Any]] = {}
 
@@ -266,12 +344,20 @@ def section_narrative_report(markdown: str) -> dict[str, Any]:
             else len(without_fences)
         )
         title = match.group(1).strip()
-        terms = prose_terms(without_fences[match.end() : end])
+        body = without_fences[match.end() : end]
+        terms = prose_terms(body)
+        subjects = {
+            subject
+            for sentence in _prose_sentences(body)
+            if (subject := leading_code_subject(sentence))
+        }
         best_against = ""
         best_overlap = 0.0
-        for prior_title, prior_terms in prior:
+        for prior_title, prior_terms, prior_subjects in prior:
             smaller = min(len(terms), len(prior_terms))
             overlap = len(terms & prior_terms) / smaller if smaller >= 6 else 0.0
+            if subjects and prior_subjects and subjects.isdisjoint(prior_subjects):
+                overlap = 0.0
             if overlap > best_overlap:
                 best_against = prior_title
                 best_overlap = overlap
@@ -281,7 +367,7 @@ def section_narrative_report(markdown: str) -> dict[str, Any]:
         }
         if best_overlap >= 0.8:
             redundant_sections.append(title)
-        prior.append((title, terms))
+        prior.append((title, terms, subjects))
 
     return {
         "redundant_sections": redundant_sections,
@@ -381,6 +467,17 @@ def section_sentence_redundancy_report(markdown: str) -> dict[str, Any]:
             for sentence in sentences
         ]
         subjects = [leading_code_subject(sentence) for sentence in sentences]
+        parallel_subjects = [
+            leading_parallel_subject(sentence) for sentence in sentences
+        ]
+        interactions = [is_interaction_claim(sentence) for sentence in sentences]
+        conditional_terms = [
+            leading_condition_terms(sentence) for sentence in sentences
+        ]
+        conditional_negations = [
+            bool(item & {"invalid", "never", "no", "not", "without"})
+            for item in conditional_terms
+        ]
         for left in range(len(sentences)):
             for right in range(left + 1, len(sentences)):
                 smaller = min(len(terms[left]), len(terms[right]))
@@ -399,10 +496,60 @@ def section_sentence_redundancy_report(markdown: str) -> dict[str, Any]:
                     and subjects[right]
                     and subjects[left] != subjects[right]
                 )
+                distinct_parallel_subjects = bool(
+                    parallel_subjects[left]
+                    and parallel_subjects[right]
+                    and parallel_subjects[left] != parallel_subjects[right]
+                )
+                distinct_code_subjects = bool(
+                    identifiers[left]
+                    and identifiers[right]
+                    and identifiers[left].isdisjoint(identifiers[right])
+                )
+                distinct_named_details = bool(
+                    identifiers[left]
+                    and identifiers[right]
+                    and len(identifiers[left] ^ identifiers[right]) >= 2
+                )
+                named_sentence_elaboration = bool(
+                    (
+                        not identifiers[left]
+                        and identifiers[right]
+                        and len(terms[right]) >= len(terms[left]) + 4
+                    )
+                    or (
+                        not identifiers[right]
+                        and identifiers[left]
+                        and len(terms[left]) >= len(terms[right]) + 4
+                    )
+                )
+                # A handoff and a local responsibility can legitimately name
+                # the same subject and data. Treating their shared vocabulary
+                # as a duplicate rejects useful workflow prose such as "calls
+                # print_file_ranges" followed by how diff ranges are built.
+                distinct_claim_kinds = interactions[left] != interactions[right]
+                distinct_conditional_kinds = bool(conditional_terms[left]) != bool(
+                    conditional_terms[right]
+                )
+                distinct_conditional_branches = bool(
+                    conditional_terms[left]
+                    and conditional_terms[right]
+                    and (
+                        len(conditional_terms[left] ^ conditional_terms[right]) >= 2
+                        or conditional_negations[left] != conditional_negations[right]
+                    )
+                )
                 if (
                     overlap >= 0.7
                     and not distinct_handoffs
                     and not distinct_named_subjects
+                    and not distinct_parallel_subjects
+                    and not distinct_code_subjects
+                    and not distinct_named_details
+                    and not named_sentence_elaboration
+                    and not distinct_claim_kinds
+                    and not distinct_conditional_kinds
+                    and not distinct_conditional_branches
                 ):
                     repetitions.append(
                         {
@@ -440,11 +587,7 @@ def prose_integrity_report(markdown: str) -> dict[str, Any]:
         re.finditer(r"^##\s+(.+?)\s*$", without_citations, flags=re.MULTILINE)
     )
     for index, match in enumerate(section_matches):
-        if not re.search(
-            r"\b(?:public|entry\s+points?)\b",
-            match.group(1),
-            re.IGNORECASE,
-        ):
+        if not is_entry_only_section_title(match.group(1)):
             continue
         end = (
             section_matches[index + 1].start()
@@ -516,7 +659,7 @@ def plan_narrative_report(
     }
     for claim in claims:
         statement = str(claim.get("statement") or "")
-        if len(re.findall(r"[.!?](?=\s|$)", statement)) > 1:
+        if sentence_boundary_count(statement) > 1:
             multi_sentence_claims.append(statement)
         role = str(claim.get("role") or infer_claim_role(statement))
         roles[role] = roles.get(role, 0) + 1
@@ -548,8 +691,8 @@ def plan_narrative_report(
                     (relation_backed and relation_stated)
                     or (
                         not relation_backed
-                        and not known_relation_pair
                         and source_stated
+                        and (not require_relation_backing or not known_relation_pair)
                     )
                 )
             else:
@@ -572,7 +715,7 @@ def plan_narrative_report(
     thesis_statement = (
         str(thesis.get("statement") or "") if isinstance(thesis, dict) else ""
     )
-    thesis_sentence_count = len(re.findall(r"[.!?](?=\s|$)", thesis_statement))
+    thesis_sentence_count = sentence_boundary_count(thesis_statement)
     thesis_grounded = bool(
         isinstance(thesis, dict)
         and thesis_statement.strip()
@@ -580,7 +723,9 @@ def plan_narrative_report(
     )
     component_claims = roles.get("component", 0)
     component_ratio = component_claims / len(claims) if claims else 0.0
-    component_dominated = bool(len(claims) >= 4 and component_ratio > 0.65)
+    component_dominated = bool(
+        len(claims) >= 4 and component_ratio > 0.65 and supported_interactions == 0
+    )
     return {
         "claim_roles": roles,
         "supported_interaction_claims": supported_interactions,
@@ -597,7 +742,6 @@ def plan_narrative_report(
             or private_entry_claims
             or multi_sentence_claims
             or thesis_sentence_count > 1
-            or component_dominated
         ),
         "thesis_grounded": thesis_grounded,
     }
@@ -710,6 +854,7 @@ def page_quality_report(
         and integrity_report["prose_integrity_valid"]
         and sentence_report["sentence_redundancy_valid"]
         and plan_report["plan_role_integrity_valid"]
+        and (not require_dense_sections or not plan_report["component_dominated"])
         and (not require_grounded_thesis or plan_report["thesis_grounded"])
         and source_evidence_count >= minimum_source_evidence
         and not missing_claim_roles
@@ -786,8 +931,10 @@ def audit_page(page: dict[str, Any]) -> dict[str, Any]:
             and not duplicate_blocks
         )
     require_novelty = page.get("id") == "overview"
-    require_interaction = bool(
-        quality.get("require_interaction") or (relation_count and evidence_count >= 2)
+    require_interaction = (
+        bool(quality.get("require_interaction"))
+        if "require_interaction" in quality
+        else bool(relation_count and evidence_count >= 2)
     )
     interaction_valid = (
         not require_interaction or density["interaction_sentence_count"] >= 1
@@ -985,5 +1132,6 @@ __all__ = [
     "section_narrative_report",
     "section_sentence_redundancy_report",
     "section_synthesis_report",
+    "sentence_boundary_count",
     "summarize_page_audits",
 ]

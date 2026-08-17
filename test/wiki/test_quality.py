@@ -91,6 +91,33 @@ def test_duplicate_blocks_preserve_parallel_named_scripts():
     assert duplicate_prose_blocks(repeated) == [[1, 3]]
 
 
+def test_duplicate_blocks_allow_summary_then_named_implementation_detail():
+    markdown = (
+        "## Shutdown\n\n"
+        "When the runtime shuts down, each worker core is collected into a "
+        "shared list; the last worker drains the list and shuts down every "
+        "core.\n\n"
+        "`Handle.shutdown_core()` pushes each worker's `Box<Core>` into the "
+        "shared `shutdown_cores` list. `Context.run()` calls "
+        "`Handle.shutdown_core()` when the worker loop exits, and the last "
+        "worker drains the injection queue."
+    )
+
+    assert duplicate_prose_blocks(markdown) == []
+
+
+def test_duplicate_blocks_allow_thesis_to_expand_into_named_context():
+    markdown = (
+        "`useContext` stores the context on its hook state slot.\n\n"
+        "The hooks system stores each hook's state in a list attached to the "
+        "component so state persists across renders. `getHookState` creates or "
+        "retrieves the slot for each hook index, and `useContext` uses that "
+        "slot to retain context-related state for the component lifecycle."
+    )
+
+    assert duplicate_prose_blocks(markdown) == []
+
+
 def test_section_evidence_report_detects_section_source_reuse():
     markdown = (
         "# Overview\n\n"
@@ -336,6 +363,20 @@ def test_sentence_redundancy_allows_one_source_to_call_distinct_targets():
     assert report["sentence_redundancy_valid"] is True
 
 
+def test_sentence_redundancy_allows_handoff_and_local_detail_for_same_subject():
+    report = section_sentence_redundancy_report(
+        "# Controller\n\n"
+        "## File Printing\n\n"
+        "`Controller.print_file()` calls `Controller.print_file_ranges()` with "
+        "the resolved line ranges. "
+        "In diff context mode, `Controller.print_file()` builds line ranges "
+        "from the Git diff keys plus and minus the context size."
+    )
+
+    assert report["redundant_sentence_pairs"] == []
+    assert report["sentence_redundancy_valid"] is True
+
+
 def test_sentence_redundancy_allows_symmetric_named_operations():
     report = section_sentence_redundancy_report(
         "# Logging\n\n"
@@ -358,6 +399,108 @@ def test_sentence_redundancy_allows_parallel_documented_entrypoints():
         "benchmarks. "
         "The `run_lc_eval.sh` script generates task IDs and runs LangChain "
         "benchmarks."
+    )
+
+    assert report["redundant_sentence_pairs"] == []
+    assert report["sentence_redundancy_valid"] is True
+
+
+def test_sentence_redundancy_allows_parallel_named_config_variants():
+    report = section_sentence_redundancy_report(
+        "# Templates\n\n"
+        "## Config variants\n\n"
+        "The JavaScript config in `examples/classic/docusaurus.config.js` is "
+        "identical in header structure to the JavaScript template. "
+        "The TypeScript config in "
+        "`examples/classic-typescript/docusaurus.config.ts` is identical in "
+        "header structure to the TypeScript template."
+    )
+
+    assert report["redundant_sentence_pairs"] == []
+    assert report["sentence_redundancy_valid"] is True
+
+
+def test_sentence_redundancy_allows_parallel_container_cases():
+    report = section_sentence_redundancy_report(
+        "# Lifecycle\n\n"
+        "## Recursive cleanup\n\n"
+        "For arrays, `jv_free` pushes each element onto a pending stack and "
+        "then frees the array structure. "
+        "For objects, `jv_free` frees each key string and pushes the matching "
+        "value onto the pending stack before freeing the object structure."
+    )
+
+    assert report["redundant_sentence_pairs"] == []
+    assert report["sentence_redundancy_valid"] is True
+
+
+def test_sentence_redundancy_allows_a_conditional_builder_edge_case():
+    report = section_sentence_redundancy_report(
+        "# Taxonomies\n\n"
+        "## Building the list\n\n"
+        "`Site.Taxonomies()` returns the list built by "
+        "`pageMap.CreateSiteTaxonomies()`. "
+        "When taxonomy and term kinds are disabled, "
+        "`pageMap.CreateSiteTaxonomies()` returns an empty list without "
+        "walking the tree."
+    )
+
+    assert report["redundant_sentence_pairs"] == []
+    assert report["sentence_redundancy_valid"] is True
+
+
+def test_sentence_redundancy_allows_distinct_conditional_branches():
+    report = section_sentence_redundancy_report(
+        "# Output\n\n"
+        "## Destination\n\n"
+        "If no pager is configured, `OutputType::try_pager()` returns "
+        "`OutputType::stdout()`. "
+        "If the pager binary cannot be resolved, `OutputType::try_pager()` "
+        "emits a warning and returns `OutputType::stdout()`."
+    )
+
+    assert report["redundant_sentence_pairs"] == []
+    assert report["sentence_redundancy_valid"] is True
+
+
+def test_sentence_redundancy_allows_opposite_condition_polarities():
+    report = section_sentence_redundancy_report(
+        "# Echo\n\n"
+        "## Response\n\n"
+        "When the body is valid JSON, `handleApiRequest()` responds with "
+        "status 200 and the request fields. "
+        "When the body is not valid JSON, `handleApiRequest()` responds with "
+        "status 400 and the error message."
+    )
+
+    assert report["redundant_sentence_pairs"] == []
+    assert report["sentence_redundancy_valid"] is True
+
+
+def test_sentence_redundancy_allows_named_implementation_elaboration():
+    report = section_sentence_redundancy_report(
+        "# Builders\n\n"
+        "## Compatibility wrappers\n\n"
+        "The uppercase builders are generated as compatibility wrappers "
+        "around the lowercase builders. "
+        "The `alias` factory creates these wrappers, and the generated module "
+        "exports uppercase names bound to the corresponding lowercase builder."
+    )
+
+    assert report["redundant_sentence_pairs"] == []
+    assert report["sentence_redundancy_valid"] is True
+
+
+def test_sentence_redundancy_keeps_punctuation_inside_code_literals():
+    report = section_sentence_redundancy_report(
+        "# Recompilation\n\n"
+        "## State reuse\n\n"
+        "`run_jq_recompile_tests()` demonstrates reuse by compiling different "
+        "programs on the same state. "
+        "`run_jq_recompile_tests()` initializes a state and compiles `. + 1`, "
+        "then recompiles with `. * 2` on that state. "
+        "`run_jq_recompile_tests()` also exercises `jq_compile_args()` before "
+        "returning to `jq_compile()`."
     )
 
     assert report["redundant_sentence_pairs"] == []
@@ -418,6 +561,29 @@ def test_prose_integrity_allows_a_public_entry_to_delegate_to_a_helper():
     assert report["prose_integrity_valid"] is True
 
 
+def test_prose_integrity_allows_public_entry_with_named_private_helpers():
+    report = prose_integrity_report(
+        "# Solvers\n\n"
+        "The package uses `solve` as the public entry point, while specialized "
+        "helpers such as `_tsolve` own per-domain work. [E1]"
+    )
+
+    assert report["private_entry_sentences"] == []
+    assert report["prose_integrity_valid"] is True
+
+
+def test_prose_integrity_allows_private_work_in_a_mixed_entry_section():
+    report = prose_integrity_report(
+        "# Resampling\n\n"
+        "## Entry Points and Shared Construction\n\n"
+        "`DataArray.resample()` passes its indexer to `Resampler`. [R1]\n\n"
+        "`DataWithCoords._resample()` constructs the resample object. [E1]"
+    )
+
+    assert report["private_entry_sentences"] == []
+    assert report["prose_integrity_valid"] is True
+
+
 def test_page_audit_requires_a_flow_when_static_relations_are_available():
     page = {
         "id": "agent-runtime",
@@ -445,6 +611,37 @@ def test_page_audit_requires_a_flow_when_static_relations_are_available():
     assert report["require_interaction"] is True
     assert report["interaction_valid"] is False
     assert report["publishable"] is False
+
+
+def test_page_audit_respects_an_explicit_non_architectural_page_contract():
+    page = {
+        "id": "formats",
+        "title": "Formats",
+        "markdown": (
+            "# Formats\n\n"
+            "The package supports source-linked text and binary formats. [E1]\n\n"
+            "## Text\n\n"
+            "`read_text()` parses delimited records from a stream. [E1]\n\n"
+            "## Binary\n\n"
+            "`read_binary()` decodes typed records from a file. [E2]"
+        ),
+        "evidence": {
+            "items": [{"id": "E1"}, {"id": "E2"}],
+            "relations": [{"id": "R1"}],
+        },
+        "generation": {"mode": "generated"},
+        "grounding": {"valid": True, "citation_coverage": 1.0},
+        "quality": {
+            "valid": True,
+            "claim_coverage": 1.0,
+            "require_interaction": False,
+        },
+    }
+
+    report = audit_page(page)
+
+    assert report["require_interaction"] is False
+    assert report["interaction_valid"] is True
 
 
 def test_architecture_narrative_admits_a_grounded_component_flow():
@@ -521,6 +718,127 @@ def test_architecture_narrative_admits_a_grounded_component_flow():
     assert plan_report["supported_interaction_claims"] == 2
     assert quality["interaction_sentence_count"] == 2
     assert quality["valid"] is True
+
+
+def test_topic_narrative_allows_direct_source_backing_for_a_flow():
+    statement = (
+        "`Command.envs()` forwards the provided variables to " "`self.std.envs(vars)`."
+    )
+    plan = {
+        "thesis": {
+            "statement": "`Command` configures spawned process environments",
+            "evidence": ["E1"],
+        },
+        "sections": [
+            {
+                "title": "Environment",
+                "claims": [
+                    {
+                        "role": "flow",
+                        "statement": statement,
+                        "evidence": ["E1"],
+                    }
+                ],
+            }
+        ],
+    }
+    evidence = [
+        EvidenceItem(
+            id="E1",
+            file="src/process/command.rs",
+            start_line=1,
+            end_line=4,
+            symbol="Command.envs",
+            kind="method",
+            content="fn envs(vars) { self.std.envs(vars); }",
+        )
+    ]
+    relations = [
+        RelationItem(
+            id="R1",
+            source="Command.envs()",
+            target="self.std.envs(vars)",
+        )
+    ]
+
+    topic = plan_narrative_report(
+        plan,
+        require_relation_backing=False,
+        relations=relations,
+        evidence_items=evidence,
+    )
+    overview = plan_narrative_report(
+        plan,
+        require_relation_backing=True,
+        relations=relations,
+        evidence_items=evidence,
+    )
+
+    assert topic["supported_interaction_claims"] == 1
+    assert topic["invalid_flow_claims"] == []
+    assert overview["invalid_flow_claims"] == [statement]
+
+
+def test_component_heavy_plan_is_valid_when_it_contains_a_supported_flow():
+    component_claims = [
+        {
+            "role": "component",
+            "statement": f"Component {index} records compatibility metadata",
+            "evidence": ["E1"],
+        }
+        for index in range(4)
+    ]
+    plan = {
+        "thesis": {
+            "statement": "Compatibility data drives transform selection",
+            "evidence": ["E1"],
+        },
+        "sections": [
+            {
+                "title": "Selection",
+                "claims": [
+                    *component_claims,
+                    {
+                        "role": "flow",
+                        "statement": "`filterAvailable()` passes plugins to `presetEnv()`",
+                        "evidence": ["R1"],
+                    },
+                ],
+            }
+        ],
+    }
+    relation = RelationItem(
+        id="R1",
+        source="filterAvailable()",
+        target="presetEnv()",
+    )
+
+    report = plan_narrative_report(plan, relations=[relation])
+    isolated = plan_narrative_report(
+        {
+            **plan,
+            "sections": [
+                {
+                    "title": "Selection",
+                    "claims": [
+                        *component_claims,
+                        {
+                            "role": "component",
+                            "statement": "Component 5 records target metadata",
+                            "evidence": ["E1"],
+                        },
+                    ],
+                }
+            ],
+        },
+        relations=[relation],
+    )
+
+    assert report["supported_interaction_claims"] == 1
+    assert report["component_claim_ratio"] == 0.8
+    assert report["component_dominated"] is False
+    assert isolated["component_dominated"] is True
+    assert isolated["plan_role_integrity_valid"] is True
 
 
 def test_plan_narrative_rejects_flow_labels_without_a_relation_handoff():
@@ -741,6 +1059,65 @@ def test_plan_narrative_rejects_multi_sentence_claims():
 
     assert report["multi_sentence_claims"]
     assert report["plan_role_integrity_valid"] is False
+
+
+def test_plan_narrative_ignores_sentence_punctuation_inside_literals():
+    statement = (
+        "`generate_config_file()` prints the path and asks "
+        "'Overwrite? (y/N):' before replacing it."
+    )
+    report = plan_narrative_report(
+        {
+            "thesis": {
+                "statement": "`generate_config_file()` owns config generation",
+                "evidence": ["E1"],
+            },
+            "sections": [
+                {
+                    "title": "Overwrite protection",
+                    "claims": [
+                        {
+                            "role": "contract",
+                            "statement": statement,
+                            "evidence": ["E1"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert report["multi_sentence_claims"] == []
+    assert report["plan_role_integrity_valid"] is True
+
+
+def test_plan_narrative_ignores_periods_in_technical_abbreviations():
+    statement = (
+        "`canSwapBetweenExpressionAndStatement()` returns true when the "
+        "replacement matches the opposite node type (expression vs. block "
+        "statement)."
+    )
+    report = plan_narrative_report(
+        {
+            "thesis": {"statement": statement, "evidence": ["E1"]},
+            "sections": [
+                {
+                    "title": "Replacement",
+                    "claims": [
+                        {
+                            "statement": statement,
+                            "role": "contract",
+                            "evidence": ["E1"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert report["multi_sentence_claims"] == []
+    assert report["thesis_sentence_count"] == 1
+    assert report["plan_role_integrity_valid"] is True
 
 
 def test_plan_narrative_rejects_relation_only_non_flow_claims():

@@ -26,6 +26,13 @@ _CITATION_TAIL_RE = re.compile(
     r"(?:\s*\[(?:E|R)\d+\])+\s*[.!?]?\s*$",
 )
 _CODE_RE = re.compile(r"`([^`\n]+)`")
+# Markdown permits a code span to use any run of backticks as long as the
+# closing run has the same length. Parsing only single ticks makes adjacent
+# spans around ``double-fenced`` code look like bogus identifiers taken from
+# the prose between them (for example "." and "calls").
+_MARKDOWN_CODE_SPAN_RE = re.compile(
+    r"(?<!`)(?P<fence>`+)(?!`)(?P<code>[^\n]*?)(?<!`)(?P=fence)(?!`)",
+)
 # Publication floor: at least half a page's blocks must carry their source.
 _MIN_CITATION_COVERAGE = 0.5
 _TABLE_DIVIDER_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
@@ -41,6 +48,16 @@ def is_internal_wiki_navigation(block: str) -> bool:
     return bool(lines) and all(
         _INTERNAL_WIKI_NAV_ITEM_RE.fullmatch(line) for line in lines
     )
+
+
+def _markdown_code_spans(text: str) -> List[str]:
+    """Return complete inline-code values without crossing Markdown fences."""
+
+    return [
+        match.group("code")
+        for match in _MARKDOWN_CODE_SPAN_RE.finditer(text or "")
+        if match.group("code").strip()
+    ]
 
 
 def _corpus_contains_exact(corpus: str, value: str) -> bool:
@@ -184,7 +201,8 @@ _PROMOTIONAL_RE = re.compile(
 )
 _FLOW_RE = re.compile(
     r"\b(call(?:s|ed|ing)?|delegat(?:e|es|ed|ing)|dispatch(?:es|ed|ing)?|"
-    r"feed(?:s|ing)?|hand(?:s|ed)?\s+(?:off|to)|"
+    r"feed(?:s|ing)?|forward(?:s|ed|ing)?\s+.+\s+to|"
+    r"hand(?:s|ed)?\s+(?:off|to)|"
     r"interact(?:s|ed|ing)?\s+with|invok(?:e|es|ed|ing)|"
     r"load(?:s|ed|ing)?\s+.+\s+from|pass(?:es|ed|ing)?\s+.+\s+to|"
     r"publish(?:es|ed)?|read(?:s)?\s+.+\s+from|"
@@ -202,10 +220,12 @@ _RETURN_FLOW_RE = re.compile(
 )
 _STRONG_HANDOFF_RE = re.compile(
     r"\b(?:"
-    r"dispatch(?:es|ed|ing)?\s+.+\s+to|hand(?:s|ed)?\s+(?:off|to)|"
+    r"dispatch(?:es|ed|ing)?\s+.+\s+to|"
+    r"forward(?:s|ed|ing)?\s+.+\s+to|hand(?:s|ed)?\s+(?:off|to)|"
     r"interact(?:s|ed|ing)?\s+with|"
     r"load(?:s|ed|ing)?\s+.+\s+from|pass(?:es|ed|ing)?\s+.+\s+to|"
-    r"provid(?:e|es|ed|ing)\s+.+\s+to|"
+    # Exclude adjectival ``provided values``; present-tense handoffs remain.
+    r"provid(?:e|es|ing)\s+.+\s+to|"
     r"quer(?:y|ies|ied|ying)\s+.+\s+(?:through|via)|"
     r"read(?:s)?\s+.+\s+from|receiv(?:e|es|ed|ing)\s+.+\s+from|"
     r"retriev(?:e|es|ed|ing)\s+.+\s+from|"
@@ -224,6 +244,10 @@ _COMPONENT_TERM_RE = re.compile(
 )
 _ENTRY_RE = re.compile(
     r"\b(command|entry\s*point|endpoint|public|request|users?)\b",
+    re.IGNORECASE,
+)
+_ENTRY_ONLY_SECTION_RE = re.compile(
+    r"(?:public(?:\s+(?:api|entry\s+points?))?|entry\s+points?)",
     re.IGNORECASE,
 )
 _EXPLICIT_ENTRY_RE = re.compile(
@@ -486,10 +510,44 @@ def describes_private_entry(statement: str, *, role: str = "") -> bool:
     """Whether prose presents a private identifier as a public/user entry."""
 
     text = statement or ""
-    return bool(
-        _PRIVATE_IDENTIFIER_RE.search(text)
-        and (role == "entry" or _EXPLICIT_ENTRY_RE.search(text))
+    private_identifiers = list(_PRIVATE_IDENTIFIER_RE.finditer(text))
+    if not private_identifiers:
+        return False
+
+    code_identifiers = list(_CODE_RE.finditer(text))
+    if role == "entry":
+        # An entry claim may still explain that its public subject delegates to
+        # a private helper. Only reject it when the claim's primary code subject
+        # is itself private.
+        return bool(
+            code_identifiers
+            and _PRIVATE_IDENTIFIER_RE.fullmatch(code_identifiers[0].group(0))
+        )
+
+    if not _EXPLICIT_ENTRY_RE.search(text):
+        return False
+
+    before_entry = re.compile(
+        r"(?:entry\s*point|public\s+(?:api|callable|command|endpoint|function|method)|"
+        r"users?\s+(?:call|execute|invoke|run))\s*$",
+        re.IGNORECASE,
     )
+    after_entry = re.compile(
+        r"^\s*(?:(?:is|acts\s+as|serves\s+as)\s+)?(?:the\s+)?(?:entry\s*point|"
+        r"public\s+(?:api|callable|command|endpoint|function|method)|endpoint)\b",
+        re.IGNORECASE,
+    )
+    return any(
+        before_entry.search(text[max(0, match.start() - 64) : match.start()])
+        or after_entry.search(text[match.end() : match.end() + 64])
+        for match in private_identifiers
+    )
+
+
+def is_entry_only_section_title(title: str) -> bool:
+    """Whether an entire section is framed solely as a public entry surface."""
+
+    return bool(_ENTRY_ONLY_SECTION_RE.fullmatch((title or "").strip()))
 
 
 def promotional_phrases(text: str) -> List[str]:
@@ -861,7 +919,7 @@ def grounding_report(
 
     known_files = {item.file.lower().lstrip("./") for item in evidence}
     unsupported_identifiers = []
-    for identifier in _CODE_RE.findall(without_fences):
+    for identifier in _markdown_code_spans(without_fences):
         normalized = identifier.strip()
         source_name = re.sub(r":\d+(?:-\d+)?$", "", normalized)
         call_name_match = re.fullmatch(
@@ -1032,6 +1090,7 @@ __all__ = [
     "evidence_metadata",
     "evidence_matches_claim",
     "grounding_report",
+    "is_entry_only_section_title",
     "parse_fact_plan",
     "promotional_phrases",
     "relation_endpoints_named",
