@@ -58,6 +58,8 @@ from ..source_fingerprint import (
     RepositorySourceBinding,
     RepositorySourceIdentitySnapshot,
 )
+from ..storage.models import StorageIntegrityError
+from ..storage.protocols import snapshot_retained_import_response
 from .security import assert_publishable_json_value
 
 _VECTOR_LEVELS = ("l0", "l2")
@@ -80,8 +82,8 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _PICKLE_SUFFIXES = frozenset({".pkl", ".pickle"})
 _WINDOWS_REPARSE_POINT = 0x400
 _MAX_CONFIG_JSON_BYTES = 16 * 1024 * 1024
-_MAX_DOCUMENTS_JSON_BYTES = 256 * 1024 * 1024
-_MAX_FAISS_INDEX_BYTES = 8 * 1024 * 1024 * 1024
+MAX_PORTABLE_DOCUMENTS_JSON_BYTES = 256 * 1024 * 1024
+MAX_PORTABLE_FAISS_INDEX_BYTES = 8 * 1024 * 1024 * 1024
 _JSON_READ_CHUNK_BYTES = 1024 * 1024
 _MAX_SOURCE_PATH_BYTES = 4_096
 _MAX_SOURCE_PATH_COMPONENTS = 256
@@ -1240,7 +1242,10 @@ def _normalize_pickle_documents(
     """Load documents from an explicitly trusted, machine-local pickle."""
 
     try:
-        payload = reader.read_bytes(path, max_bytes=_MAX_DOCUMENTS_JSON_BYTES)
+        payload = reader.read_bytes(
+            path,
+            max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
+        )
         with io.BytesIO(payload) as handle:
             documents = compat_pickle.load(handle)
     except Exception as exc:
@@ -1350,7 +1355,7 @@ def _normalize_json_documents(
     documents = _load_json(
         path,
         label="portable vector documents",
-        max_bytes=_MAX_DOCUMENTS_JSON_BYTES,
+        max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
         reader=reader,
     )
     if not isinstance(documents, list):
@@ -1408,7 +1413,10 @@ def _iter_content_bound_documents(
     authenticated_source_files: frozenset[str],
 ) -> Iterable[dict[str, Any]]:
     relative = PurePosixPath(path.relative_to(reader.root).as_posix())
-    with reader.open_file(relative, max_bytes=_MAX_DOCUMENTS_JSON_BYTES) as source:
+    with reader.open_file(
+        relative,
+        max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
+    ) as source:
         documents = iter_bounded_json_array(
             source,
             label=f"portable {view_type} documents",
@@ -1488,7 +1496,7 @@ def _require_content_bound_canonical_documents(
 
     for chunk in canonical_json_array_chunks(values()):
         size += len(chunk)
-        if size > _MAX_DOCUMENTS_JSON_BYTES:
+        if size > MAX_PORTABLE_DOCUMENTS_JSON_BYTES:
             raise ValueError(f"portable {view_type} documents exceed their byte limit")
         digest.update(chunk)
     record = reader.record(path)
@@ -1506,7 +1514,7 @@ def _normalize_bm25_documents(
     documents = _load_json(
         path,
         label="portable BM25 documents",
-        max_bytes=_MAX_DOCUMENTS_JSON_BYTES,
+        max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
         reader=reader,
     )
     if not isinstance(documents, list):
@@ -1770,6 +1778,50 @@ def _validate_vector_semantics(
     )
 
 
+def validate_portable_vector_persistence_semantics(
+    config: Mapping[str, Any],
+    view_config: Mapping[str, Any],
+) -> tuple[str, int, str | None, str, str]:
+    """Validate persisted vector identity using artifact-only route policy.
+
+    This source-free helper never discovers credentials or interprets an
+    embedding model as a local filesystem locator. Document/source membership
+    and directory ownership remain the responsibility of the caller's
+    retained-artifact validation layer.
+    """
+
+    try:
+        config_value = snapshot_retained_import_response(
+            config,
+            label="portable vector persistence config",
+        )
+        view_config_value = snapshot_retained_import_response(
+            view_config,
+            label="portable vector view config",
+        )
+    except StorageIntegrityError as exc:
+        raise ValueError(
+            "portable vector persistence inputs must be bounded exact JSON objects"
+        ) from exc
+    if type(config_value) is not dict or type(view_config_value) is not dict:
+        raise ValueError(
+            "portable vector persistence inputs must be bounded exact JSON objects"
+        )
+    config_snapshot = _bounded_json_object_snapshot(
+        config_value,
+        label="portable vector persistence config",
+    )
+    view_config_snapshot = _bounded_json_object_snapshot(
+        view_config_value,
+        label="portable vector view config",
+    )
+    return _validate_vector_semantics(
+        config_snapshot,
+        view_config_snapshot,
+        portable_artifact_policy=True,
+    )
+
+
 def _faiss_contract(
     path: Path,
     *,
@@ -1985,7 +2037,7 @@ def _validate_vector_layout(
                 root,
                 ownership,
                 path,
-                max_bytes=_MAX_DOCUMENTS_JSON_BYTES,
+                max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
                 cache_bytes=True,
             )
             payload = _normalize_pickle_documents(path, repo_path, reader=reader)
@@ -2025,7 +2077,7 @@ def _validate_vector_layout(
             root,
             ownership,
             index_path,
-            max_bytes=_MAX_FAISS_INDEX_BYTES,
+            max_bytes=MAX_PORTABLE_FAISS_INDEX_BYTES,
             keep_descriptor=native_authorized,
         )
         derived_counts[level] = count
@@ -2184,7 +2236,7 @@ def _refresh_vector_persistence_records(
             index_record["file"] = index_path.name
             documents_record = reader.fingerprint(
                 documents_path,
-                max_bytes=_MAX_DOCUMENTS_JSON_BYTES,
+                max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
             )
             documents_record["file"] = documents_path.name
             level_artifacts[level] = {
@@ -2527,7 +2579,7 @@ def _normalize_bm25_view(
         fingerprints = {
             "documents.json": fingerprint_reader.fingerprint(
                 documents_path,
-                max_bytes=_MAX_DOCUMENTS_JSON_BYTES,
+                max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
             ),
             "bm25_metadata.json": fingerprint_reader.fingerprint(
                 metadata_path,
@@ -2674,7 +2726,7 @@ def _validate_normalized_document_sources(
     documents = _load_json(
         path,
         label=f"portable {view_type} documents",
-        max_bytes=_MAX_DOCUMENTS_JSON_BYTES,
+        max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
         require_canonical=True,
         reader=reader,
     )
@@ -2797,7 +2849,7 @@ def _authenticate_vector_generation(
                 root / level / str(documents_record["file"]),
                 documents_record,
                 cache_bytes=True,
-                max_bytes=_MAX_DOCUMENTS_JSON_BYTES,
+                max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
             )
         except ValueError as exc:
             raise ValueError(
@@ -2807,7 +2859,7 @@ def _authenticate_vector_generation(
             root / level / index_name,
             index_record,
             cache_bytes=False,
-            max_bytes=_MAX_FAISS_INDEX_BYTES,
+            max_bytes=MAX_PORTABLE_FAISS_INDEX_BYTES,
             keep_descriptor=True,
         )
     return config
@@ -2847,7 +2899,7 @@ def _validate_portable_bm25_view(
         root / "documents.json",
         fingerprints["documents.json"],
         cache_bytes=True,
-        max_bytes=_MAX_DOCUMENTS_JSON_BYTES,
+        max_bytes=MAX_PORTABLE_DOCUMENTS_JSON_BYTES,
     )
     reader.authenticate(
         root / "bm25_metadata.json",
@@ -2887,6 +2939,14 @@ def _validate_portable_bm25_view(
         or len(metadata["language"]) > 256
     ):
         raise ValueError("portable BM25 metadata is invalid")
+    configured_max_k = view_config.get("max_k")
+    if configured_max_k is not None and (
+        isinstance(configured_max_k, bool)
+        or not isinstance(configured_max_k, int)
+        or configured_max_k <= 0
+        or metadata["max_k"] != configured_max_k
+    ):
+        raise ValueError("portable BM25 metadata max_k does not match its view config")
     _validate_normalized_document_sources(
         root / "documents.json",
         repository,
@@ -3219,8 +3279,11 @@ def validate_portable_query_view(
 
 
 __all__ = [
+    "MAX_PORTABLE_DOCUMENTS_JSON_BYTES",
+    "MAX_PORTABLE_FAISS_INDEX_BYTES",
     "SourceTrust",
     "normalize_owned_query_view",
     "validate_content_bound_portable_query_view_reader",
     "validate_portable_query_view",
+    "validate_portable_vector_persistence_semantics",
 ]

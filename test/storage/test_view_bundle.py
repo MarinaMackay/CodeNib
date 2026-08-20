@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import copy
+import dis
 import errno
 import hashlib
 import inspect
@@ -14,12 +16,13 @@ import shutil
 import stat
 import struct
 import sys
+import threading
 import tracemalloc
 import warnings
 import zipfile
 from dataclasses import fields, replace
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, BinaryIO, Callable, Iterable
 
 import pytest
 
@@ -33,7 +36,9 @@ from codenib.storage import (
     StorageIntegrityError,
     StorageValidationError,
     build_view_bundle,
+    consume_verified_view_bundle_stream,
     materialize_view_bundle,
+    retry_retained_verified_bundle_stream_cleanup,
     validate_view_bundle_physical_size,
     verify_view_bundle,
 )
@@ -49,6 +54,13 @@ def _exception_notes(error: BaseException) -> tuple[str, ...]:
         *tuple(getattr(error, "__notes__", ())),
         *tuple(getattr(error, "_codenib_cleanup_notes", ())),
     )
+
+
+def _publication_cleanup_owners(error: BaseException) -> tuple[Any, ...]:
+    try:
+        return BaseException.__getattribute__(error, "publication_cleanup_owners")
+    except AttributeError:
+        return ()
 
 
 def _source(root: Path) -> Path:
@@ -280,6 +292,61 @@ def _call_with_interrupt_at_ordered_action_call(
     finally:
         sys.settrace(previous_trace)
         assert injected, "failed to inject at the ordered bundle action call"
+
+
+def _call_with_interrupt_after_temporary_file_acquire(
+    callback: Callable[[], object],
+    *,
+    error: BaseException,
+) -> None:
+    function = bundle_module._CallbackScopedVerifiedBundleFile._acquire_archive
+    code = function.__code__
+    instructions = tuple(dis.get_instructions(function))
+    store_indexes = {
+        index
+        for index, instruction in enumerate(instructions[:-1])
+        if instruction.opname == "STORE_ATTR" and instruction.argval == "_archive"
+    }
+    opcode_offsets_after_store = {
+        instructions[index + 1].offset for index in store_indexes
+    }
+    store_offsets = {instructions[index].offset for index in store_indexes}
+    line_offsets_after_store = {
+        instruction.offset
+        for instruction in instructions
+        if instruction.starts_line is not None
+        and any(instruction.offset > store_offset for store_offset in store_offsets)
+    }
+    assert len(store_indexes) == 1
+    previous_trace = sys.gettrace()
+    injected = False
+
+    def trace(frame: Any, event: str, _arg: object) -> Any:
+        nonlocal injected
+        if event == "call" and frame.f_code is code:
+            frame.f_trace_opcodes = True
+            frame.f_trace_lines = True
+            return trace
+        if (
+            not injected
+            and frame.f_code is code
+            and (
+                (event == "opcode" and frame.f_lasti in opcode_offsets_after_store)
+                or (event == "line" and frame.f_lasti in line_offsets_after_store)
+            )
+            and frame.f_locals["self"]._archive is not None
+        ):
+            injected = True
+            sys.settrace(None)
+            raise error
+        return trace
+
+    sys.settrace(trace)
+    try:
+        callback()
+    finally:
+        sys.settrace(previous_trace)
+        assert injected, "failed to interrupt after temporary-file result store"
 
 
 def test_reader_plan_matches_canonical_builder_without_path_or_temp_reopen(
@@ -2952,3 +3019,806 @@ def test_invalid_limits_fail_closed(
     archive = tmp_path / "missing.zip"
     with pytest.raises(StorageValidationError, match=message):
         verify_view_bundle(archive, **kwargs)
+
+
+def test_verified_stream_is_exact_and_callback_handle_cannot_escape(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = built.path.read_bytes()
+    escaped: list[BinaryIO] = []
+
+    def consume(
+        archive: BinaryIO,
+        record: bundle_module.ViewBundleRecord,
+    ) -> tuple[str, bytes]:
+        escaped.append(archive)
+        assert copy.copy(archive) is archive
+        assert copy.deepcopy(archive) is archive
+        with pytest.raises(TypeError, match="state is private"):
+            archive.__getstate__()  # type: ignore[attr-defined]
+        assert archive.readable()
+        assert archive.seekable()
+        assert not archive.writable()
+        with pytest.raises(io.UnsupportedOperation, match="descriptor"):
+            archive.fileno()
+        with pytest.raises(io.UnsupportedOperation, match="read-only"):
+            archive.write(b"mutation")
+        with pytest.raises(io.UnsupportedOperation, match="read-only"):
+            archive.truncate(0)
+        with pytest.raises(io.UnsupportedOperation, match="mutable read buffers"):
+            archive.readinto(bytearray(4))
+        return record.view_type, archive.read()
+
+    result = consume_verified_view_bundle_stream(
+        io.BytesIO(payload),
+        consume,
+        expected_view_type="bm25",
+        expected_digest=hashlib.sha256(payload).hexdigest(),
+        expected_size=len(payload),
+    )
+
+    assert result == ("bm25", payload)
+    assert len(escaped) == 1
+    assert escaped[0].closed
+    with pytest.raises(ValueError, match="closed file"):
+        escaped[0].read(1)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires process forking")
+def test_verified_stream_facade_fails_closed_across_fork(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = built.path.read_bytes()
+    gate_read, gate_write = os.pipe()
+    result_read, result_write = os.pipe()
+    child_pid = -1
+
+    def consume(archive: BinaryIO, _record: object) -> bytes:
+        nonlocal child_pid
+        child_pid = os.fork()
+        if child_pid == 0:
+            os.close(gate_write)
+            os.close(result_read)
+            try:
+                if os.read(gate_read, 1) != b"x":
+                    os._exit(2)
+                try:
+                    archive.seek(0)
+                    archive.read(4)
+                except ValueError:
+                    os.write(result_write, b"closed")
+                    os._exit(0)
+                os.write(result_write, b"open")
+                os._exit(1)
+            except Exception:
+                os._exit(3)
+        os.close(gate_read)
+        os.close(result_write)
+        return b"parent"
+
+    try:
+        assert (
+            consume_verified_view_bundle_stream(
+                io.BytesIO(payload),
+                consume,
+                expected_view_type="bm25",
+                expected_digest=hashlib.sha256(payload).hexdigest(),
+                expected_size=len(payload),
+            )
+            == b"parent"
+        )
+        os.write(gate_write, b"x")
+        assert os.read(result_read, 16) == b"closed"
+        waited, status = os.waitpid(child_pid, 0)
+        child_pid = -1
+        assert waited > 0
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        for descriptor in (gate_read, gate_write, result_read, result_write):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if child_pid > 0:
+            try:
+                os.write(gate_write, b"x")
+            except OSError:
+                pass
+            os.waitpid(child_pid, 0)
+
+
+def test_verified_stream_rejects_reentrant_integer_arguments(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = built.path.read_bytes()
+
+    class TrapInt:
+        calls = 0
+
+        def __index__(self) -> int:
+            type(self).calls += 1
+            raise AssertionError("stream must not coerce callback-controlled integers")
+
+    def consume(archive: BinaryIO, _record: object) -> None:
+        with pytest.raises(TypeError, match="exact integer"):
+            archive.read(TrapInt())  # type: ignore[arg-type]
+
+    consume_verified_view_bundle_stream(
+        io.BytesIO(payload),
+        consume,
+        expected_view_type="bm25",
+        expected_digest=hashlib.sha256(payload).hexdigest(),
+        expected_size=len(payload),
+    )
+    assert TrapInt.calls == 0
+
+
+def test_verified_stream_temporary_file_acquisition_interruption_closes_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"result-store interruption"
+    temporary_files: list[BinaryIO] = []
+    real_temporary_file = bundle_module.tempfile.TemporaryFile
+
+    def capture_temporary_file(**kwargs: object) -> BinaryIO:
+        handle = real_temporary_file(**kwargs)
+        temporary_files.append(handle)
+        return handle
+
+    monkeypatch.setattr(
+        bundle_module.tempfile,
+        "TemporaryFile",
+        capture_temporary_file,
+    )
+    interruption = KeyboardInterrupt(
+        "injected temporary-file result-store interruption"
+    )
+
+    with pytest.raises(KeyboardInterrupt) as captured:
+        _call_with_interrupt_after_temporary_file_acquire(
+            lambda: consume_verified_view_bundle_stream(
+                io.BytesIO(payload),
+                lambda _archive, _record: None,
+                expected_view_type="bm25",
+                expected_digest=hashlib.sha256(payload).hexdigest(),
+                expected_size=len(payload),
+            ),
+            error=interruption,
+        )
+
+    assert captured.value is interruption
+    assert len(temporary_files) == 1
+    assert temporary_files[0].closed
+
+
+def test_verified_stream_temporary_file_acquisition_failure_has_no_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    acquisition_error = OSError(errno.EIO, "temporary-file acquisition failed")
+    operation_calls = 0
+
+    def fail_temporary_file(**_kwargs: object) -> BinaryIO:
+        raise acquisition_error
+
+    def operation(_archive: BinaryIO, _record: object) -> None:
+        nonlocal operation_calls
+        operation_calls += 1
+
+    monkeypatch.setattr(
+        bundle_module.tempfile,
+        "TemporaryFile",
+        fail_temporary_file,
+    )
+    with pytest.raises(
+        StorageIntegrityError,
+        match="temporary copy could not be opened",
+    ) as caught:
+        consume_verified_view_bundle_stream(
+            io.BytesIO(b""),
+            operation,
+            expected_view_type="bm25",
+            expected_digest=hashlib.sha256(b"").hexdigest(),
+            expected_size=0,
+        )
+
+    assert caught.value.__cause__ is acquisition_error
+    assert operation_calls == 0
+    assert not _publication_cleanup_owners(caught.value)
+    assert not bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
+
+
+@pytest.mark.parametrize(
+    "interruption",
+    [
+        KeyboardInterrupt("injected pre-call stream close cancellation"),
+        SystemExit("injected pre-call stream close exit"),
+        OSError(errno.EIO, "injected pre-call stream close failure"),
+    ],
+)
+def test_verified_stream_close_retries_pre_call_failure_and_revokes_handle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    interruption: BaseException,
+) -> None:
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = built.path.read_bytes()
+    escaped: list[BinaryIO] = []
+    temporary_files: list[BinaryIO] = []
+    real_temporary_file = bundle_module.tempfile.TemporaryFile
+
+    def capture_temporary_file(**kwargs: object) -> BinaryIO:
+        handle = real_temporary_file(**kwargs)
+        temporary_files.append(handle)
+        return handle
+
+    monkeypatch.setattr(
+        bundle_module.tempfile,
+        "TemporaryFile",
+        capture_temporary_file,
+    )
+
+    with pytest.raises(interruption.__class__) as captured:
+        _call_with_interrupt_at_ordered_action_call(
+            lambda: consume_verified_view_bundle_stream(
+                io.BytesIO(payload),
+                lambda archive, _record: escaped.append(archive),
+                expected_view_type="bm25",
+                expected_digest=hashlib.sha256(payload).hexdigest(),
+                expected_size=len(payload),
+            ),
+            label="temporary view-bundle stream close also failed",
+            error=interruption,
+        )
+
+    assert captured.value is interruption
+    assert len(temporary_files) == len(escaped) == 1
+    assert temporary_files[0].closed
+    assert escaped[0].closed
+    with pytest.raises(ValueError, match="closed file"):
+        escaped[0].read(1)
+
+
+def test_verified_stream_permanent_pre_call_failure_exposes_stable_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = built.path.read_bytes()
+    real_temporary_file = bundle_module.tempfile.TemporaryFile
+
+    class PersistentCloseFailure:
+        def __init__(self) -> None:
+            self._handle = real_temporary_file(mode="w+b")
+            self.allow_close = False
+            self.close_attempts = 0
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._handle, name)
+
+        def close(self) -> None:
+            self.close_attempts += 1
+            if not self.allow_close:
+                raise OSError(errno.EIO, "persistent external close failure")
+            self._handle.close()
+
+    created: list[PersistentCloseFailure] = []
+
+    def open_persistent_failure(**_kwargs: object) -> PersistentCloseFailure:
+        archive = PersistentCloseFailure()
+        created.append(archive)
+        return archive
+
+    monkeypatch.setattr(
+        bundle_module.tempfile,
+        "TemporaryFile",
+        open_persistent_failure,
+    )
+    real_attempt = atomic_module._attempt_ordered_action
+    primary = KeyboardInterrupt("permanent pre-call stream close cancellation")
+    attempts = 0
+
+    def interrupt_close_action(
+        state: object,
+        ordered: object,
+    ) -> BaseException | None:
+        nonlocal attempts
+        if (
+            getattr(ordered, "label", None)
+            == "temporary view-bundle stream close also failed"
+        ):
+            attempts += 1
+            raise primary
+        return real_attempt(state, ordered)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        atomic_module,
+        "_attempt_ordered_action",
+        interrupt_close_action,
+    )
+    escaped: list[BinaryIO] = []
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            consume_verified_view_bundle_stream(
+                io.BytesIO(payload),
+                lambda archive, _record: escaped.append(archive),
+                expected_view_type="bm25",
+                expected_digest=hashlib.sha256(payload).hexdigest(),
+                expected_size=len(payload),
+            )
+
+        assert caught.value is primary
+        assert attempts == atomic_module._MAX_ORDERED_ACTION_CANCELLATION_RETRIES + 1
+        assert len(created) == len(escaped) == 1
+        assert created[0].close_attempts == 0
+        assert not created[0]._handle.closed
+        assert not escaped[0].closed
+        owners = _publication_cleanup_owners(primary)
+        assert len(owners) == 1
+        assert not owners[0].closed
+        assert not bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
+
+        with pytest.raises(StorageIntegrityError, match="stream close failed"):
+            owners[0].close()
+        assert created[0].close_attempts == 1
+        assert not created[0]._handle.closed
+        assert escaped[0].closed
+        assert not owners[0].closed
+
+        created[0].allow_close = True
+        owners[0].close()
+        assert created[0].close_attempts == 2
+        assert created[0]._handle.closed
+        assert owners[0].closed
+        assert not bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
+    finally:
+        created[0].allow_close = True
+        created[0]._handle.close()
+        bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS.clear()
+
+
+def test_verified_stream_runner_failure_exposes_physical_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Archive:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    archive = Archive()
+    stream = bundle_module._CallbackScopedVerifiedBundleFile(archive)
+    stream._prepare_cleanup()
+    action = bundle_module._verified_bundle_stream_close_action(stream)
+    primary = RuntimeError("cleanup runner failed before stream close")
+    monkeypatch.setattr(
+        atomic_module,
+        "_run_ordered_actions",
+        lambda _state: (_ for _ in ()).throw(primary),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        with bundle_module._run_context_with_cleanup_actions((action,)):
+            pass
+
+    assert caught.value is primary
+    assert not archive.closed
+    assert not stream.closed
+    owners = _publication_cleanup_owners(primary)
+    assert len(owners) == 1
+    assert not owners[0].closed
+    owners[0].close()
+    assert archive.closed
+    assert stream.closed
+    assert owners[0].closed
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (lambda payload: payload[:-1], "truncated"),
+        (lambda payload: payload + b"x", "exceeded"),
+    ],
+)
+def test_verified_stream_rejects_receipt_length_mismatch(
+    tmp_path: Path,
+    mutation: Callable[[bytes], bytes],
+    message: str,
+) -> None:
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = built.path.read_bytes()
+
+    with pytest.raises(StorageIntegrityError, match=message):
+        consume_verified_view_bundle_stream(
+            io.BytesIO(mutation(payload)),
+            lambda _archive, _record: None,
+            expected_view_type="bm25",
+            expected_digest=hashlib.sha256(payload).hexdigest(),
+            expected_size=len(payload),
+        )
+
+
+def test_verified_stream_rejects_digest_valid_noncanonical_archive(
+    tmp_path: Path,
+) -> None:
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = bytearray(built.path.read_bytes())
+    payload[0:4] = b"nope"
+    corrupt = bytes(payload)
+
+    with pytest.raises(
+        (StorageIntegrityError, StorageValidationError),
+        match="ZIP|zip|canonical|archive",
+    ):
+        consume_verified_view_bundle_stream(
+            io.BytesIO(corrupt),
+            lambda _archive, _record: None,
+            expected_view_type="bm25",
+            expected_digest=hashlib.sha256(corrupt).hexdigest(),
+            expected_size=len(corrupt),
+        )
+
+
+def test_verified_stream_close_failure_is_primary_without_callback_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = built.path.read_bytes()
+    real_temporary_file = bundle_module.tempfile.TemporaryFile
+    escaped: list[BinaryIO] = []
+
+    class CloseFailure:
+        def __init__(self) -> None:
+            self._handle = real_temporary_file(mode="w+b")
+            self.close_attempts = 0
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._handle, name)
+
+        def close(self) -> None:
+            self.close_attempts += 1
+            self._handle.close()
+            raise OSError("injected stream close failure")
+
+    created: list[CloseFailure] = []
+
+    def open_close_failure(**_kwargs: object) -> CloseFailure:
+        failure = CloseFailure()
+        created.append(failure)
+        return failure
+
+    monkeypatch.setattr(
+        bundle_module.tempfile,
+        "TemporaryFile",
+        open_close_failure,
+    )
+
+    with pytest.raises(
+        StorageIntegrityError,
+        match="temporary view-bundle stream close failed",
+    ):
+        consume_verified_view_bundle_stream(
+            io.BytesIO(payload),
+            lambda archive, _record: escaped.append(archive),
+            expected_view_type="bm25",
+            expected_digest=hashlib.sha256(payload).hexdigest(),
+            expected_size=len(payload),
+        )
+
+    assert len(created) == len(escaped) == 1
+    assert created[0].close_attempts == 1
+    assert created[0]._handle.closed
+    assert escaped[0].closed
+    with pytest.raises(ValueError, match="closed file"):
+        escaped[0].read(1)
+
+
+def test_verified_stream_persistent_close_failure_is_fail_closed_and_retained(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CallbackFailure(RuntimeError):
+        def __init__(self, message: str) -> None:
+            super().__init__(message)
+            self.bool_calls = 0
+            self.owner_attr_calls = 0
+
+        def __bool__(self) -> bool:
+            self.bool_calls += 1
+            raise AssertionError("cleanup must not truth-test the primary error")
+
+        @property
+        def _codenib_verified_bundle_stream_cleanup_owners(self) -> tuple[object, ...]:
+            self.owner_attr_calls += 1
+            raise AssertionError("cleanup must not inspect callback exception state")
+
+        @_codenib_verified_bundle_stream_cleanup_owners.setter
+        def _codenib_verified_bundle_stream_cleanup_owners(
+            self,
+            _value: tuple[object, ...],
+        ) -> None:
+            self.owner_attr_calls += 1
+            raise AssertionError("cleanup must not mutate callback exception state")
+
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = built.path.read_bytes()
+    real_temporary_file = bundle_module.tempfile.TemporaryFile
+    escaped: list[BinaryIO] = []
+
+    class PersistentCloseFailure:
+        def __init__(self) -> None:
+            self._handle = real_temporary_file(mode="w+b")
+            self.allow_close = False
+            self.raise_after_close = False
+            self.close_attempts = 0
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._handle, name)
+
+        def close(self) -> None:
+            self.close_attempts += 1
+            if not self.allow_close:
+                raise OSError(errno.EIO, "persistent stream close failure")
+            self._handle.close()
+            if self.raise_after_close:
+                raise OSError(errno.EIO, "post-close stream failure")
+
+    created: list[PersistentCloseFailure] = []
+
+    def open_persistent_failure(**_kwargs: object) -> PersistentCloseFailure:
+        failure = PersistentCloseFailure()
+        created.append(failure)
+        return failure
+
+    monkeypatch.setattr(
+        bundle_module.tempfile,
+        "TemporaryFile",
+        open_persistent_failure,
+    )
+    primary = CallbackFailure("callback primary")
+
+    copied: list[BinaryIO] = []
+
+    def fail_callback(archive: BinaryIO, _record: object) -> None:
+        escaped.append(archive)
+        copied.append(copy.copy(archive))
+        raise primary
+
+    try:
+        with pytest.raises(CallbackFailure) as captured:
+            consume_verified_view_bundle_stream(
+                io.BytesIO(payload),
+                fail_callback,
+                expected_view_type="bm25",
+                expected_digest=hashlib.sha256(payload).hexdigest(),
+                expected_size=len(payload),
+            )
+
+        assert captured.value is primary
+        assert primary.bool_calls == 0
+        assert primary.owner_attr_calls == 0
+        assert len(created) == len(escaped) == len(copied) == 1
+        assert copied[0] is escaped[0]
+        assert not created[0]._handle.closed
+        assert (
+            created[0].close_attempts
+            == bundle_module._VERIFIED_BUNDLE_STREAM_CLOSE_RECOVERY_LIMIT
+        )
+        assert escaped[0].closed
+        with pytest.raises(ValueError, match="closed file"):
+            escaped[0].read(1)
+        with pytest.raises(ValueError, match="closed file"):
+            copied[0].read(1)
+        assert "close also failed" in "\n".join(_exception_notes(primary))
+        assert bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS == [
+            escaped[0]
+        ]
+        assert not _publication_cleanup_owners(primary)
+
+        created[0].allow_close = True
+        created[0].raise_after_close = True
+        with pytest.raises(StorageIntegrityError, match="stream close failed"):
+            retry_retained_verified_bundle_stream_cleanup()
+        assert created[0]._handle.closed
+        assert not bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
+        retry_retained_verified_bundle_stream_cleanup()
+    finally:
+        created[0].allow_close = True
+        created[0]._handle.close()
+
+
+def test_verified_stream_persistent_close_observer_failure_exposes_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source(tmp_path / "source-root")
+    built = build_view_bundle(source, tmp_path / "bundle.zip", view_type="bm25")
+    payload = built.path.read_bytes()
+    real_temporary_file = bundle_module.tempfile.TemporaryFile
+    primary = KeyboardInterrupt("persistent physical close observation failure")
+
+    class PersistentObserverFailure:
+        def __init__(self) -> None:
+            self._handle = real_temporary_file(mode="w+b")
+            self.allow_close = False
+            self.fail_observation = False
+            self.close_attempts = 0
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._handle, name)
+
+        @property
+        def closed(self) -> bool:
+            if self.fail_observation:
+                raise primary
+            return self._handle.closed
+
+        def close(self) -> None:
+            self.close_attempts += 1
+            if not self.allow_close:
+                raise OSError(errno.EIO, "persistent physical close failure")
+            self._handle.close()
+
+    created: list[PersistentObserverFailure] = []
+
+    def open_persistent_failure(**_kwargs: object) -> PersistentObserverFailure:
+        archive = PersistentObserverFailure()
+        created.append(archive)
+        return archive
+
+    monkeypatch.setattr(
+        bundle_module.tempfile,
+        "TemporaryFile",
+        open_persistent_failure,
+    )
+    escaped: list[BinaryIO] = []
+
+    def enable_observer_failure(archive: BinaryIO, _record: object) -> None:
+        escaped.append(archive)
+        created[0].fail_observation = True
+
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            consume_verified_view_bundle_stream(
+                io.BytesIO(payload),
+                enable_observer_failure,
+                expected_view_type="bm25",
+                expected_digest=hashlib.sha256(payload).hexdigest(),
+                expected_size=len(payload),
+            )
+
+        assert caught.value is primary
+        assert len(created) == len(escaped) == 1
+        assert (
+            created[0].close_attempts
+            == atomic_module._MAX_ORDERED_ACTION_CANCELLATION_RETRIES + 1
+        )
+        assert not created[0]._handle.closed
+        assert escaped[0].closed
+        assert not bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
+        owners = _publication_cleanup_owners(primary)
+        assert len(owners) == 1
+
+        with pytest.raises(StorageIntegrityError, match="stream close failed"):
+            owners[0].close()
+        assert not created[0]._handle.closed
+        created[0].allow_close = True
+        created[0].fail_observation = False
+        owners[0].close()
+        assert created[0]._handle.closed
+        assert owners[0].closed
+        assert not bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
+    finally:
+        created[0].allow_close = True
+        created[0].fail_observation = False
+        created[0]._handle.close()
+        bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS.clear()
+
+
+def test_retained_verified_stream_cleanup_serializes_concurrent_retries() -> None:
+    first_entered = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+    errors: list[BaseException] = []
+
+    class Owner:
+        calls = 0
+
+        def retry_cleanup(self) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                first_entered.set()
+                assert release_first.wait(5)
+            else:
+                second_entered.set()
+            bundle_module._forget_verified_bundle_stream_cleanup_owner(self)
+
+    owner = Owner()
+    with bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_LOCK:
+        assert not bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
+        bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS.append(owner)
+
+    def retry() -> None:
+        try:
+            retry_retained_verified_bundle_stream_cleanup()
+        except BaseException as error:  # noqa: B036 - thread result capture
+            errors.append(error)
+
+    first = threading.Thread(target=retry)
+    second = threading.Thread(target=retry)
+    try:
+        first.start()
+        assert first_entered.wait(5)
+        second.start()
+        assert not second_entered.wait(0.1)
+        release_first.set()
+        first.join(5)
+        second.join(5)
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert owner.calls == 1
+        assert not errors
+        assert not bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
+    finally:
+        release_first.set()
+        first.join(5)
+        second.join(5)
+        with bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_LOCK:
+            bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS.clear()
+
+
+def test_retained_verified_stream_cleanup_preserves_close_primary_when_forget_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = KeyboardInterrupt("physical close primary")
+    secondary = SystemExit("registry release interruption")
+
+    class CloseThenInterrupt:
+        closed = False
+        calls = 0
+
+        def close(self) -> None:
+            self.calls += 1
+            self.closed = True
+            raise primary
+
+    archive = CloseThenInterrupt()
+    owner = bundle_module._CallbackScopedVerifiedBundleFile(archive)
+    bundle_module._register_verified_bundle_stream_cleanup_owner(owner)
+    real_forget = bundle_module._forget_verified_bundle_stream_cleanup_owner
+
+    def interrupt_forget(_owner: object) -> None:
+        raise secondary
+
+    monkeypatch.setattr(
+        bundle_module,
+        "_forget_verified_bundle_stream_cleanup_owner",
+        interrupt_forget,
+    )
+    with pytest.raises(KeyboardInterrupt) as captured:
+        owner.retry_cleanup()
+
+    assert captured.value is primary
+    assert archive.calls == 1
+    assert owner in bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
+    assert "registry release" in "\n".join(_exception_notes(primary))
+
+    monkeypatch.setattr(
+        bundle_module,
+        "_forget_verified_bundle_stream_cleanup_owner",
+        real_forget,
+    )
+    retry_retained_verified_bundle_stream_cleanup()
+    assert not bundle_module._RETAINED_VERIFIED_BUNDLE_STREAM_CLEANUP_OWNERS
