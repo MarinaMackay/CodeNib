@@ -8,6 +8,7 @@ import asyncio
 import inspect
 import io
 import json
+import sqlite3
 import stat
 import sys
 from collections.abc import Callable
@@ -19,9 +20,12 @@ from unittest.mock import patch
 import pytest
 from mcp import Client
 
+import codenib as codenib_module
 import codenib.compiler as compiler_module
 import codenib.compiler.manifest_materialization as materialization_module
+import codenib.storage as storage_module
 from codenib import LocalWorkspaceProvider
+from codenib import cli as cli_module
 from codenib._captured_directory import (
     PublishedWorkspaceReceiptOwner,
     UnsupportedWorkspaceCreation,
@@ -37,7 +41,10 @@ from codenib.compiler.manifest_export import (
     export_retained_repo_manifest_snapshot,
 )
 from codenib.compiler.manifest_materialization import (
+    RepoManifestMaterializationResult,
     materialize_retained_context_artifact,
+    materialize_retained_repo_manifest_ref,
+    materialize_retained_repo_manifest_snapshot,
 )
 from codenib.mcp import server as mcp_server
 from codenib.mcp.context import ServerContext
@@ -203,6 +210,24 @@ class _PostCommitFailureProvider(_TestWorkspaceProvider):
         raise self.error
 
 
+class _SupportProbeProvider(_TestWorkspaceProvider):
+    def __init__(
+        self,
+        error: BaseException | None = None,
+        *,
+        fail_on_call: int = 1,
+    ) -> None:
+        super().__init__()
+        self.error = error
+        self.fail_on_call = fail_on_call
+        self.support_calls = 0
+
+    def require_support(self) -> None:
+        self.support_calls += 1
+        if self.error is not None and self.support_calls >= self.fail_on_call:
+            raise self.error
+
+
 class _TrackedBytesIO(io.BytesIO):
     close_calls = 0
 
@@ -354,6 +379,287 @@ def test_materializer_is_available_through_the_lazy_compiler_api() -> None:
         compiler_module.materialize_retained_context_artifact
         is materialize_retained_context_artifact
     )
+    assert (
+        compiler_module.RepoManifestMaterializationResult
+        is RepoManifestMaterializationResult
+    )
+    assert (
+        compiler_module.materialize_retained_repo_manifest_ref
+        is materialize_retained_repo_manifest_ref
+    )
+    assert (
+        compiler_module.materialize_retained_repo_manifest_snapshot
+        is materialize_retained_repo_manifest_snapshot
+    )
+
+
+def test_materializes_retained_ref_and_snapshot_through_public_orchestration(
+    tmp_path: Path,
+) -> None:
+    with _retained_fixture(
+        tmp_path / "retained",
+        views=("bm25",),
+    ) as (_fixture, imported, object_store, catalog):
+        provider = _SupportProbeProvider()
+        ref_owner = PublishedWorkspaceReceiptOwner()
+        snapshot_owner = PublishedWorkspaceReceiptOwner()
+        try:
+            ref_result = materialize_retained_repo_manifest_ref(
+                "owner/repo",
+                tmp_path / "ref-artifact",
+                catalog=catalog,
+                object_store=object_store,
+                workspace_provider=provider,
+                output_receipt_owner=ref_owner,
+                ref_name=imported.ref_name,
+                expected_generation=imported.generation,
+            )
+            snapshot_result = materialize_retained_repo_manifest_snapshot(
+                "owner/repo",
+                imported.snapshot_id,
+                tmp_path / "snapshot-artifact",
+                catalog=catalog,
+                object_store=object_store,
+                workspace_provider=provider,
+                output_receipt_owner=snapshot_owner,
+            )
+
+            assert type(ref_result) is RepoManifestMaterializationResult
+            assert ref_result.artifact.repository == "owner/repo"
+            assert ref_result.artifact.views == ("bm25",)
+            assert ref_result.export_receipt.repository_id == imported.repository_id
+            assert ref_result.export_receipt.snapshot_id == imported.snapshot_id
+            assert ref_result.export_receipt.ref_name == imported.ref_name
+            assert ref_result.export_receipt.ref_generation == imported.generation
+            assert snapshot_result.artifact.repository == "owner/repo"
+            assert snapshot_result.artifact.views == ("bm25",)
+            assert snapshot_result.export_receipt.snapshot_id == imported.snapshot_id
+            assert snapshot_result.export_receipt.ref_name is None
+            assert snapshot_result.export_receipt.ref_generation is None
+            assert ref_owner.active
+            assert snapshot_owner.active
+            assert provider.support_calls == 4
+
+            with patch.object(
+                materialization_module,
+                "export_retained_repo_manifest_ref",
+            ) as export_ref:
+                with pytest.raises(RuntimeError, match="owner must be empty"):
+                    materialize_retained_repo_manifest_ref(
+                        "owner/repo",
+                        tmp_path / "second-ref-artifact",
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=provider,
+                        output_receipt_owner=ref_owner,
+                    )
+                export_ref.assert_not_called()
+        finally:
+            snapshot_owner.close()
+            ref_owner.close()
+
+
+def test_orchestration_rejects_invalid_output_before_retained_export(
+    tmp_path: Path,
+) -> None:
+    with _retained_fixture(
+        tmp_path / "retained",
+        views=("bm25",),
+    ) as (_fixture, _imported, object_store, catalog):
+        provider = _TestWorkspaceProvider()
+        owner = PublishedWorkspaceReceiptOwner()
+        existing = tmp_path / "existing"
+        existing.mkdir()
+        try:
+            with patch.object(
+                materialization_module,
+                "export_retained_repo_manifest_ref",
+            ) as export_ref:
+                with pytest.raises(StorageValidationError, match="context byte limit"):
+                    materialize_retained_repo_manifest_ref(
+                        "owner/repo",
+                        tmp_path / "invalid-limit",
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=provider,
+                        output_receipt_owner=owner,
+                        max_context_bytes=0,
+                    )
+                with pytest.raises(ValueError, match="destination|missing|exist"):
+                    materialize_retained_repo_manifest_ref(
+                        "owner/repo",
+                        existing,
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=provider,
+                        output_receipt_owner=owner,
+                    )
+                export_ref.assert_not_called()
+        finally:
+            owner.close()
+
+
+def test_orchestration_rejects_invalid_identity_or_support_before_export(
+    tmp_path: Path,
+) -> None:
+    with _retained_fixture(
+        tmp_path / "retained",
+        views=("bm25",),
+    ) as (_fixture, _imported, object_store, catalog):
+        support_error = UnsupportedWorkspaceCreation("unsupported provider")
+        unsupported = _SupportProbeProvider(support_error)
+        unused = _SupportProbeProvider()
+        owner = PublishedWorkspaceReceiptOwner()
+        try:
+            with (
+                patch.object(
+                    materialization_module,
+                    "export_retained_repo_manifest_ref",
+                ) as export_ref,
+                patch.object(
+                    materialization_module,
+                    "export_retained_repo_manifest_snapshot",
+                ) as export_snapshot,
+            ):
+                with pytest.raises(StorageValidationError, match="canonical slug"):
+                    materialize_retained_repo_manifest_ref(
+                        " Owner/Repo ",
+                        tmp_path / "invalid-repository",
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=unused,
+                        output_receipt_owner=owner,
+                    )
+                with pytest.raises(StorageValidationError, match="ref name"):
+                    materialize_retained_repo_manifest_ref(
+                        "owner/repo",
+                        tmp_path / "invalid-ref",
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=unused,
+                        output_receipt_owner=owner,
+                        ref_name=" main ",
+                    )
+                with pytest.raises(StorageValidationError, match="namespace"):
+                    materialize_retained_repo_manifest_ref(
+                        "owner/repo",
+                        tmp_path / "invalid-namespace",
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=unused,
+                        output_receipt_owner=owner,
+                        namespace_name=" default ",
+                    )
+                with pytest.raises(StorageValidationError, match="generation"):
+                    materialize_retained_repo_manifest_ref(
+                        "owner/repo",
+                        tmp_path / "invalid-generation",
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=unused,
+                        output_receipt_owner=owner,
+                        expected_generation=0,
+                    )
+                with pytest.raises(StorageValidationError, match="snapshot ID"):
+                    materialize_retained_repo_manifest_snapshot(
+                        "owner/repo",
+                        " snapshot ",
+                        tmp_path / "invalid-snapshot",
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=unused,
+                        output_receipt_owner=owner,
+                    )
+                with pytest.raises(StorageValidationError, match="canonical slug"):
+                    materialize_retained_repo_manifest_ref(
+                        "a" * 32_769,
+                        tmp_path / "oversized-repository",
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=unused,
+                        output_receipt_owner=owner,
+                    )
+                with pytest.raises(UnsupportedWorkspaceCreation) as raised:
+                    materialize_retained_repo_manifest_ref(
+                        "owner/repo",
+                        tmp_path / "unsupported",
+                        catalog=catalog,
+                        object_store=object_store,
+                        workspace_provider=unsupported,
+                        output_receipt_owner=owner,
+                    )
+                assert raised.value is support_error
+                export_ref.assert_not_called()
+                export_snapshot.assert_not_called()
+            assert unused.support_calls == 0
+            assert unsupported.support_calls == 1
+        finally:
+            owner.close()
+
+
+def test_orchestration_preserves_post_commit_output_authority(
+    tmp_path: Path,
+) -> None:
+    with _retained_fixture(
+        tmp_path / "retained",
+        views=("bm25",),
+    ) as (_fixture, imported, object_store, catalog):
+        cancellation = KeyboardInterrupt("after orchestrated commit")
+        provider = _PostCommitFailureProvider(cancellation)
+        owner = PublishedWorkspaceReceiptOwner()
+        destination = tmp_path / "artifact"
+        try:
+            with pytest.raises(KeyboardInterrupt) as raised:
+                materialize_retained_repo_manifest_ref(
+                    "owner/repo",
+                    destination,
+                    catalog=catalog,
+                    object_store=object_store,
+                    workspace_provider=provider,
+                    output_receipt_owner=owner,
+                    ref_name=imported.ref_name,
+                    expected_generation=imported.generation,
+                )
+            assert raised.value is cancellation
+            assert owner.active
+            assert owner.receipt.path == destination
+            assert verify_context_artifact(destination).views == ("bm25",)
+        finally:
+            owner.close()
+        assert owner.closed
+        assert destination.is_dir()
+
+
+def test_orchestration_rechecks_provider_support_before_publication(
+    tmp_path: Path,
+) -> None:
+    with _retained_fixture(
+        tmp_path / "retained",
+        views=("bm25",),
+    ) as (_fixture, imported, object_store, catalog):
+        support_error = UnsupportedWorkspaceCreation("support changed")
+        provider = _SupportProbeProvider(support_error, fail_on_call=2)
+        owner = PublishedWorkspaceReceiptOwner()
+        destination = tmp_path / "artifact"
+        try:
+            with pytest.raises(UnsupportedWorkspaceCreation) as raised:
+                materialize_retained_repo_manifest_ref(
+                    "owner/repo",
+                    destination,
+                    catalog=catalog,
+                    object_store=object_store,
+                    workspace_provider=provider,
+                    output_receipt_owner=owner,
+                    ref_name=imported.ref_name,
+                    expected_generation=imported.generation,
+                )
+            assert raised.value is support_error
+            assert provider.support_calls == 2
+            assert provider.run_count == 0
+            assert owner.state == "empty"
+            assert not destination.exists()
+        finally:
+            owner.close()
 
 
 def test_materializes_retained_export_as_exact_query_compatible_artifact(
@@ -592,6 +898,297 @@ def test_local_provider_materializes_real_retained_snapshot_for_mcp_bm25(
         assert owner.closed
         assert destination.is_dir()
         assert fixture.repository.is_dir()
+
+
+def test_cli_materializes_existing_ref_and_snapshot_for_mcp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _retained_fixture(
+        tmp_path / "retained",
+        views=("bm25",),
+    ) as (fixture, imported, object_store, catalog):
+        catalog_path = Path(catalog.path)
+        cas_root = object_store.root
+        catalog.close()
+        object_store.close()
+        catalog_identity = cli_module._retained_catalog_file_identity(catalog_path)
+        with LocalCAS.provision(cas_root):
+            pass
+
+        workspace_root = tmp_path / "local-workspaces"
+        provider = _local_workspace_provider(workspace_root)
+        ref_output = workspace_root / "ref-context"
+        snapshot_output = workspace_root / "snapshot-context"
+        owners: list[PublishedWorkspaceReceiptOwner] = []
+        stores: list[LocalCAS] = []
+        catalogs: list[Any] = []
+        real_owner = PublishedWorkspaceReceiptOwner
+        real_store = LocalCAS
+        real_catalog = storage_module.SQLiteCatalog
+
+        def owner_factory() -> PublishedWorkspaceReceiptOwner:
+            owner = real_owner()
+            owners.append(owner)
+            return owner
+
+        def store_factory(
+            root: str | Path,
+            *,
+            require_preprovisioned: bool = False,
+        ) -> LocalCAS:
+            assert require_preprovisioned is True
+            store = real_store(root, require_preprovisioned=True)
+            stores.append(store)
+            return store
+
+        def catalog_factory(
+            path: str | Path,
+            *,
+            create: bool = True,
+            expected_file_identity: tuple[int, int, int] | None = None,
+        ) -> Any:
+            assert create is False
+            assert type(expected_file_identity) is tuple
+            assert expected_file_identity == catalog_identity
+            opened = real_catalog(
+                path,
+                create=False,
+                expected_file_identity=expected_file_identity,
+            )
+            catalogs.append(opened)
+            return opened
+
+        monkeypatch.setattr(
+            cli_module,
+            "_new_retained_output_receipt_owner",
+            owner_factory,
+        )
+        monkeypatch.setattr(storage_module, "LocalCAS", store_factory)
+        monkeypatch.setattr(storage_module, "SQLiteCatalog", catalog_factory)
+        monkeypatch.setattr(
+            codenib_module,
+            "LocalWorkspaceProvider",
+            lambda _root: provider,
+        )
+
+        common = [
+            "artifact",
+            "materialize",
+            "--catalog",
+            str(catalog_path),
+            "--cas-root",
+            str(cas_root),
+            "--workspace-root",
+            str(workspace_root),
+            "--repository",
+            "owner/repo",
+        ]
+        ref_args = cli_module.build_parser().parse_args(
+            [
+                *common,
+                "--ref",
+                imported.ref_name,
+                "--expected-generation",
+                str(imported.generation),
+                "--output",
+                str(ref_output),
+            ]
+        )
+        snapshot_args = cli_module.build_parser().parse_args(
+            [
+                *common,
+                "--snapshot",
+                imported.snapshot_id,
+                "--output",
+                str(snapshot_output),
+            ]
+        )
+        assert ref_args.handler(ref_args) == 0
+        assert snapshot_args.handler(snapshot_args) == 0
+
+        assert len(owners) == 2
+        assert all(owner.closed for owner in owners)
+        assert len(stores) == 2
+        for store in stores:
+            with pytest.raises(StorageIntegrityError, match="closed"):
+                store.has("0" * 64)
+        assert len(catalogs) == 2
+        for opened_catalog in catalogs:
+            with pytest.raises(sqlite3.ProgrammingError):
+                opened_catalog._connection.execute("SELECT 1")
+        for output in (ref_output, snapshot_output):
+            verified = verify_context_artifact(
+                output,
+                expected_repository="owner/repo",
+                expected_commit="a" * 40,
+            )
+            assert verified.views == ("bm25",)
+            assert output.is_dir()
+
+        binding = query_context_artifact(
+            snapshot_output,
+            expected_repository="owner/repo",
+            expected_commit="a" * 40,
+        )
+        context: ServerContext | None = None
+        original_context = mcp_server._ctx
+        original_surface = mcp_server.mcp.tool_surface
+        try:
+            assert not binding.source_bound
+            context = ServerContext.load(
+                binding.manifest,
+                views=("bm25",),
+                artifact_binding=binding,
+            )
+            mcp_server._ctx = context
+            mcp_server.configure_tool_surface("full")
+
+            async def search() -> Any:
+                async with Client(mcp_server.mcp, mode="auto", cache=None) as client:
+                    return await client.call_tool(
+                        "search_bm25",
+                        {"query": "VALUE", "top_k": 5},
+                    )
+
+            response = asyncio.run(search())
+            assert response.is_error is False
+            assert response.structured_content is not None
+            hits = response.structured_content["result"]
+            assert len(hits) == 1
+            assert hits[0]["node_name"] == "sample.VALUE"
+            assert hits[0]["file"] == "sample.py"
+            assert "content" not in hits[0]
+        finally:
+            mcp_server._ctx = original_context
+            mcp_server.configure_tool_surface(original_surface)
+            if context is not None:
+                context.close()
+            binding.close()
+
+        assert fixture.repository.is_dir()
+        cli_output = capsys.readouterr().out
+        assert cli_output.count(f"Snapshot:         {imported.snapshot_id}") == 2
+        assert (
+            f"Selection:        {imported.ref_name}@{imported.generation}" in cli_output
+        )
+        assert "Selection:        immutable snapshot" in cli_output
+        assert cli_output.count("codenib mcp --artifact") == 2
+
+
+def test_cli_post_commit_cancellation_closes_authorities_and_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _retained_fixture(
+        tmp_path / "retained",
+        views=("bm25",),
+    ) as (_fixture, imported, object_store, catalog):
+        catalog_path = Path(catalog.path)
+        cas_root = object_store.root
+        catalog.close()
+        object_store.close()
+        catalog_identity = cli_module._retained_catalog_file_identity(catalog_path)
+        with LocalCAS.provision(cas_root):
+            pass
+
+        workspace_root = tmp_path / "local-workspaces"
+        workspace_root.mkdir(mode=0o700)
+        output = workspace_root / "context"
+        cancellation = KeyboardInterrupt("after CLI commit")
+        provider = _PostCommitFailureProvider(cancellation)
+        owners: list[PublishedWorkspaceReceiptOwner] = []
+        stores: list[LocalCAS] = []
+        catalogs: list[Any] = []
+        real_store = LocalCAS
+        real_catalog = storage_module.SQLiteCatalog
+
+        def owner_factory() -> PublishedWorkspaceReceiptOwner:
+            owner = PublishedWorkspaceReceiptOwner()
+            owners.append(owner)
+            return owner
+
+        def store_factory(
+            root: str | Path,
+            *,
+            require_preprovisioned: bool = False,
+        ) -> LocalCAS:
+            assert require_preprovisioned is True
+            opened = real_store(root, require_preprovisioned=True)
+            stores.append(opened)
+            return opened
+
+        def catalog_factory(
+            path: str | Path,
+            *,
+            create: bool = True,
+            expected_file_identity: tuple[int, int, int] | None = None,
+        ) -> Any:
+            assert create is False
+            assert type(expected_file_identity) is tuple
+            assert expected_file_identity == catalog_identity
+            opened = real_catalog(
+                path,
+                create=False,
+                expected_file_identity=expected_file_identity,
+            )
+            catalogs.append(opened)
+            return opened
+
+        monkeypatch.setattr(
+            cli_module,
+            "_new_retained_output_receipt_owner",
+            owner_factory,
+        )
+        monkeypatch.setattr(storage_module, "LocalCAS", store_factory)
+        monkeypatch.setattr(storage_module, "SQLiteCatalog", catalog_factory)
+        monkeypatch.setattr(
+            codenib_module,
+            "LocalWorkspaceProvider",
+            lambda _root: provider,
+        )
+        args = cli_module.build_parser().parse_args(
+            [
+                "artifact",
+                "materialize",
+                "--catalog",
+                str(catalog_path),
+                "--cas-root",
+                str(cas_root),
+                "--workspace-root",
+                str(workspace_root),
+                "--repository",
+                "owner/repo",
+                "--ref",
+                imported.ref_name,
+                "--expected-generation",
+                str(imported.generation),
+                "--output",
+                str(output),
+            ]
+        )
+
+        with pytest.raises(KeyboardInterrupt) as raised:
+            args.handler(args)
+
+        assert raised.value is cancellation
+        assert len(owners) == 1
+        assert owners[0].closed
+        assert len(stores) == 1
+        with pytest.raises(StorageIntegrityError, match="closed"):
+            stores[0].has("0" * 64)
+        assert len(catalogs) == 1
+        with pytest.raises(sqlite3.ProgrammingError):
+            catalogs[0]._connection.execute("SELECT 1")
+        assert verify_context_artifact(
+            output,
+            expected_repository="owner/repo",
+            expected_commit="a" * 40,
+        ).views == ("bm25",)
+        assert output.is_dir()
+        assert "may have been published" in capsys.readouterr().err
 
 
 def test_materializer_requires_retention_without_requiring_ingestion(
