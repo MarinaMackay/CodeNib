@@ -11,5 +11,30 @@ to a real symbol span pulled from the indexes (no fabricated lines).
 """
 
 from .builder import WikiBuilder
+from .media_artifacts import discover_media_manifest
+from .media_evidence import build_media_evidence_pack
+from .media_facts import build_visual_facts_manifest, deterministic_visual_facts
+from .media_grounding import (
+    discover_source_symbol_candidates,
+    ground_visual_facts_to_sources,
+)
+from .media_knowledge import (
+    build_multimodal_knowledge_view,
+    find_visual_code_links,
+    get_visual_evidence,
+    search_visual_context,
+)
 
-__all__ = ["WikiBuilder"]
+__all__ = [
+    "WikiBuilder",
+    "build_media_evidence_pack",
+    "build_multimodal_knowledge_view",
+    "build_visual_facts_manifest",
+    "deterministic_visual_facts",
+    "discover_media_manifest",
+    "discover_source_symbol_candidates",
+    "find_visual_code_links",
+    "get_visual_evidence",
+    "ground_visual_facts_to_sources",
+    "search_visual_context",
+]
