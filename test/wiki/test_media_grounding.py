@@ -1,0 +1,172 @@
+# SPDX-FileCopyrightText: 2025-2026 CodeNib Contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+from __future__ import annotations
+
+from codenib.repository_source_selection import RepositorySourceSelection
+from codenib.wiki.media_grounding import (
+    discover_source_symbol_candidates,
+    ground_visual_facts_to_sources,
+)
+
+
+def test_discover_source_symbol_candidates_extracts_files_and_symbols(tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "compiler.py").write_text(
+        "\n".join(
+            [
+                "class IndexCompiler:",
+                "    pass",
+                "",
+                "def build_vector_store():",
+                "    VectorStore = object()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    candidates = discover_source_symbol_candidates(tmp_path)
+
+    assert {
+        "path": "src/compiler.py",
+        "symbol": "",
+        "kind": "source",
+        "line": 0,
+    } in candidates
+    symbols = {candidate["symbol"] for candidate in candidates}
+    assert "IndexCompiler" in symbols
+    assert "build_vector_store" in symbols
+    assert "VectorStore" in symbols
+
+
+def test_discover_source_symbol_candidates_respects_source_selection(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "visible.py").write_text(
+        "class Visible: pass", encoding="utf-8"
+    )
+    (tmp_path / "hidden").mkdir()
+    (tmp_path / "hidden" / "secret.py").write_text(
+        "class Secret: pass", encoding="utf-8"
+    )
+
+    candidates = discover_source_symbol_candidates(
+        tmp_path,
+        selection=RepositorySourceSelection(["hidden"]),
+    )
+
+    assert all(not candidate["path"].startswith("hidden/") for candidate in candidates)
+    assert any(candidate["symbol"] == "Visible" for candidate in candidates)
+
+
+def test_ground_visual_facts_to_sources_binds_entities_to_symbols():
+    visual_facts = {
+        "manifest_sha256": "visual-facts-hash",
+        "facts": [
+            {
+                "artifact_path": "docs/assets/architecture.svg",
+                "entities": [
+                    {
+                        "name": "IndexCompiler",
+                        "grounding_candidates": ["IndexCompiler"],
+                    },
+                    {
+                        "name": "Vector Store",
+                        "grounding_candidates": ["VectorStore"],
+                    },
+                ],
+            }
+        ],
+    }
+    source_candidates = [
+        {
+            "path": "codenib/compiler/index_compiler.py",
+            "symbol": "IndexCompiler",
+            "kind": "symbol",
+            "line": 42,
+        },
+        {
+            "path": "codenib/index/embedding/vector_store.py",
+            "symbol": "VectorStore",
+            "kind": "symbol",
+            "line": 10,
+        },
+    ]
+
+    manifest = ground_visual_facts_to_sources(visual_facts, source_candidates)
+
+    assert manifest["schema"] == "codenib.media-grounding.v1"
+    assert manifest["visual_facts_manifest_sha256"] == "visual-facts-hash"
+    bindings = manifest["bindings"]
+    assert {
+        "artifact_path": "docs/assets/architecture.svg",
+        "entity_name": "IndexCompiler",
+        "source_path": "codenib/compiler/index_compiler.py",
+        "symbol": "IndexCompiler",
+        "kind": "symbol",
+        "line": 42,
+        "score": 1.0,
+        "evidence": "exact symbol match",
+    } in bindings
+    assert any(binding["entity_name"] == "Vector Store" for binding in bindings)
+    assert manifest["manifest_sha256"]
+
+
+def test_ground_visual_facts_to_sources_prefers_exact_symbol_match():
+    visual_facts = {
+        "manifest_sha256": "visual-facts-hash",
+        "facts": [
+            {
+                "artifact_path": "docs/architecture.svg",
+                "entities": [{"name": "WikiService"}],
+            }
+        ],
+    }
+    manifest = ground_visual_facts_to_sources(
+        visual_facts,
+        [
+            {
+                "path": "codenib/wiki/wiki_service.py",
+                "symbol": "",
+                "kind": "source",
+                "line": 0,
+            },
+            {
+                "path": "codenib/wiki/service.py",
+                "symbol": "WikiService",
+                "kind": "symbol",
+                "line": 17,
+            },
+        ],
+    )
+
+    assert manifest["bindings"][0]["symbol"] == "WikiService"
+    assert manifest["bindings"][0]["score"] == 1.0
+
+
+def test_ground_visual_facts_to_sources_deduplicates_bindings():
+    visual_facts = {
+        "manifest_sha256": "visual-facts-hash",
+        "facts": [
+            {
+                "artifact_path": "docs/architecture.svg",
+                "entities": [
+                    {
+                        "name": "WikiService",
+                        "grounding_candidates": ["WikiService", "WikiService"],
+                    }
+                ],
+            }
+        ],
+    }
+    source = {
+        "path": "codenib/wiki/service.py",
+        "symbol": "WikiService",
+        "kind": "symbol",
+        "line": 17,
+    }
+
+    manifest = ground_visual_facts_to_sources(visual_facts, [source, source])
+
+    assert len(manifest["bindings"]) == 1
