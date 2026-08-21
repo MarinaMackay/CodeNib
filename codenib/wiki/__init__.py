@@ -29,9 +29,12 @@ from .media_knowledge import (
     get_visual_evidence,
     search_visual_context,
 )
+from .media_tools import MULTIMODAL_TOOL_SCHEMAS, MultimodalKnowledgeToolRouter
 from .media_vlm import OpenAICompatibleVisualFactExtractor
 
 __all__ = [
+    "MULTIMODAL_TOOL_SCHEMAS",
+    "MultimodalKnowledgeToolRouter",
     "WikiBuilder",
     "OpenAICompatibleVisualFactExtractor",
     "build_media_evidence_pack",
