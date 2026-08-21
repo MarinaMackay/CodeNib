@@ -18,6 +18,11 @@ from .media_grounding import (
     discover_source_symbol_candidates,
     ground_visual_facts_to_sources,
 )
+from .media_incremental import (
+    diff_media_manifests,
+    merge_incremental_visual_facts,
+    plan_incremental_visual_fact_update,
+)
 from .media_knowledge import (
     build_multimodal_knowledge_view,
     find_visual_code_links,
@@ -33,10 +38,13 @@ __all__ = [
     "build_multimodal_knowledge_view",
     "build_visual_facts_manifest",
     "deterministic_visual_facts",
+    "diff_media_manifests",
     "discover_media_manifest",
     "discover_source_symbol_candidates",
     "find_visual_code_links",
     "get_visual_evidence",
     "ground_visual_facts_to_sources",
+    "merge_incremental_visual_facts",
+    "plan_incremental_visual_fact_update",
     "search_visual_context",
 ]
