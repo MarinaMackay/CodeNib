@@ -170,3 +170,46 @@ def test_ground_visual_facts_to_sources_deduplicates_bindings():
     manifest = ground_visual_facts_to_sources(visual_facts, [source, source])
 
     assert len(manifest["bindings"]) == 1
+
+
+def test_ground_visual_facts_to_sources_accepts_custom_scorer():
+    visual_facts = {
+        "manifest_sha256": "visual-facts-hash",
+        "facts": [
+            {
+                "artifact_path": "docs/architecture.svg",
+                "entities": [{"name": "DiagramBox"}],
+            }
+        ],
+    }
+
+    def scorer(entity, candidate):
+        if entity["name"] == "DiagramBox" and candidate["symbol"] == "WikiService":
+            return {"score": 0.88, "evidence": "graph scorer match"}
+        return None
+
+    manifest = ground_visual_facts_to_sources(
+        visual_facts,
+        [
+            {
+                "path": "codenib/wiki/service.py",
+                "symbol": "WikiService",
+                "kind": "symbol",
+                "line": 17,
+            }
+        ],
+        scorer=scorer,
+    )
+
+    assert manifest["bindings"] == [
+        {
+            "artifact_path": "docs/architecture.svg",
+            "entity_name": "DiagramBox",
+            "source_path": "codenib/wiki/service.py",
+            "symbol": "WikiService",
+            "kind": "symbol",
+            "line": 17,
+            "score": 0.88,
+            "evidence": "graph scorer match",
+        }
+    ]

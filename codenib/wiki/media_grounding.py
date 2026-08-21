@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from ..repository_filters import walk_repository_files
 from ..repository_source_selection import (
@@ -44,6 +44,9 @@ _SYMBOL_RE = re.compile(
     r"\b(?:class|def|function|const|let|var|interface|type|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
 _CAMEL_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]{2,}\b")
+VisualGroundingScorer = Callable[
+    [Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any] | None
+]
 
 
 @dataclass(frozen=True)
@@ -159,8 +162,14 @@ def ground_visual_facts_to_sources(
     source_candidates: Iterable[Mapping[str, Any]],
     *,
     max_bindings_per_entity: int = _MAX_BINDINGS_PER_ENTITY,
+    scorer: VisualGroundingScorer | None = None,
 ) -> dict[str, Any]:
-    """Ground visual entities to a source inventory using deterministic scoring."""
+    """Ground visual entities to a source inventory.
+
+    The default scorer is deterministic and lexical. Callers can pass a scorer
+    backed by BM25, embeddings, CodeGraph, LSP facts, or FactQueryIndex without
+    changing the visual-code binding manifest schema.
+    """
 
     candidates = [
         _candidate_from_mapping(candidate)
@@ -188,11 +197,13 @@ def ground_visual_facts_to_sources(
             scored = [
                 binding
                 for binding in (
-                    _score_candidate(
+                    _score_with_optional_scorer(
                         artifact_path=artifact_path,
+                        entity=entity,
                         entity_name=entity_name,
                         hints=hints,
                         candidate=candidate,
+                        scorer=scorer,
                     )
                     for candidate in candidates
                 )
@@ -227,6 +238,40 @@ def ground_visual_facts_to_sources(
         ),
     )
     return manifest.to_dict()
+
+
+def _score_with_optional_scorer(
+    *,
+    artifact_path: str,
+    entity: Mapping[str, Any],
+    entity_name: str,
+    hints: Iterable[str],
+    candidate: SourceSymbolCandidate,
+    scorer: VisualGroundingScorer | None,
+) -> VisualCodeBinding | None:
+    if scorer is None:
+        return _score_candidate(
+            artifact_path=artifact_path,
+            entity_name=entity_name,
+            hints=hints,
+            candidate=candidate,
+        )
+    raw = scorer(entity, candidate.to_dict())
+    if not isinstance(raw, Mapping):
+        return None
+    score = _confidence(raw.get("score"))
+    if score <= 0:
+        return None
+    return VisualCodeBinding(
+        artifact_path=artifact_path,
+        entity_name=entity_name,
+        source_path=candidate.path,
+        symbol=candidate.symbol,
+        kind=candidate.kind,
+        line=candidate.line,
+        score=round(score, 4),
+        evidence=_safe_text(raw.get("evidence") or "custom scorer"),
+    )
 
 
 def _score_candidate(
@@ -324,6 +369,16 @@ def _positive_int(value: Any) -> int:
     return max(0, number)
 
 
+def _confidence(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return min(1.0, max(0.0, confidence))
+
+
 def _sha256_json(payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         payload,
@@ -343,6 +398,7 @@ __all__ = [
     "MEDIA_GROUNDING_SCHEMA",
     "MEDIA_GROUNDING_VERSION",
     "SourceSymbolCandidate",
+    "VisualGroundingScorer",
     "VisualCodeBinding",
     "VisualGroundingManifest",
     "discover_source_symbol_candidates",
