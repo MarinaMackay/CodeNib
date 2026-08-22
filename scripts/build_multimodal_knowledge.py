@@ -15,6 +15,7 @@ from pathlib import Path
 from codenib.wiki import (
     OpenAICompatibleVisualFactExtractor,
     build_multimodal_repository_knowledge,
+    save_multimodal_knowledge_bundle,
 )
 
 
@@ -86,12 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         max_artifacts=args.max_artifacts,
         max_source_candidates=args.max_source_candidates,
     )
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(
-        json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    save_multimodal_knowledge_bundle(bundle, args.output)
     counts = {
         "media_artifacts": bundle["media_manifest"]["artifact_count"],
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
