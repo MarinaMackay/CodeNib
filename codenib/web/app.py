@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import hashlib
 import os
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path, PurePosixPath
@@ -37,6 +38,7 @@ from ..log_utils import get_logger
 from ..repository_filters import repository_path_is_visible
 from ..repository_source_selection import RepositorySourceSelection
 from ..wiki import WikiBuilder
+from ..wiki.media_evidence import build_media_evidence_pack
 from ..wiki.media_generation import (
     image_generator_from_config,
     materialize_media_slots,
@@ -253,6 +255,38 @@ def _wiki_media_dir(config, repo_id: str, page_id: str) -> Path:
     return root / repo_key / page_key
 
 
+def _wiki_media_source_snippet(source_reader, citation: Mapping) -> str | None:
+    source = bound_source_slice(
+        source_reader,
+        str(citation.get("file") or ""),
+        citation.get("start_line"),
+        citation.get("end_line"),
+    )
+    if not isinstance(source, Mapping):
+        return None
+    return str(source.get("content") or "") or None
+
+
+def _wiki_media_evidence_builder(bundle, page: Mapping):
+    evidence = page.get("evidence")
+    relations = evidence.get("relations") or () if isinstance(evidence, Mapping) else ()
+    source_reader = getattr(bundle, "source_reader", None)
+    source_loader = (
+        partial(_wiki_media_source_snippet, source_reader)
+        if source_reader is not None
+        else None
+    )
+    return partial(
+        build_media_evidence_pack,
+        page_id=str(page.get("id") or ""),
+        page_title=str(page.get("title") or ""),
+        page_markdown=str(page.get("markdown") or ""),
+        citations=page.get("citations") or (),
+        relations=relations,
+        source_reader=source_loader,
+    )
+
+
 def _materialize_wiki_media(repo_id: str, page_id: str, page: dict) -> dict:
     """Attach generated media assets when a wiki media provider is configured."""
 
@@ -271,6 +305,7 @@ def _materialize_wiki_media(repo_id: str, page_id: str, page: dict) -> dict:
             generator=generator,
             output_dir=_wiki_media_dir(config, repo_id, page_id),
             asset_base_path=asset_base,
+            evidence_builder=_wiki_media_evidence_builder(_bundle(repo_id), page),
         )
     except MemoryError:
         raise
