@@ -12,6 +12,7 @@ import sys
 def test_smoke_multimodal_vlm_script_writes_demo_bundle(tmp_path):
     output = tmp_path / "smoke-bundle.json"
     repo = tmp_path / "smoke-repo"
+    preview = tmp_path / "preview.html"
 
     completed = subprocess.run(
         [
@@ -21,6 +22,8 @@ def test_smoke_multimodal_vlm_script_writes_demo_bundle(tmp_path):
             str(output),
             "--keep-repo",
             str(repo),
+            "--preview-html",
+            str(preview),
         ],
         check=True,
         stdout=subprocess.PIPE,
@@ -35,7 +38,13 @@ def test_smoke_multimodal_vlm_script_writes_demo_bundle(tmp_path):
     assert counts["extractor"] == "local/metadata"
     assert counts["media_artifacts"] == 1
     assert counts["knowledge_entries"] == 1
+    assert counts["visual_graph_plans"] == 1
     assert bundle["schema"] == "codenib.multimodal-knowledge-bundle.v1"
+    assert bundle["visual_graph_manifest"]["plan_count"] == 1
     assert "WikiRenderer" in entity_names
     assert "IndexCompiler" in entity_names
     assert "VectorStore" in entity_names
+    html = preview.read_text(encoding="utf-8")
+    assert "CodeNib Multimodal CodeWiki Smoke Preview" in html
+    assert "flowchart LR" in html
+    assert "explore_visual_context" in html
