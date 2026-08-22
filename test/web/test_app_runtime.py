@@ -359,6 +359,7 @@ def test_wiki_page_can_skip_media_materialization_for_preload(monkeypatch):
         "id": "overview-concept-illustration",
         "kind": "image",
         "prompt": "Draw the runtime.",
+        "evidence_pack": {"snippet": "server-only preload evidence"},
     }
 
     class Builder:
@@ -381,8 +382,16 @@ def test_wiki_page_can_skip_media_materialization_for_preload(monkeypatch):
 
     page = asyncio.run(web_app.wiki_page("demo", "overview", materialize_media=False))
 
-    assert page["media_slots"] == [slot]
+    assert page["media_slots"] == [
+        {
+            "id": "overview-concept-illustration",
+            "kind": "image",
+            "prompt": "Draw the runtime.",
+        }
+    ]
     assert "asset" not in page["media_slots"][0]
+    assert "server-only preload evidence" not in str(page)
+    assert slot["evidence_pack"]["snippet"] == "server-only preload evidence"
 
 
 def test_wiki_media_storage_keys_cannot_traverse_data_root(tmp_path):

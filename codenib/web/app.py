@@ -451,7 +451,7 @@ async def wiki_page(
                 "relation_count": 0,
             },
         }
-    return page
+    return redact_media_evidence_packs(page)
 
 
 @app.get("/api/repos/{repo_id}/wiki-media/{page_id}/{filename:path}")
