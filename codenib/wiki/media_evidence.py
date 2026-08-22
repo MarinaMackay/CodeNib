@@ -146,6 +146,46 @@ def build_media_evidence_pack(
     return data
 
 
+def normalize_media_evidence_pack(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return one caller-supplied pack in the bounded canonical schema."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("wiki media evidence pack must be a mapping")
+    page = value.get("page")
+    if not isinstance(page, Mapping):
+        page = {}
+    source_candidates = tuple(
+        _mapping_candidates(value.get("sources") or (), label="evidence sources")
+    )
+    relation_candidates = tuple(
+        _mapping_candidates(value.get("relations") or (), label="evidence relations")
+    )
+    selected_files = tuple(
+        dict.fromkeys(
+            file
+            for file in (
+                _safe_file(candidate.get("file")) for candidate in source_candidates
+            )
+            if file
+        )
+    )
+    return build_media_evidence_pack(
+        {
+            "id": value.get("slot_id") or value.get("id"),
+            "kind": value.get("kind"),
+            "title": value.get("title"),
+            "purpose": value.get("purpose"),
+            "source_citations": selected_files,
+            "human_prior": value.get("human_prior"),
+        },
+        page_id=_safe_text(page.get("id")),
+        page_title=_safe_text(page.get("title")),
+        page_markdown=_safe_text(page.get("summary")),
+        citations=source_candidates,
+        relations=relation_candidates,
+    )
+
+
 def _source_evidence(
     slot: Mapping[str, Any],
     citations: Iterable[Mapping[str, Any]],
@@ -167,7 +207,9 @@ def _source_evidence(
         file = _safe_file(citation.get("file"))
         if not file or (restrict_to_selected_files and file not in allowed_files):
             continue
-        symbol = _safe_text(citation.get("symbol") or citation.get("name"))
+        symbol = _safe_text(
+            citation.get("symbol") or citation.get("name") or citation.get("node_name")
+        )
         start_line = _positive_int(citation.get("start_line") or citation.get("line"))
         end_line = _positive_int(citation.get("end_line"))
         if end_line is not None and (start_line is None or end_line < start_line):
@@ -177,7 +219,10 @@ def _source_evidence(
             continue
         seen.add(key)
 
-        snippet = _safe_text(citation.get("snippet"), max_bytes=max_snippet_bytes)
+        snippet = _safe_text(
+            citation.get("snippet") or citation.get("content"),
+            max_bytes=max_snippet_bytes,
+        )
         if source_reader is not None and max_snippet_bytes and not snippet:
             reader_citation = {
                 "file": file,
@@ -369,4 +414,5 @@ __all__ = [
     "WikiMediaRelationEvidence",
     "WikiMediaSourceEvidence",
     "build_media_evidence_pack",
+    "normalize_media_evidence_pack",
 ]

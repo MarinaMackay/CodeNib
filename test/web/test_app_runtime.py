@@ -444,6 +444,45 @@ def test_wiki_media_materialization_does_not_swallow_memory_error(
         )
 
 
+def test_wiki_media_redacts_evidence_when_generation_is_disabled(tmp_path, monkeypatch):
+    config = SimpleNamespace(data_dir=str(tmp_path))
+    monkeypatch.setattr(web_app, "load_config", lambda: config)
+    monkeypatch.setattr(web_app, "image_generator_from_config", lambda _config: None)
+    page = {
+        "media_slots": [
+            {"id": "asset", "evidence_pack": {"snippet": "server-only secret"}}
+        ]
+    }
+
+    public_page = web_app._materialize_wiki_media("demo", "overview", page)
+
+    assert "evidence_pack" not in public_page["media_slots"][0]
+    assert page["media_slots"][0]["evidence_pack"]["snippet"] == "server-only secret"
+
+
+def test_wiki_media_redacts_evidence_after_generation_failure(tmp_path, monkeypatch):
+    config = SimpleNamespace(data_dir=str(tmp_path))
+    monkeypatch.setattr(web_app, "load_config", lambda: config)
+    monkeypatch.setattr(
+        web_app, "image_generator_from_config", lambda _config: object()
+    )
+    monkeypatch.setattr(
+        web_app,
+        "materialize_media_slots",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("failed")),
+    )
+    page = {
+        "media_slots": [
+            {"id": "asset", "evidence_pack": {"snippet": "server-only secret"}}
+        ]
+    }
+
+    public_page = web_app._materialize_wiki_media("demo", "overview", page)
+
+    assert "evidence_pack" not in public_page["media_slots"][0]
+    assert "server-only secret" not in str(public_page)
+
+
 def test_wiki_page_graph_reports_why_the_graph_is_unavailable(monkeypatch):
     class Builder:
         def page_citations(self, page_id):

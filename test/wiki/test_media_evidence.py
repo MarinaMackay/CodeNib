@@ -90,6 +90,31 @@ def test_build_media_evidence_pack_reads_bounded_snippets():
     assert pack["sources"][0]["start_line"] == 7
 
 
+def test_build_media_evidence_pack_accepts_native_citation_fields():
+    pack = build_media_evidence_pack(
+        {"id": "slot", "kind": "image", "source_citations": ["src/app.py"]},
+        citations=[
+            {
+                "file": "src/app.py",
+                "node_name": "create_app",
+                "start_line": 7,
+                "end_line": 12,
+                "content": "def create_app(): ...",
+            }
+        ],
+    )
+
+    assert pack["sources"] == [
+        {
+            "file": "src/app.py",
+            "symbol": "create_app",
+            "start_line": 7,
+            "end_line": 12,
+            "snippet": "def create_app(): ...",
+        }
+    ]
+
+
 def test_build_media_evidence_pack_deduplicates_relations_and_sources():
     slot = {"id": "slot", "kind": "diagram", "source_citations": ["src/app.py"]}
     pack = build_media_evidence_pack(
