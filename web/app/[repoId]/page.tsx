@@ -9,6 +9,7 @@ import { isStaticRuntime, mediaAssetUrl } from "@/lib/runtime";
 import {
   fetchCommits,
   fetchRepos,
+  fetchWikiMultimodal,
   fetchWikiGraph,
   fetchWikiPage,
   fetchWikiTree,
@@ -20,6 +21,7 @@ import {
   type Citation,
   type CommitRef,
   type RepoInfo,
+  type WikiMultimodalBundle,
   type WikiMediaSlot,
   type WikiPage,
   type WikiPageRef,
@@ -305,6 +307,197 @@ function MultimodalMedia({
   );
 }
 
+function scoreLabel(score: number | null | undefined): string {
+  if (score == null || Number.isNaN(score)) return "";
+  return `${Math.round(score * 100)}%`;
+}
+
+function MultimodalKnowledgePanel({
+  bundle,
+  repo,
+}: {
+  bundle: WikiMultimodalBundle;
+  repo: RepoInfo | null;
+}) {
+  const artifacts = bundle.media_manifest.artifacts ?? [];
+  const facts = bundle.visual_facts_manifest.facts ?? [];
+  const bindings = bundle.grounding_manifest.bindings ?? [];
+  const graphPlans = bundle.visual_graph_manifest?.plans ?? [];
+  const storyboards = bundle.visual_storyboard_manifest?.storyboards ?? [];
+  const primaryFact = facts[0];
+  const primaryGraph = graphPlans[0];
+  const primaryStoryboard = storyboards[0];
+  const labelsById = new Map(
+    (primaryGraph?.nodes ?? []).map((node) => [node.id, node.label]),
+  );
+
+  return (
+    <section
+      className="wiki-multimodal-knowledge"
+      aria-labelledby="wiki-multimodal-title"
+    >
+      <div className="wiki-multimodal-head">
+        <div>
+          <h2 id="wiki-multimodal-title">Multimodal repository knowledge</h2>
+          <p>
+            Persisted visual facts, source grounding, graph plans, and
+            video-ready storyboards for this repository.
+          </p>
+        </div>
+        <span className="wiki-multimodal-hash mono">
+          {bundle.bundle_sha256.slice(0, 10)}
+        </span>
+      </div>
+
+      <div className="wiki-multimodal-stats" aria-label="Multimodal counts">
+        <span>{bundle.media_manifest.artifact_count} assets</span>
+        <span>{bundle.visual_facts_manifest.fact_count} fact packs</span>
+        <span>{bundle.grounding_manifest.binding_count} source bindings</span>
+        <span>{bundle.visual_graph_manifest?.plan_count ?? 0} graph plans</span>
+        <span>
+          {bundle.visual_storyboard_manifest?.storyboard_count ?? 0} storyboards
+        </span>
+      </div>
+
+      <div className="wiki-multimodal-grid">
+        <article className="wiki-multimodal-card">
+          <div className="wiki-multimodal-card-title">Visual facts</div>
+          {primaryFact ? (
+            <>
+              <div className="mono wiki-multimodal-path">
+                {primaryFact.artifact_path}
+              </div>
+              <div className="wiki-multimodal-pills">
+                {(primaryFact.entities ?? []).slice(0, 8).map((entity) => (
+                  <span key={`${primaryFact.artifact_path}:${entity.name}`}>
+                    {entity.name}
+                    {entity.type ? ` · ${entity.type}` : ""}
+                  </span>
+                ))}
+              </div>
+              {(primaryFact.claims ?? []).slice(0, 2).map((claim) => (
+                <p className="wiki-multimodal-claim" key={claim.text}>
+                  {claim.text}
+                </p>
+              ))}
+            </>
+          ) : (
+            <p className="wiki-multimodal-muted">No visual facts extracted yet.</p>
+          )}
+        </article>
+
+        <article className="wiki-multimodal-card">
+          <div className="wiki-multimodal-card-title">Source grounding</div>
+          {bindings.length > 0 ? (
+            <div className="wiki-multimodal-bindings">
+              {bindings.slice(0, 8).map((binding) => {
+                const url = ghFileUrl(
+                  repo?.repo,
+                  repo?.source_url,
+                  repo?.base_commit,
+                  binding.source_path,
+                  binding.line || undefined,
+                  binding.line || undefined,
+                );
+                const label = `${binding.entity_name}:${binding.source_path}:${
+                  binding.symbol ?? ""
+                }`;
+                return url ? (
+                  <a
+                    className="wiki-multimodal-binding"
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    key={label}
+                  >
+                    <span>{binding.entity_name}</span>
+                    <code>
+                      {binding.source_path}
+                      {binding.symbol ? ` :: ${binding.symbol}` : ""}
+                    </code>
+                    <small>
+                      {scoreLabel(binding.score)}
+                      {binding.evidence ? ` · ${binding.evidence}` : ""}
+                    </small>
+                  </a>
+                ) : (
+                  <div className="wiki-multimodal-binding" key={label}>
+                    <span>{binding.entity_name}</span>
+                    <code>
+                      {binding.source_path}
+                      {binding.symbol ? ` :: ${binding.symbol}` : ""}
+                    </code>
+                    <small>
+                      {scoreLabel(binding.score)}
+                      {binding.evidence ? ` · ${binding.evidence}` : ""}
+                    </small>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="wiki-multimodal-muted">No source bindings yet.</p>
+          )}
+        </article>
+
+        <article className="wiki-multimodal-card">
+          <div className="wiki-multimodal-card-title">VisualGraphPlan</div>
+          {primaryGraph ? (
+            <>
+              <div className="mono wiki-multimodal-path">
+                {primaryGraph.artifact_path}
+              </div>
+              <div className="wiki-multimodal-edge-list">
+                {(primaryGraph.edges ?? []).slice(0, 6).map((edge, index) => (
+                  <div key={`${edge.source}:${edge.target}:${index}`}>
+                    <span>{labelsById.get(edge.source) ?? edge.source}</span>
+                    <em>{edge.relation ?? "related_to"}</em>
+                    <span>{labelsById.get(edge.target) ?? edge.target}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="wiki-multimodal-muted">No visual graph plan yet.</p>
+          )}
+        </article>
+
+        <article className="wiki-multimodal-card">
+          <div className="wiki-multimodal-card-title">Video storyboard</div>
+          {primaryStoryboard ? (
+            <>
+              <div className="mono wiki-multimodal-path">
+                {primaryStoryboard.artifact_path}
+              </div>
+              <ol className="wiki-multimodal-storyboard">
+                {(primaryStoryboard.frames ?? []).slice(0, 5).map((frame) => (
+                  <li key={frame.id}>
+                    <strong>{frame.title}</strong>
+                    <span>{frame.narration}</span>
+                    <small>{frame.duration_ms} ms</small>
+                  </li>
+                ))}
+              </ol>
+            </>
+          ) : (
+            <p className="wiki-multimodal-muted">No storyboard generated yet.</p>
+          )}
+        </article>
+      </div>
+
+      {artifacts.length > 1 && (
+        <div className="wiki-multimodal-artifacts">
+          {artifacts.slice(0, 6).map((artifact) => (
+            <span className="mono" key={artifact.path}>
+              {artifact.path}
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function WikiPageView({
   repoId,
   initialPageId = "overview",
@@ -324,6 +517,8 @@ export default function WikiPageView({
   const [pageGraphOpen, setPageGraphOpen] = useState(false);
   const [pageGraphLoading, setPageGraphLoading] = useState(false);
   const [pageGraphError, setPageGraphError] = useState(false);
+  const [multimodalBundle, setMultimodalBundle] =
+    useState<WikiMultimodalBundle | null>(null);
   // The graph explorer opens as a full-screen modal, optionally seeded on a
   // symbol when launched via "Focus here" from a wiki subsystem map.
   const [graphSeed, setGraphSeed] = useState<string | undefined>(undefined);
@@ -346,6 +541,7 @@ export default function WikiPageView({
     let cancelled = false;
     setCommits([]);
     setSelectedCommit(undefined);
+    setMultimodalBundle(null);
 
     fetchRepos()
       .then((rs) => {
@@ -361,6 +557,13 @@ export default function WikiPageView({
         setSelectedCommit(w.selected ?? undefined);
       })
       .catch(() => {});
+    fetchWikiMultimodal(repoId)
+      .then((bundle) => {
+        if (!cancelled) setMultimodalBundle(bundle);
+      })
+      .catch(() => {
+        if (!cancelled) setMultimodalBundle(null);
+      });
     setTocLoading(true);
     setError(null);
     fetchWikiTree(repoId)
@@ -834,6 +1037,12 @@ export default function WikiPageView({
               ) : null}
               {page?.media_slots && page.media_slots.length > 0 && (
                 <MultimodalMedia slots={page.media_slots} repo={repo} />
+              )}
+              {multimodalBundle && (
+                <MultimodalKnowledgePanel
+                  bundle={multimodalBundle}
+                  repo={repo}
+                />
               )}
               {page ? (
                 withheldByQualityGuard ? (

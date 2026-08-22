@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from types import SimpleNamespace
 
@@ -18,6 +19,10 @@ import codenib.wiki.media_generation as media_generation
 from codenib.repository_source_selection import RepositorySourceSelection
 from codenib.source_fingerprint import capture_repository_source
 from codenib.web.schemas import ChatRequest, ChatResponse
+from codenib.wiki import (
+    build_multimodal_knowledge_bundle,
+    save_multimodal_knowledge_bundle,
+)
 
 
 def test_request_timing_header_and_slow_log_exclude_query(monkeypatch, caplog):
@@ -470,6 +475,103 @@ def test_wiki_page_can_skip_media_materialization_for_preload(monkeypatch):
     assert "asset" not in page["media_slots"][0]
     assert "server-only preload evidence" not in str(page)
     assert slot["evidence_pack"]["snippet"] == "server-only preload evidence"
+
+
+def test_wiki_multimodal_bundle_summarizes_persisted_bundle(tmp_path, monkeypatch):
+    repo_id = "owner/repo"
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    config = SimpleNamespace(data_dir=str(tmp_path))
+    bundle = build_multimodal_knowledge_bundle(
+        media_manifest={
+            "artifact_count": 1,
+            "artifacts": [{"path": "docs/architecture.svg"}],
+            "manifest_sha256": "media-hash",
+        },
+        visual_facts_manifest={
+            "fact_count": 1,
+            "facts": [
+                {
+                    "artifact_path": "docs/architecture.svg",
+                    "entities": [{"name": "WikiRenderer"}],
+                }
+            ],
+            "manifest_sha256": "facts-hash",
+        },
+        source_candidate_count=3,
+        grounding_manifest={
+            "binding_count": 1,
+            "bindings": [
+                {
+                    "artifact_path": "docs/architecture.svg",
+                    "entity_name": "WikiRenderer",
+                    "source_path": "src/wiki.py",
+                    "symbol": "WikiRenderer",
+                    "kind": "symbol",
+                    "line": 1,
+                    "score": 1.0,
+                    "evidence": "exact symbol match",
+                }
+            ],
+            "manifest_sha256": "grounding-hash",
+        },
+        knowledge_view={
+            "entry_count": 1,
+            "entries": [],
+            "view_sha256": "view-hash",
+        },
+        visual_graph_manifest={
+            "plan_count": 1,
+            "plans": [{"artifact_path": "docs/architecture.svg"}],
+            "manifest_sha256": "graph-hash",
+        },
+        visual_storyboard_manifest={
+            "storyboard_count": 1,
+            "storyboards": [{"artifact_path": "docs/architecture.svg"}],
+            "manifest_sha256": "storyboard-hash",
+        },
+    )
+    repo_key = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
+    output = tmp_path / "multimodal_knowledge" / f"{repo_key}.json"
+    save_multimodal_knowledge_bundle(bundle, output)
+    monkeypatch.setattr(web_app, "load_config", lambda: config)
+    monkeypatch.setattr(
+        web_app,
+        "_bundle",
+        lambda _repo_id: SimpleNamespace(
+            entry=SimpleNamespace(repo="owner/repo", repo_dir=str(repo_dir))
+        ),
+    )
+
+    summary = asyncio.run(web_app.wiki_multimodal_bundle(repo_id))
+
+    assert summary["bundle_sha256"] == bundle["bundle_sha256"]
+    assert summary["media_manifest"]["artifact_count"] == 1
+    assert summary["visual_facts_manifest"]["facts"][0]["entities"][0]["name"] == (
+        "WikiRenderer"
+    )
+    assert summary["grounding_manifest"]["bindings"][0]["source_path"] == (
+        "src/wiki.py"
+    )
+    assert summary["visual_graph_manifest"]["plan_count"] == 1
+    assert summary["visual_storyboard_manifest"]["storyboard_count"] == 1
+
+
+def test_wiki_multimodal_bundle_returns_404_when_missing(tmp_path, monkeypatch):
+    config = SimpleNamespace(data_dir=str(tmp_path))
+    monkeypatch.setattr(web_app, "load_config", lambda: config)
+    monkeypatch.setattr(
+        web_app,
+        "_bundle",
+        lambda _repo_id: SimpleNamespace(
+            entry=SimpleNamespace(repo="owner/repo", repo_dir=str(tmp_path / "repo"))
+        ),
+    )
+
+    with pytest.raises(web_app.HTTPException) as error:
+        asyncio.run(web_app.wiki_multimodal_bundle("owner/repo"))
+
+    assert error.value.status_code == 404
 
 
 def test_wiki_media_storage_keys_cannot_traverse_data_root(tmp_path):

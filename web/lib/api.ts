@@ -193,6 +193,124 @@ export interface WikiMediaAsset {
   metadata?: Record<string, unknown>;
 }
 
+export interface WikiMultimodalBundle {
+  schema: string;
+  schema_version: number;
+  bundle_sha256: string;
+  source_candidate_count: number;
+  media_manifest: {
+    artifact_count: number;
+    artifacts: WikiMultimodalArtifact[];
+  };
+  visual_facts_manifest: {
+    fact_count: number;
+    facts: WikiVisualFactPack[];
+  };
+  grounding_manifest: {
+    binding_count: number;
+    bindings: WikiVisualCodeBinding[];
+  };
+  knowledge_view: {
+    entry_count: number;
+  };
+  visual_graph_manifest?: {
+    plan_count: number;
+    plans: WikiVisualGraphPlan[];
+  };
+  visual_storyboard_manifest?: {
+    storyboard_count: number;
+    storyboards: WikiVisualStoryboard[];
+  };
+  incremental_update?: Record<string, unknown>;
+}
+
+export interface WikiMultimodalArtifact {
+  path: string;
+  caption?: string;
+  role_hint?: string;
+  media_type?: string;
+  sha256?: string;
+  embedded_text?: string;
+  surrounding_text?: string;
+}
+
+export interface WikiVisualFactPack {
+  artifact_path: string;
+  extractor?: string;
+  entities?: WikiVisualEntity[];
+  claims?: WikiVisualClaim[];
+  relations?: WikiVisualRelation[];
+}
+
+export interface WikiVisualEntity {
+  name: string;
+  type?: string;
+  evidence?: string;
+  grounding_candidates?: string[];
+}
+
+export interface WikiVisualClaim {
+  text: string;
+  evidence?: string;
+  confidence?: number;
+}
+
+export interface WikiVisualRelation {
+  source: string;
+  target: string;
+  relation: string;
+  evidence?: string;
+}
+
+export interface WikiVisualCodeBinding {
+  artifact_path: string;
+  entity_name: string;
+  source_path: string;
+  symbol?: string;
+  kind?: string;
+  line?: number;
+  score?: number;
+  evidence?: string;
+}
+
+export interface WikiVisualGraphPlan {
+  artifact_path: string;
+  nodes?: WikiVisualGraphNode[];
+  edges?: WikiVisualGraphEdge[];
+}
+
+export interface WikiVisualGraphNode {
+  id: string;
+  label: string;
+  source_path?: string;
+  symbol?: string;
+  line?: number;
+  evidence?: string;
+}
+
+export interface WikiVisualGraphEdge {
+  source: string;
+  target: string;
+  relation?: string;
+  evidence?: string;
+}
+
+export interface WikiVisualStoryboard {
+  artifact_path: string;
+  title: string;
+  frames?: WikiStoryboardFrame[];
+}
+
+export interface WikiStoryboardFrame {
+  id: string;
+  title: string;
+  narration: string;
+  visual_prompt: string;
+  duration_ms: number;
+  focus_node_ids?: string[];
+  source_citations?: string[];
+}
+
 /**
  * Planned media slots are internal generation metadata, not reader content.
  * Only expose slots that actually have a materialized asset in the Wiki UI.
@@ -307,6 +425,20 @@ export async function fetchWikiPage(
     }
     throw error;
   }
+}
+
+export async function fetchWikiMultimodal(
+  repoId: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<WikiMultimodalBundle | null> {
+  if (isStaticRuntime()) return null;
+  const res = await fetch(
+    `${API_BASE}/api/repos/${encodeURIComponent(repoId)}/wiki-multimodal`,
+    { signal: opts.signal },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw await responseError(res, "Failed to load multimodal wiki data");
+  return res.json();
 }
 
 export async function fetchSource(

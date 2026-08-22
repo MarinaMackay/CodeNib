@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchEdgeLabel,
+  fetchWikiMultimodal,
   fetchWikiTree,
   fetchWikiPage,
   isSourceCheckedWikiPage,
@@ -180,6 +181,46 @@ describe("fetchWikiTree", () => {
       expect.stringMatching(
         /\/api\/repos\/owner%2Frepo\/wiki\?cached_only=true$/,
       ),
+    );
+  });
+});
+
+describe("fetchWikiMultimodal", () => {
+  it("returns null when the runtime has no multimodal bundle", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      text: async () => JSON.stringify({ detail: "missing" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchWikiMultimodal("owner/repo")).resolves.toBeNull();
+  });
+
+  it("loads the bounded multimodal wiki bundle summary", async () => {
+    const payload = {
+      schema: "codenib.multimodal-knowledge-bundle.v1",
+      schema_version: 1,
+      bundle_sha256: "abc",
+      source_candidate_count: 2,
+      media_manifest: { artifact_count: 1, artifacts: [] },
+      visual_facts_manifest: { fact_count: 1, facts: [] },
+      grounding_manifest: { binding_count: 1, bindings: [] },
+      knowledge_view: { entry_count: 1 },
+      visual_graph_manifest: { plan_count: 1, plans: [] },
+      visual_storyboard_manifest: { storyboard_count: 1, storyboards: [] },
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => payload,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchWikiMultimodal("owner/repo")).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/repos\/owner%2Frepo\/wiki-multimodal$/),
+      { signal: undefined },
     );
   });
 });

@@ -39,6 +39,7 @@ from ..repository_filters import repository_path_is_visible
 from ..repository_source_selection import RepositorySourceSelection
 from ..wiki import WikiBuilder
 from ..wiki.media_evidence import build_media_evidence_pack
+from ..wiki.media_storage import load_multimodal_knowledge_bundle
 from ..wiki.media_generation import (
     image_generator_from_config,
     materialize_media_slots,
@@ -287,6 +288,99 @@ def _wiki_media_evidence_builder(bundle, page: Mapping):
     )
 
 
+def _multimodal_bundle_paths(config, repo_id: str, bundle) -> list[Path]:
+    """Candidate persisted multimodal bundle locations for one repository."""
+
+    data_root = Path(os.path.abspath(config.data_dir)) / "multimodal_knowledge"
+    repo_key = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
+    quoted_repo = quote(repo_id, safe="")
+    repo_dir_text = str(getattr(bundle.entry, "repo_dir", "") or "").strip()
+    candidates = [
+        data_root / f"{repo_key}.json",
+        data_root / f"{quoted_repo}.json",
+    ]
+    if repo_dir_text:
+        repo_dir = Path(repo_dir_text)
+        candidates.extend(
+            [
+                repo_dir / ".codenib" / "multimodal_knowledge.json",
+                repo_dir / "multimodal_knowledge.json",
+            ]
+        )
+    return candidates
+
+
+def _load_wiki_multimodal_bundle(repo_id: str) -> dict | None:
+    """Load an optional persisted multimodal knowledge bundle for the Wiki UI."""
+
+    bundle = _bundle(repo_id)  # 404 on unknown repo
+    config = load_config()
+    for path in _multimodal_bundle_paths(config, repo_id, bundle):
+        try:
+            if path.is_file():
+                return load_multimodal_knowledge_bundle(path)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Invalid multimodal knowledge bundle: {path.name}",
+            ) from exc
+        except OSError:
+            continue
+    return None
+
+
+def _summarize_multimodal_bundle(bundle: dict) -> dict:
+    """Return a bounded reader-facing summary of the multimodal bundle."""
+
+    media_manifest = bundle.get("media_manifest") or {}
+    visual_facts_manifest = bundle.get("visual_facts_manifest") or {}
+    grounding_manifest = bundle.get("grounding_manifest") or {}
+    knowledge_view = bundle.get("knowledge_view") or {}
+    visual_graph_manifest = bundle.get("visual_graph_manifest") or {}
+    visual_storyboard_manifest = bundle.get("visual_storyboard_manifest") or {}
+    return {
+        "schema": bundle.get("schema"),
+        "schema_version": bundle.get("schema_version"),
+        "bundle_sha256": bundle.get("bundle_sha256"),
+        "source_candidate_count": bundle.get("source_candidate_count", 0),
+        "media_manifest": {
+            "artifact_count": media_manifest.get("artifact_count", 0),
+            "artifacts": _cap_dicts(media_manifest.get("artifacts"), 8),
+        },
+        "visual_facts_manifest": {
+            "fact_count": visual_facts_manifest.get("fact_count", 0),
+            "facts": _cap_dicts(visual_facts_manifest.get("facts"), 8),
+        },
+        "grounding_manifest": {
+            "binding_count": grounding_manifest.get("binding_count", 0),
+            "bindings": _cap_dicts(grounding_manifest.get("bindings"), 16),
+        },
+        "knowledge_view": {
+            "entry_count": knowledge_view.get("entry_count", 0),
+        },
+        "visual_graph_manifest": {
+            "plan_count": visual_graph_manifest.get("plan_count", 0),
+            "plans": _cap_dicts(visual_graph_manifest.get("plans"), 8),
+        },
+        "visual_storyboard_manifest": {
+            "storyboard_count": visual_storyboard_manifest.get("storyboard_count", 0),
+            "storyboards": _cap_dicts(
+                visual_storyboard_manifest.get("storyboards"),
+                8,
+            ),
+        },
+        "incremental_update": dict(bundle.get("incremental_update") or {}),
+    }
+
+
+def _cap_dicts(values, limit: int) -> list[dict]:
+    return [
+        dict(value)
+        for value in list(values or [])[: max(0, limit)]
+        if isinstance(value, dict)
+    ]
+
+
 def _materialize_wiki_media(repo_id: str, page_id: str, page: dict) -> dict:
     """Attach generated media assets when a wiki media provider is configured."""
 
@@ -487,6 +581,19 @@ async def wiki_page(
             },
         }
     return redact_media_evidence_packs(page)
+
+
+@app.get("/api/repos/{repo_id}/wiki-multimodal")
+async def wiki_multimodal_bundle(repo_id: str) -> dict:
+    """Return a bounded multimodal knowledge summary for the local Wiki UI."""
+
+    bundle = await asyncio.to_thread(_load_wiki_multimodal_bundle, repo_id)
+    if bundle is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No multimodal knowledge bundle found for this repo",
+        )
+    return _summarize_multimodal_bundle(bundle)
 
 
 @app.get("/api/repos/{repo_id}/wiki-media/{page_id}/{filename:path}")

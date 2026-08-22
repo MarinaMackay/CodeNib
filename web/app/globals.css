@@ -3413,6 +3413,195 @@ a.evidence-row:hover {
     linear-gradient(135deg, var(--bg-surface), var(--bg-muted));
   box-shadow: 0 18px 50px -36px rgba(15, 23, 42, 0.35);
 }
+.wiki-multimodal-knowledge {
+  margin: 0 0 28px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 34%),
+    linear-gradient(180deg, var(--bg-surface), var(--bg-muted));
+}
+.wiki-multimodal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.wiki-multimodal-head h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+.wiki-multimodal-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.wiki-multimodal-hash {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: var(--muted);
+  background: var(--bg-subtle);
+  font-size: 11px;
+}
+.wiki-multimodal-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.wiki-multimodal-stats span,
+.wiki-multimodal-pills span {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+}
+.wiki-multimodal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+}
+.wiki-multimodal-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--bg-surface) 90%, transparent);
+}
+.wiki-multimodal-card-title {
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+.wiki-multimodal-path {
+  overflow: hidden;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wiki-multimodal-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.wiki-multimodal-claim,
+.wiki-multimodal-muted {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.wiki-multimodal-muted {
+  color: var(--muted);
+}
+.wiki-multimodal-bindings {
+  display: grid;
+  gap: 8px;
+}
+.wiki-multimodal-binding {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: inherit;
+  background: var(--bg-subtle);
+  text-decoration: none;
+}
+.wiki-multimodal-binding:hover {
+  border-color: var(--accent-border);
+}
+.wiki-multimodal-binding span {
+  font-weight: 650;
+}
+.wiki-multimodal-binding code {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wiki-multimodal-binding small,
+.wiki-multimodal-storyboard small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.wiki-multimodal-edge-list {
+  display: grid;
+  gap: 8px;
+}
+.wiki-multimodal-edge-list div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.wiki-multimodal-edge-list span {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: var(--bg-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wiki-multimodal-edge-list em {
+  color: var(--accent);
+  font-size: 11px;
+  font-style: normal;
+}
+.wiki-multimodal-storyboard {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+}
+.wiki-multimodal-storyboard li {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.wiki-multimodal-storyboard strong,
+.wiki-multimodal-storyboard span,
+.wiki-multimodal-storyboard small {
+  display: block;
+}
+.wiki-multimodal-storyboard strong {
+  color: var(--text);
+}
+.wiki-multimodal-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+.wiki-multimodal-artifacts span {
+  overflow: hidden;
+  max-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .wiki-media-head {
   display: flex;
   align-items: flex-start;
