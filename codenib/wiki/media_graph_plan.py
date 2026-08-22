@@ -11,7 +11,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 VISUAL_GRAPH_PLAN_SCHEMA = "codenib.visual-graph-plan.v1"
 VISUAL_GRAPH_PLAN_VERSION = 1
@@ -23,6 +23,7 @@ _MAX_EDGES_PER_PLAN = 48
 _MAX_TEXT_BYTES = 4096
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _MERMAID_ID_RE = re.compile(r"[^A-Za-z0-9_]")
+VisualGraphPlanner = Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,8 @@ class VisualGraphPlan:
 
 def build_visual_graph_manifest(
     knowledge_view: Mapping[str, Any],
+    *,
+    planner: VisualGraphPlanner | None = None,
 ) -> dict[str, Any]:
     """Build validated visual graph plans for each multimodal knowledge entry."""
 
@@ -78,7 +81,7 @@ def build_visual_graph_manifest(
     for entry in knowledge_view.get("entries") or ():
         if not isinstance(entry, Mapping):
             continue
-        plan = build_visual_graph_plan(entry)
+        plan = _planned_visual_graph(entry, planner=planner)
         if plan["nodes"]:
             validate_visual_graph_plan(plan)
             plans.append(plan)
@@ -93,6 +96,19 @@ def build_visual_graph_manifest(
         {key: value for key, value in payload.items() if key != "manifest_sha256"}
     )
     return payload
+
+
+def _planned_visual_graph(
+    entry: Mapping[str, Any],
+    *,
+    planner: VisualGraphPlanner | None,
+) -> dict[str, Any]:
+    if planner is None:
+        return build_visual_graph_plan(entry)
+    planned = planner(entry)
+    if isinstance(planned, Mapping):
+        return validate_visual_graph_plan(planned)
+    return build_visual_graph_plan(entry)
 
 
 def build_visual_graph_plan(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -397,6 +413,7 @@ __all__ = [
     "VisualGraphEdge",
     "VisualGraphNode",
     "VisualGraphPlan",
+    "VisualGraphPlanner",
     "build_visual_graph_manifest",
     "build_visual_graph_plan",
     "compile_visual_graph_plan_to_mermaid",

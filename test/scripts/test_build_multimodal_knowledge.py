@@ -76,6 +76,16 @@ def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):
             "qwen",
             "--visual-facts-timeout",
             "15",
+            "--visual-plan-model",
+            "qwen-vl",
+            "--visual-plan-api-base",
+            "https://vlm.example/v1",
+            "--visual-plan-api-key-env",
+            "TEST_VLM_GRAPH_KEY",
+            "--visual-plan-provider",
+            "qwen",
+            "--visual-plan-timeout",
+            "16",
         ]
     )
 
@@ -84,3 +94,8 @@ def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):
     assert args.visual_facts_api_key_env == "TEST_VLM_KEY"
     assert args.visual_facts_provider == "qwen"
     assert args.visual_facts_timeout == 15
+    assert args.visual_plan_model == "qwen-vl"
+    assert args.visual_plan_api_base == "https://vlm.example/v1"
+    assert args.visual_plan_api_key_env == "TEST_VLM_GRAPH_KEY"
+    assert args.visual_plan_provider == "qwen"
+    assert args.visual_plan_timeout == 16

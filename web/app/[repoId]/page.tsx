@@ -498,6 +498,25 @@ function MultimodalKnowledgePanel({
   );
 }
 
+function MultimodalKnowledgeSetup({ repo }: { repo: RepoInfo | null }) {
+  if (!repo) return null;
+  const repoPathHint = `/path/to/${repo.repo}`;
+  const command = `mkdir -p ${repoPathHint}/.codenib\npython scripts/build_multimodal_knowledge.py ${repoPathHint} \\\n  --output ${repoPathHint}/.codenib/multimodal_knowledge.json`;
+  return (
+    <details className="wiki-multimodal-setup">
+      <summary>
+        <span>Multimodal repository knowledge</span>
+        <small>No persisted bundle found</small>
+      </summary>
+      <p>
+        Build a source-grounded multimodal bundle to show visual facts, code
+        bindings, graph plans, and video-ready storyboards in this Wiki.
+      </p>
+      <pre className="mono">{command}</pre>
+    </details>
+  );
+}
+
 export default function WikiPageView({
   repoId,
   initialPageId = "overview",
@@ -519,6 +538,9 @@ export default function WikiPageView({
   const [pageGraphError, setPageGraphError] = useState(false);
   const [multimodalBundle, setMultimodalBundle] =
     useState<WikiMultimodalBundle | null>(null);
+  const [multimodalStatus, setMultimodalStatus] = useState<
+    "loading" | "ready" | "missing" | "error"
+  >("loading");
   // The graph explorer opens as a full-screen modal, optionally seeded on a
   // symbol when launched via "Focus here" from a wiki subsystem map.
   const [graphSeed, setGraphSeed] = useState<string | undefined>(undefined);
@@ -542,6 +564,7 @@ export default function WikiPageView({
     setCommits([]);
     setSelectedCommit(undefined);
     setMultimodalBundle(null);
+    setMultimodalStatus("loading");
 
     fetchRepos()
       .then((rs) => {
@@ -559,10 +582,16 @@ export default function WikiPageView({
       .catch(() => {});
     fetchWikiMultimodal(repoId)
       .then((bundle) => {
-        if (!cancelled) setMultimodalBundle(bundle);
+        if (!cancelled) {
+          setMultimodalBundle(bundle);
+          setMultimodalStatus(bundle ? "ready" : "missing");
+        }
       })
       .catch(() => {
-        if (!cancelled) setMultimodalBundle(null);
+        if (!cancelled) {
+          setMultimodalBundle(null);
+          setMultimodalStatus("error");
+        }
       });
     setTocLoading(true);
     setError(null);
@@ -1044,6 +1073,11 @@ export default function WikiPageView({
                   repo={repo}
                 />
               )}
+              {!staticRuntime &&
+                !multimodalBundle &&
+                multimodalStatus !== "loading" && (
+                  <MultimodalKnowledgeSetup repo={repo} />
+                )}
               {page ? (
                 withheldByQualityGuard ? (
                   <div className="page-load-error" role="alert">

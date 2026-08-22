@@ -14,6 +14,7 @@ from pathlib import Path
 
 from codenib.wiki import (
     OpenAICompatibleVisualFactExtractor,
+    OpenAICompatibleVisualGraphPlanExtractor,
     build_multimodal_repository_knowledge,
     save_multimodal_knowledge_bundle,
 )
@@ -74,16 +75,44 @@ def build_parser() -> argparse.ArgumentParser:
         default=120.0,
         help="Timeout in seconds for each visual-fact VLM request",
     )
+    parser.add_argument(
+        "--visual-plan-model",
+        default=None,
+        help="Optional OpenAI-compatible VLM model for planning visual graphs",
+    )
+    parser.add_argument(
+        "--visual-plan-api-base",
+        default=None,
+        help="OpenAI-compatible API base URL for --visual-plan-model",
+    )
+    parser.add_argument(
+        "--visual-plan-api-key-env",
+        default="CODENIB_WIKI_VISUAL_GRAPH_API_KEY",
+        help="Environment variable that contains the visual-plan API key",
+    )
+    parser.add_argument(
+        "--visual-plan-provider",
+        default="openai-compatible",
+        help="Provider label recorded in VLM-planned graph metadata",
+    )
+    parser.add_argument(
+        "--visual-plan-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout in seconds for each visual graph planning request",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     extractor = _build_visual_fact_extractor(args)
+    graph_planner = _build_visual_graph_planner(args)
     bundle = build_multimodal_repository_knowledge(
         args.repo,
         commit=args.commit,
         extractor=extractor,
+        graph_planner=graph_planner,
         max_artifacts=args.max_artifacts,
         max_source_candidates=args.max_source_candidates,
     )
@@ -115,6 +144,22 @@ def _build_visual_fact_extractor(args: argparse.Namespace):
     )
     repo_path = Path(args.repo)
     return lambda artifact: extractor.extract(artifact, repo_path=repo_path)
+
+
+def _build_visual_graph_planner(args: argparse.Namespace):
+    model = str(args.visual_plan_model or "").strip()
+    api_base = str(args.visual_plan_api_base or "").strip()
+    if not model and not api_base:
+        return None
+    planner = OpenAICompatibleVisualGraphPlanExtractor(
+        model=model,
+        api_base=api_base,
+        api_key=os.environ.get(str(args.visual_plan_api_key_env or "")),
+        timeout=args.visual_plan_timeout,
+        provider=args.visual_plan_provider,
+    )
+    repo_path = Path(args.repo)
+    return lambda entry: planner.plan(entry, repo_path=repo_path)
 
 
 if __name__ == "__main__":

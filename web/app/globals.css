@@ -3422,6 +3422,44 @@ a.evidence-row:hover {
     radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 34%),
     linear-gradient(180deg, var(--bg-surface), var(--bg-muted));
 }
+.wiki-multimodal-setup {
+  margin: 0 0 22px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-surface) 86%, transparent);
+}
+.wiki-multimodal-setup > summary {
+  display: flex;
+  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+.wiki-multimodal-setup > summary small {
+  color: var(--muted);
+  font-weight: 500;
+}
+.wiki-multimodal-setup p {
+  margin: 0;
+  padding: 0 14px 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.wiki-multimodal-setup pre {
+  overflow: auto;
+  margin: 0 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
 .wiki-multimodal-head {
   display: flex;
   align-items: flex-start;

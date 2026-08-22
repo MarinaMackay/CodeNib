@@ -88,6 +88,28 @@ def test_build_visual_graph_manifest_wraps_plans():
     assert manifest["manifest_sha256"]
 
 
+def test_build_visual_graph_manifest_accepts_validated_custom_planner():
+    def planner(entry):
+        return {
+            "schema": "codenib.visual-graph-plan.v1",
+            "version": 1,
+            "artifact_path": entry["artifact"]["path"],
+            "nodes": [
+                {"id": "A", "label": "A", "source_path": "src/a.py"},
+                {"id": "B", "label": "B", "source_path": "src/b.py"},
+            ],
+            "edges": [{"source": "A", "target": "B", "relation": "calls"}],
+        }
+
+    manifest = build_visual_graph_manifest(
+        {"view_sha256": "view-hash", "entries": [_entry()]},
+        planner=planner,
+    )
+
+    assert manifest["plans"][0]["nodes"][0]["id"] == "A"
+    assert manifest["plans"][0]["edges"][0]["relation"] == "calls"
+
+
 def test_compile_visual_graph_plan_to_mermaid():
     mermaid = compile_visual_graph_plan_to_mermaid(build_visual_graph_plan(_entry()))
 

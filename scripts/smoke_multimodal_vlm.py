@@ -17,6 +17,7 @@ from pathlib import Path
 
 from codenib.wiki import (
     OpenAICompatibleVisualFactExtractor,
+    OpenAICompatibleVisualGraphPlanExtractor,
     build_multimodal_repository_knowledge,
     compile_visual_graph_plan_to_mermaid,
     compile_visual_storyboard_to_markdown,
@@ -69,6 +70,32 @@ def build_parser() -> argparse.ArgumentParser:
         default=120.0,
         help="Timeout in seconds for each visual-fact VLM request",
     )
+    parser.add_argument(
+        "--visual-plan-model",
+        default=None,
+        help="Optional OpenAI-compatible VLM model for planning visual graphs",
+    )
+    parser.add_argument(
+        "--visual-plan-api-base",
+        default=None,
+        help="OpenAI-compatible API base URL for --visual-plan-model",
+    )
+    parser.add_argument(
+        "--visual-plan-api-key-env",
+        default="CODENIB_WIKI_VISUAL_GRAPH_API_KEY",
+        help="Environment variable that contains the visual-plan API key",
+    )
+    parser.add_argument(
+        "--visual-plan-provider",
+        default="openai-compatible",
+        help="Provider label recorded in VLM-planned graph metadata",
+    )
+    parser.add_argument(
+        "--visual-plan-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout in seconds for each visual graph planning request",
+    )
     return parser
 
 
@@ -89,10 +116,12 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run_smoke(args: argparse.Namespace, repo: Path) -> int:
     extractor = _build_visual_fact_extractor(args, repo)
+    graph_planner = _build_visual_graph_planner(args, repo)
     bundle = build_multimodal_repository_knowledge(
         repo,
         commit="smoke-test",
         extractor=extractor,
+        graph_planner=graph_planner,
     )
     save_multimodal_knowledge_bundle(bundle, args.output)
     if args.preview_html:
@@ -258,6 +287,21 @@ def _build_visual_fact_extractor(args: argparse.Namespace, repo: Path):
         provider=args.visual_facts_provider,
     )
     return lambda artifact: extractor.extract(artifact, repo_path=repo)
+
+
+def _build_visual_graph_planner(args: argparse.Namespace, repo: Path):
+    model = str(args.visual_plan_model or "").strip()
+    api_base = str(args.visual_plan_api_base or "").strip()
+    if not model and not api_base:
+        return None
+    planner = OpenAICompatibleVisualGraphPlanExtractor(
+        model=model,
+        api_base=api_base,
+        api_key=os.environ.get(str(args.visual_plan_api_key_env or "")),
+        timeout=args.visual_plan_timeout,
+        provider=args.visual_plan_provider,
+    )
+    return lambda entry: planner.plan(entry, repo_path=repo)
 
 
 def _write_synthetic_repo(repo: Path) -> None:

@@ -19,7 +19,7 @@ from .media_grounding import (
     discover_source_symbol_candidates,
     ground_visual_facts_to_sources,
 )
-from .media_graph_plan import build_visual_graph_manifest
+from .media_graph_plan import VisualGraphPlanner, build_visual_graph_manifest
 from .media_knowledge import build_multimodal_knowledge_view
 from .media_storage import build_multimodal_knowledge_bundle
 from .media_storyboard import build_visual_storyboard_manifest
@@ -32,6 +32,7 @@ def build_multimodal_repository_knowledge(
     exclude_roots: tuple[str | Path, ...] = (),
     selection: RepositorySourceSelection = DEFAULT_REPOSITORY_SOURCE_SELECTION,
     extractor: VisualFactExtractor | None = None,
+    graph_planner: VisualGraphPlanner | None = None,
     max_artifacts: int = 4096,
     max_source_candidates: int = 8192,
 ) -> dict[str, Any]:
@@ -63,7 +64,10 @@ def build_multimodal_repository_knowledge(
         visual_facts_manifest,
         grounding_manifest,
     )
-    visual_graph_manifest = build_visual_graph_manifest(knowledge_view)
+    visual_graph_manifest = build_visual_graph_manifest(
+        knowledge_view,
+        planner=graph_planner,
+    )
     visual_storyboard_manifest = build_visual_storyboard_manifest(visual_graph_manifest)
     return build_multimodal_knowledge_bundle(
         media_manifest=media_manifest,

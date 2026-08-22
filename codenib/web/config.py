@@ -156,6 +156,14 @@ class QAConfig:
     wiki_visual_facts_api_base: Optional[str] = None
     wiki_visual_facts_api_key: Optional[str] = field(default=None, repr=False)
     wiki_visual_facts_options: Dict[str, Any] = field(default_factory=dict)
+    # Optional OpenAI-compatible VLM endpoint for producing validated visual
+    # graph plans from extracted facts and source bindings. Disabled by default;
+    # deterministic graph planning remains the offline fallback.
+    wiki_visual_graph_enabled: bool = False
+    wiki_visual_graph_model: Optional[str] = None
+    wiki_visual_graph_api_base: Optional[str] = None
+    wiki_visual_graph_api_key: Optional[str] = field(default=None, repr=False)
+    wiki_visual_graph_options: Dict[str, Any] = field(default_factory=dict)
     # Optional OpenAI-compatible endpoint for the Ask agent. Provider-native
     # models (for example Vertex or Anthropic) normally leave these unset.
     model_api_base: Optional[str] = None
@@ -236,6 +244,10 @@ class QAConfig:
         self.wiki_visual_facts_options = validate_model_options(
             self.wiki_visual_facts_options,
             source="wiki_visual_facts_options",
+        )
+        self.wiki_visual_graph_options = validate_model_options(
+            self.wiki_visual_graph_options,
+            source="wiki_visual_graph_options",
         )
 
     def index_types(self) -> List[str]:
@@ -320,6 +332,16 @@ class QAConfig:
             and self.wiki_visual_facts_api_base
         )
 
+    @property
+    def wiki_visual_graph_planning_enabled(self) -> bool:
+        """Whether visual graph plans should be produced through a VLM."""
+
+        return bool(
+            self.wiki_visual_graph_enabled
+            and self.wiki_visual_graph_model
+            and self.wiki_visual_graph_api_base
+        )
+
 
 def load_config(path: Optional[str] = None) -> QAConfig:
     """Load a layered demo config from YAML, then apply env overrides."""
@@ -351,6 +373,19 @@ def load_config(path: Optional[str] = None) -> QAConfig:
         wiki_visual_facts_options=validate_model_options(
             data.get("wiki_visual_facts_options"),
             source="wiki_visual_facts_options",
+        ),
+        wiki_visual_graph_enabled=bool(
+            data.get(
+                "wiki_visual_graph_enabled",
+                defaults.wiki_visual_graph_enabled,
+            )
+        ),
+        wiki_visual_graph_model=data.get("wiki_visual_graph_model"),
+        wiki_visual_graph_api_base=data.get("wiki_visual_graph_api_base"),
+        wiki_visual_graph_api_key=data.get("wiki_visual_graph_api_key"),
+        wiki_visual_graph_options=validate_model_options(
+            data.get("wiki_visual_graph_options"),
+            source="wiki_visual_graph_options",
         ),
         model_api_base=data.get("model_api_base"),
         model_api_key=data.get("model_api_key"),
@@ -422,6 +457,18 @@ def load_config(path: Optional[str] = None) -> QAConfig:
         ]
     if os.environ.get("CODENIB_WIKI_VISUAL_FACTS_API_KEY"):
         cfg.wiki_visual_facts_api_key = os.environ["CODENIB_WIKI_VISUAL_FACTS_API_KEY"]
+    if os.environ.get("CODENIB_WIKI_VISUAL_GRAPH_ENABLED") is not None:
+        cfg.wiki_visual_graph_enabled = os.environ[
+            "CODENIB_WIKI_VISUAL_GRAPH_ENABLED"
+        ].strip().lower() in ("1", "true", "yes", "on")
+    if os.environ.get("CODENIB_WIKI_VISUAL_GRAPH_MODEL"):
+        cfg.wiki_visual_graph_model = os.environ["CODENIB_WIKI_VISUAL_GRAPH_MODEL"]
+    if os.environ.get("CODENIB_WIKI_VISUAL_GRAPH_API_BASE"):
+        cfg.wiki_visual_graph_api_base = os.environ[
+            "CODENIB_WIKI_VISUAL_GRAPH_API_BASE"
+        ]
+    if os.environ.get("CODENIB_WIKI_VISUAL_GRAPH_API_KEY"):
+        cfg.wiki_visual_graph_api_key = os.environ["CODENIB_WIKI_VISUAL_GRAPH_API_KEY"]
     if os.environ.get("CODENIB_DEMO_API_BASE"):
         cfg.model_api_base = os.environ["CODENIB_DEMO_API_BASE"]
     if os.environ.get("CODENIB_DEMO_API_KEY"):
@@ -456,6 +503,14 @@ def load_config(path: Optional[str] = None) -> QAConfig:
             parse_model_options_json(
                 os.environ["CODENIB_WIKI_VISUAL_FACTS_OPTIONS"],
                 source="CODENIB_WIKI_VISUAL_FACTS_OPTIONS",
+            ),
+        )
+    if os.environ.get("CODENIB_WIKI_VISUAL_GRAPH_OPTIONS"):
+        cfg.wiki_visual_graph_options = merge_model_options(
+            cfg.wiki_visual_graph_options,
+            parse_model_options_json(
+                os.environ["CODENIB_WIKI_VISUAL_GRAPH_OPTIONS"],
+                source="CODENIB_WIKI_VISUAL_GRAPH_OPTIONS",
             ),
         )
     if os.environ.get("CODENIB_DEMO_DATA_DIR"):

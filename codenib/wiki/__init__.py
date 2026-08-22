@@ -66,7 +66,10 @@ from .media_storage import (
 from .media_tools import MULTIMODAL_TOOL_SCHEMAS, MultimodalKnowledgeToolRouter
 from .media_vlm import (
     OpenAICompatibleVisualFactExtractor,
+    OpenAICompatibleVisualGraphPlanExtractor,
+    build_visual_graph_plan_prompt,
     visual_fact_extractor_from_config,
+    visual_graph_planner_from_config,
 )
 
 __all__ = [
@@ -84,6 +87,7 @@ __all__ = [
     "VISUAL_STORYBOARD_VERSION",
     "WikiBuilder",
     "OpenAICompatibleVisualFactExtractor",
+    "OpenAICompatibleVisualGraphPlanExtractor",
     "build_media_evidence_pack",
     "build_multimodal_knowledge_view",
     "build_multimodal_knowledge_bundle",
@@ -91,6 +95,7 @@ __all__ = [
     "build_visual_facts_manifest",
     "build_visual_graph_manifest",
     "build_visual_graph_plan",
+    "build_visual_graph_plan_prompt",
     "build_visual_storyboard",
     "build_visual_storyboard_manifest",
     "compile_visual_graph_plan_to_mermaid",
@@ -114,4 +119,5 @@ __all__ = [
     "validate_visual_graph_plan",
     "validate_visual_storyboard",
     "visual_fact_extractor_from_config",
+    "visual_graph_planner_from_config",
 ]

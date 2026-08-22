@@ -85,6 +85,46 @@ CODENIB_WIKI_VISUAL_FACTS_OPTIONS='{"provider":"qwen","timeout":120}'
 Offline and CI runs keep using deterministic local extraction unless the VLM is
 explicitly enabled and both model and endpoint are provided.
 
+### VLM-planned VisualGraphPlan
+
+`OpenAICompatibleVisualGraphPlanExtractor` provides a second provider-neutral
+VLM adapter for graph planning. It sends the repository visual, extracted facts,
+and source bindings to an OpenAI-compatible chat endpoint and expects a
+`codenib.visual-graph-plan.v1` response.
+
+The model output is not trusted as-is. It must pass the same graph-plan
+validator used by deterministic plans:
+
+- node ids are unique;
+- edges reference existing node ids;
+- source paths are repository-relative;
+- node and edge counts are bounded;
+- the stable plan hash is recomputed.
+
+Configuration mirrors visual fact extraction:
+
+```yaml
+wiki_visual_graph_enabled: true
+wiki_visual_graph_model: qwen-vl
+wiki_visual_graph_api_base: http://localhost:8000/v1
+wiki_visual_graph_options:
+  provider: qwen
+  timeout: 120
+```
+
+Equivalent environment variables:
+
+```text
+CODENIB_WIKI_VISUAL_GRAPH_ENABLED=true
+CODENIB_WIKI_VISUAL_GRAPH_MODEL=qwen-vl
+CODENIB_WIKI_VISUAL_GRAPH_API_BASE=http://localhost:8000/v1
+CODENIB_WIKI_VISUAL_GRAPH_API_KEY=...
+CODENIB_WIKI_VISUAL_GRAPH_OPTIONS='{"provider":"qwen","timeout":120}'
+```
+
+When this planner is not configured, CodeNib still builds deterministic graph
+plans from the grounded facts and source bindings.
+
 ### VisualGroundingManifest
 
 `codenib.wiki.media_grounding` grounds extracted visual entities to repository
@@ -355,6 +395,22 @@ python scripts/build_multimodal_knowledge.py /path/to/repository \
   --visual-facts-model qwen-vl \
   --visual-facts-api-base http://localhost:8000/v1 \
   --visual-facts-provider qwen
+```
+
+To also let a VLM produce the validated graph plan before CodeNib derives the
+storyboard:
+
+```text
+export CODENIB_WIKI_VISUAL_FACTS_API_KEY=...
+export CODENIB_WIKI_VISUAL_GRAPH_API_KEY=...
+python scripts/build_multimodal_knowledge.py /path/to/repository \
+  --output /tmp/multimodal-knowledge.json \
+  --visual-facts-model qwen-vl \
+  --visual-facts-api-base http://localhost:8000/v1 \
+  --visual-facts-provider qwen \
+  --visual-plan-model qwen-vl \
+  --visual-plan-api-base http://localhost:8000/v1 \
+  --visual-plan-provider qwen
 ```
 
 A minimal smoke test can create a synthetic repository with a real SVG diagram

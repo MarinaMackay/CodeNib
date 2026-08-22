@@ -120,6 +120,40 @@ wiki_visual_facts_options:
     }
 
 
+def test_wiki_visual_graph_environment_overrides_file_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+wiki_visual_graph_enabled: false
+wiki_visual_graph_model: file-model
+wiki_visual_graph_options:
+  provider: file-provider
+""".lstrip()
+    )
+    monkeypatch.setenv("CODENIB_WIKI_VISUAL_GRAPH_ENABLED", "true")
+    monkeypatch.setenv("CODENIB_WIKI_VISUAL_GRAPH_MODEL", "qwen-vl")
+    monkeypatch.setenv("CODENIB_WIKI_VISUAL_GRAPH_API_BASE", "https://vlm.example/v1")
+    monkeypatch.setenv("CODENIB_WIKI_VISUAL_GRAPH_API_KEY", "secret")
+    monkeypatch.setenv(
+        "CODENIB_WIKI_VISUAL_GRAPH_OPTIONS",
+        '{"provider":"local-vlm","timeout":45}',
+    )
+
+    config = load_config(str(config_path))
+
+    assert config.wiki_visual_graph_planning_enabled is True
+    assert config.wiki_visual_graph_model == "qwen-vl"
+    assert config.wiki_visual_graph_api_base == "https://vlm.example/v1"
+    assert config.wiki_visual_graph_api_key == "secret"
+    assert config.wiki_visual_graph_options == {
+        "provider": "local-vlm",
+        "timeout": 45,
+    }
+
+
 def test_config_profile_extends_relative_base_and_merges_options(
     tmp_path: Path,
 ) -> None:

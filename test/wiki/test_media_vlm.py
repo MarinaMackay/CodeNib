@@ -12,7 +12,10 @@ import pytest
 import codenib.wiki.media_vlm as media_vlm
 from codenib.wiki.media_vlm import (
     OpenAICompatibleVisualFactExtractor,
+    OpenAICompatibleVisualGraphPlanExtractor,
+    build_visual_graph_plan_prompt,
     visual_fact_extractor_from_config,
+    visual_graph_planner_from_config,
 )
 
 
@@ -226,3 +229,168 @@ def test_visual_fact_extractor_from_config_builds_provider():
     assert extractor.endpoint == "https://vlm.example/v1/chat/completions"
     assert extractor.provider == "qwen"
     assert extractor.timeout == 9
+
+
+def _entry():
+    return {
+        "artifact": {
+            "path": "docs/assets/architecture.png",
+            "mime_type": "image/png",
+            "sha256": "abc123",
+            "caption": "WikiRenderer architecture",
+        },
+        "facts": {
+            "entities": [
+                {"name": "WikiRenderer", "type": "component"},
+                {"name": "IndexCompiler", "type": "component"},
+            ],
+        },
+        "bindings": [
+            {
+                "entity_name": "WikiRenderer",
+                "source_path": "src/wiki.py",
+                "symbol": "WikiRenderer",
+                "line": 1,
+            },
+            {
+                "entity_name": "IndexCompiler",
+                "source_path": "src/compiler.py",
+                "symbol": "IndexCompiler",
+                "line": 7,
+            },
+        ],
+    }
+
+
+def test_openai_compatible_visual_graph_planner_posts_image_and_validates(tmp_path):
+    (tmp_path / "docs" / "assets").mkdir(parents=True)
+    (tmp_path / "docs" / "assets" / "architecture.png").write_bytes(b"png-bytes")
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return _Response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "graph_plan": {
+                                        "schema": "codenib.visual-graph-plan.v1",
+                                        "version": 1,
+                                        "nodes": [
+                                            {
+                                                "id": "WikiRenderer",
+                                                "label": "WikiRenderer",
+                                                "source_path": "src/wiki.py",
+                                                "symbol": "WikiRenderer",
+                                                "line": 1,
+                                            },
+                                            {
+                                                "id": "IndexCompiler",
+                                                "label": "IndexCompiler",
+                                                "source_path": "src/compiler.py",
+                                                "symbol": "IndexCompiler",
+                                                "line": 7,
+                                            },
+                                        ],
+                                        "edges": [
+                                            {
+                                                "source": "WikiRenderer",
+                                                "target": "IndexCompiler",
+                                                "relation": "calls",
+                                            }
+                                        ],
+                                    }
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    planner = OpenAICompatibleVisualGraphPlanExtractor(
+        model="qwen-vl",
+        api_base="https://api.example/v1",
+        api_key="secret",
+        timeout=8,
+        urlopen=fake_urlopen,
+        provider="qwen",
+    )
+    plan = planner.plan(_entry(), repo_path=tmp_path)
+
+    assert plan["artifact_path"] == "docs/assets/architecture.png"
+    assert plan["nodes"][0]["label"] == "WikiRenderer"
+    assert plan["edges"][0]["relation"] == "calls"
+    assert plan["metadata"] == {"model": "qwen-vl", "provider": "qwen"}
+    request, timeout = requests[0]
+    assert request.full_url == "https://api.example/v1/chat/completions"
+    assert request.get_header("Authorization") == "Bearer secret"
+    assert timeout == 8
+    body = json.loads(request.data.decode("utf-8"))
+    assert "required_schema" in body["messages"][1]["content"][0]["text"]
+    assert body["messages"][1]["content"][1]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+
+
+def test_visual_graph_planner_rejects_invalid_model_plan():
+    planner = OpenAICompatibleVisualGraphPlanExtractor(
+        model="qwen-vl",
+        api_base="https://api.example/v1",
+        urlopen=lambda _request, timeout: _Response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "graph_plan": {
+                                        "schema": "codenib.visual-graph-plan.v1",
+                                        "version": 1,
+                                        "artifact_path": "docs/architecture.svg",
+                                        "nodes": [{"id": "A", "label": "A"}],
+                                        "edges": [{"source": "A", "target": "Missing"}],
+                                    }
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        ),
+    )
+
+    with pytest.raises(ValueError, match="endpoints"):
+        planner.plan(_entry())
+
+
+def test_visual_graph_plan_prompt_contains_grounding_contract():
+    prompt = build_visual_graph_plan_prompt(_entry())
+
+    assert "Use only entities and source bindings" in prompt
+    assert "codenib.visual-graph-plan.v1" in prompt
+    assert "src/wiki.py" in prompt
+
+
+def test_visual_graph_planner_from_config_builds_provider():
+    config = SimpleNamespace(
+        wiki_visual_graph_planning_enabled=True,
+        wiki_visual_graph_model="qwen-vl",
+        wiki_visual_graph_api_base="https://vlm.example/v1",
+        wiki_visual_graph_api_key="secret",
+        wiki_visual_graph_options={
+            "provider": "qwen",
+            "timeout": 9,
+        },
+    )
+
+    planner = visual_graph_planner_from_config(config)
+
+    assert isinstance(planner, OpenAICompatibleVisualGraphPlanExtractor)
+    assert planner.model == "qwen-vl"
+    assert planner.endpoint == "https://vlm.example/v1/chat/completions"
+    assert planner.provider == "qwen"
+    assert planner.timeout == 9
