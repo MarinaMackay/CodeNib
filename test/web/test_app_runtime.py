@@ -341,6 +341,7 @@ def test_wiki_page_materializes_local_svg_media(tmp_path, monkeypatch):
     ) or asset["uri"].endswith(
         "api/repos/demo/wiki-media/overview/overview-concept-illustration.svg"
     )
+    assert asset["metadata"]["evidence_pack_sha256"]
     asset_response = asyncio.run(
         web_app.wiki_media_asset(
             "demo",
@@ -352,6 +353,83 @@ def test_wiki_page_materializes_local_svg_media(tmp_path, monkeypatch):
     assert asset_response.media_type == "image/svg+xml"
     assert asset_response.headers["x-content-type-options"] == "nosniff"
     assert "sandbox" in asset_response.headers["content-security-policy"]
+
+
+def test_wiki_media_materialization_builds_page_evidence(tmp_path, monkeypatch):
+    captured = {}
+
+    class SourceReader:
+        def captured_relative_path(self, path):
+            return path if path == "src/runtime.py" else None
+
+        def read_line_range(self, relative, *, start_line, end_line, max_bytes):
+            captured["source_read"] = (
+                relative,
+                start_line,
+                end_line,
+                max_bytes,
+            )
+            return b"def run(): return 'grounded'\n"
+
+    class Generator:
+        def generate(self, slot, **_kwargs):
+            captured["generation_slot"] = slot
+            return {"slot_id": slot["id"], "provider": "capture"}
+
+    config = SimpleNamespace(data_dir=str(tmp_path))
+    monkeypatch.setattr(web_app, "load_config", lambda: config)
+    monkeypatch.setattr(
+        web_app, "image_generator_from_config", lambda _config: Generator()
+    )
+    monkeypatch.setattr(
+        web_app,
+        "_bundle",
+        lambda _repo_id: SimpleNamespace(source_reader=SourceReader()),
+    )
+    page = {
+        "id": "overview",
+        "title": "Overview",
+        "markdown": "# Overview\n\nRuntime flow.",
+        "citations": [
+            {
+                "file": "src/runtime.py",
+                "start_line": 7,
+                "end_line": 9,
+                "node_name": "run",
+                "content": None,
+            }
+        ],
+        "evidence": {
+            "relations": [{"source": "run", "target": "render", "relation": "calls"}]
+        },
+        "media_slots": [
+            {
+                "id": "overview-image",
+                "kind": "image",
+                "prompt": "Draw the runtime.",
+                "source_citations": ["src/runtime.py"],
+            }
+        ],
+    }
+
+    materialized = web_app._materialize_wiki_media("demo", "overview", page)
+
+    evidence_pack = captured["generation_slot"]["evidence_pack"]
+    assert evidence_pack["page"]["summary"] == "Runtime flow."
+    assert evidence_pack["sources"] == [
+        {
+            "file": "src/runtime.py",
+            "symbol": "run",
+            "start_line": 7,
+            "end_line": 9,
+            "snippet": "def run(): return 'grounded'",
+        }
+    ]
+    assert evidence_pack["relations"] == [
+        {"source": "run", "target": "render", "relation": "calls"}
+    ]
+    assert captured["source_read"][:3] == ("src/runtime.py", 7, 9)
+    assert "evidence_pack" not in materialized["media_slots"][0]
 
 
 def test_wiki_page_can_skip_media_materialization_for_preload(monkeypatch):
@@ -441,6 +519,9 @@ def test_wiki_media_materialization_does_not_swallow_memory_error(
     monkeypatch.setattr(
         web_app, "image_generator_from_config", lambda _config: object()
     )
+    monkeypatch.setattr(
+        web_app, "_bundle", lambda _repo_id: SimpleNamespace(source_reader=None)
+    )
 
     def fail_materialization(*_args, **_kwargs):
         raise MemoryError("out of memory")
@@ -474,6 +555,9 @@ def test_wiki_media_redacts_evidence_after_generation_failure(tmp_path, monkeypa
     monkeypatch.setattr(web_app, "load_config", lambda: config)
     monkeypatch.setattr(
         web_app, "image_generator_from_config", lambda _config: object()
+    )
+    monkeypatch.setattr(
+        web_app, "_bundle", lambda _repo_id: SimpleNamespace(source_reader=None)
     )
     monkeypatch.setattr(
         web_app,
