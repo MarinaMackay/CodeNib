@@ -16,6 +16,7 @@ repository images / svg / screenshots
   -> VisualGroundingManifest
   -> MultimodalKnowledgeView
   -> VisualGraphManifest
+  -> VisualStoryboardManifest
   -> Wiki / MCP query APIs / local preview
 ```
 
@@ -88,11 +89,15 @@ explicitly enabled and both model and endpoint are provided.
 
 `codenib.wiki.media_grounding` grounds extracted visual entities to repository
 files and symbols. The first implementation uses deterministic lexical scoring
-against a bounded source-symbol inventory. Later versions can replace the
-scorer with BM25, embeddings, CodeGraph, LSP facts, or `FactQueryIndex` /
-`FactBatch`. The `ground_visual_facts_to_sources(..., scorer=...)` hook already
-accepts a custom scorer, so graph/fact-backed ranking can be added without
-changing the binding manifest schema.
+against a bounded source-symbol inventory. Symbol candidates include bounded
+source context snippets, so the default scorer can use exact symbol matches,
+path matches, visual-fact evidence text, and source-context token overlap.
+
+Later versions can replace the scorer with BM25, embeddings, CodeGraph, LSP
+facts, or `FactQueryIndex` / `FactBatch`. The
+`ground_visual_facts_to_sources(..., scorer=...)` hook already accepts a custom
+scorer, so graph/fact-backed ranking can be added without changing the binding
+manifest schema.
 
 ### MultimodalKnowledgeView
 
@@ -155,6 +160,25 @@ flowchart LR
   WikiRenderer -->|calls| IndexCompiler
 ```
 
+### VisualStoryboardManifest
+
+`codenib.wiki.media_storyboard` turns each validated `VisualGraphPlan` into a
+video-ready storyboard. This is not a generated video file. It is a stable
+contract that future image/video backends can consume.
+
+Each storyboard frame records:
+
+- frame id and title;
+- narration;
+- visual prompt;
+- duration in milliseconds;
+- focused graph node ids;
+- source citations.
+
+The validator checks frame count limits, repository-relative source citations,
+unique frame ids, bounded text, and stable storyboard hashes. The local compiler
+can render a storyboard as a Markdown shot list for smoke previews and review.
+
 ### Multimodal knowledge bundle
 
 `codenib.wiki.media_storage` wraps the pipeline output as a versioned bundle:
@@ -167,6 +191,7 @@ visual_facts_manifest
 grounding_manifest
 knowledge_view
 visual_graph_manifest
+visual_storyboard_manifest
 component_sha256
 bundle_sha256
 ```
@@ -200,7 +225,45 @@ python scripts/update_multimodal_knowledge.py /path/to/repository \
 ```
 
 It prints a compact summary with added/removed/changed/unchanged media counts,
-reused visual fact packs, regenerated fact packs, bindings, and graph plans.
+reused visual fact packs, regenerated fact packs, bindings, graph plans, and
+storyboards.
+
+### Local Wiki runtime display
+
+The FastAPI runtime exposes a bounded reader-facing summary at:
+
+```text
+GET /api/repos/{repo_id}/wiki-multimodal
+```
+
+The endpoint looks for a persisted bundle under the runtime data directory and
+the repository-local `.codenib/multimodal_knowledge.json` fallback. If no bundle
+is present, it returns 404 and the Wiki UI simply hides the optional panel.
+
+When a bundle is available, the Wiki frontend renders a
+`Multimodal repository knowledge` panel showing:
+
+- asset / fact / binding / graph / storyboard counts;
+- extracted visual entities and claims;
+- source-grounded bindings with GitHub source links when possible;
+- the first validated graph plan as edge rows;
+- the first video-ready storyboard as a shot list.
+
+This keeps the feature visible in the normal local Wiki instead of only through
+scripts or a standalone preview HTML file.
+
+The simplest local path is to persist the bundle next to the repository before
+starting or refreshing the Web runtime:
+
+```text
+mkdir -p /path/to/repository/.codenib
+python scripts/build_multimodal_knowledge.py /path/to/repository \
+  --output /path/to/repository/.codenib/multimodal_knowledge.json
+```
+
+Then open the local Wiki for that repository. The page will call
+`/api/repos/{repo_id}/wiki-multimodal`; if the bundle is found, the multimodal
+knowledge panel appears automatically.
 
 ### MMWiki-style evaluation
 
