@@ -6,7 +6,11 @@
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import asdict, dataclass, field
+from itertools import islice
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterable, Mapping
 
 _MAX_TEXT_BYTES = 4096
@@ -14,6 +18,10 @@ _MAX_PAGE_SUMMARY_BYTES = 1024
 _DEFAULT_MAX_SOURCES = 6
 _DEFAULT_MAX_RELATIONS = 12
 _DEFAULT_MAX_SNIPPET_BYTES = 1200
+_MAX_INPUT_CANDIDATES = 256
+_MAX_HUMAN_PRIOR_DEPTH = 4
+_MAX_HUMAN_PRIOR_ITEMS = 16
+MAX_MEDIA_EVIDENCE_PACK_BYTES = 24 * 1024
 
 SourceReader = Callable[[Mapping[str, Any]], str | None]
 
@@ -91,6 +99,17 @@ def build_media_evidence_pack(
     citations, which keeps source exposure explicitly server-side and bounded.
     """
 
+    max_sources = _validated_limit(
+        max_sources, name="max_sources", maximum=_DEFAULT_MAX_SOURCES
+    )
+    max_relations = _validated_limit(
+        max_relations, name="max_relations", maximum=_DEFAULT_MAX_RELATIONS
+    )
+    max_snippet_bytes = _validated_limit(
+        max_snippet_bytes,
+        name="max_snippet_bytes",
+        maximum=_DEFAULT_MAX_SNIPPET_BYTES,
+    )
     pack = WikiMediaEvidencePack(
         slot_id=_safe_text(slot.get("id")),
         kind=_safe_text(slot.get("kind")),
@@ -111,7 +130,20 @@ def build_media_evidence_pack(
         relations=_relation_evidence(relations, max_relations=max_relations),
         human_prior=_human_prior(slot.get("human_prior")),
     )
-    return pack.to_dict()
+    data = pack.to_dict()
+    try:
+        encoded = json.dumps(
+            data,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise ValueError("wiki media evidence pack must contain bounded JSON") from exc
+    if len(encoded) > MAX_MEDIA_EVIDENCE_PACK_BYTES:
+        raise ValueError("wiki media evidence pack exceeds the byte limit")
+    return data
 
 
 def _source_evidence(
@@ -122,30 +154,40 @@ def _source_evidence(
     max_sources: int,
     max_snippet_bytes: int,
 ) -> tuple[WikiMediaSourceEvidence, ...]:
+    if max_sources == 0:
+        return ()
+    selected_files = _slot_source_citations(slot)
+    restrict_to_selected_files = bool(selected_files)
     allowed_files = {
-        file
-        for file in (_safe_file(value) for value in slot.get("source_citations") or ())
-        if file
+        file for file in (_safe_file(value) for value in selected_files) if file
     }
     evidence: list[WikiMediaSourceEvidence] = []
     seen: set[tuple[str, str, int | None, int | None]] = set()
-    for citation in citations or ():
-        if not isinstance(citation, Mapping):
-            continue
+    for citation in _mapping_candidates(citations, label="citations"):
         file = _safe_file(citation.get("file"))
-        if not file or (allowed_files and file not in allowed_files):
+        if not file or (restrict_to_selected_files and file not in allowed_files):
             continue
         symbol = _safe_text(citation.get("symbol") or citation.get("name"))
         start_line = _positive_int(citation.get("start_line") or citation.get("line"))
         end_line = _positive_int(citation.get("end_line"))
+        if end_line is not None and (start_line is None or end_line < start_line):
+            continue
         key = (file, symbol, start_line, end_line)
         if key in seen:
             continue
         seen.add(key)
 
         snippet = _safe_text(citation.get("snippet"), max_bytes=max_snippet_bytes)
-        if source_reader is not None and not snippet:
-            snippet = _safe_text(source_reader(citation), max_bytes=max_snippet_bytes)
+        if source_reader is not None and max_snippet_bytes and not snippet:
+            reader_citation = {
+                "file": file,
+                "symbol": symbol,
+                "start_line": start_line,
+                "end_line": end_line,
+            }
+            snippet = _safe_text(
+                source_reader(reader_citation), max_bytes=max_snippet_bytes
+            )
         evidence.append(
             WikiMediaSourceEvidence(
                 file=file,
@@ -165,11 +207,11 @@ def _relation_evidence(
     *,
     max_relations: int,
 ) -> tuple[WikiMediaRelationEvidence, ...]:
+    if max_relations == 0:
+        return ()
     evidence: list[WikiMediaRelationEvidence] = []
     seen: set[tuple[str, str, str]] = set()
-    for relation in relations or ():
-        if not isinstance(relation, Mapping):
-            continue
+    for relation in _mapping_candidates(relations, label="relations"):
         source = _safe_text(
             relation.get("source")
             or relation.get("source_symbol")
@@ -180,7 +222,7 @@ def _relation_evidence(
             or relation.get("target_symbol")
             or relation.get("to")
         )
-        kind = _safe_text(relation.get("relation") or relation.get("kind") or "related")
+        kind = _safe_text(relation.get("relation") or relation.get("kind")) or "related"
         if not source or not target:
             continue
         key = (source, target, kind)
@@ -208,24 +250,27 @@ def _page_summary(markdown: str) -> str:
 def _human_prior(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {"editable": True, "notes": []}
-    result: dict[str, Any] = {}
-    for key, item in value.items():
-        safe_key = _safe_text(key, max_bytes=128)
-        if safe_key:
-            result[safe_key] = _bounded_json_value(item)
-    return result
+    bounded = _bounded_json_value(value)
+    return bounded if isinstance(bounded, dict) else {}
 
 
-def _bounded_json_value(value: Any) -> Any:
+def _bounded_json_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= _MAX_HUMAN_PRIOR_DEPTH:
+        return "[truncated]"
     if isinstance(value, Mapping):
         return {
-            key: _bounded_json_value(item)
-            for raw_key, item in value.items()
+            key: _bounded_json_value(item, depth=depth + 1)
+            for raw_key, item in islice(value.items(), _MAX_HUMAN_PRIOR_ITEMS)
             if (key := _safe_text(raw_key, max_bytes=128))
         }
     if isinstance(value, (list, tuple)):
-        return [_bounded_json_value(item) for item in value[:16]]
+        return [
+            _bounded_json_value(item, depth=depth + 1)
+            for item in islice(iter(value), _MAX_HUMAN_PRIOR_ITEMS)
+        ]
     if isinstance(value, str):
+        return _safe_text(value)
+    if isinstance(value, float) and not math.isfinite(value):
         return _safe_text(value)
     if isinstance(value, (int, float, bool)) or value is None:
         return value
@@ -234,17 +279,77 @@ def _bounded_json_value(value: Any) -> Any:
 
 def _safe_file(value: Any) -> str:
     file = _safe_text(value)
-    if not file or any(ord(character) < 0x20 for character in file):
+    if (
+        not file
+        or "\\" in file
+        or PureWindowsPath(file).drive
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in file)
+    ):
+        return ""
+    relative = PurePosixPath(file)
+    if (
+        not relative.parts
+        or relative.is_absolute()
+        or relative.as_posix() != file
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
         return ""
     return file
 
 
 def _safe_text(value: Any, *, max_bytes: int = _MAX_TEXT_BYTES) -> str:
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+        raise ValueError("text byte limit must be a non-negative integer")
     text = str(value or "").strip()
-    if len(text.encode("utf-8")) <= max_bytes:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
         return text
-    encoded = text.encode("utf-8")[: max(0, max_bytes - 1)]
-    return encoded.decode("utf-8", errors="ignore").rstrip() + "…"
+    if max_bytes == 0:
+        return ""
+    ellipsis = "…"
+    ellipsis_bytes = ellipsis.encode("utf-8")
+    if max_bytes < len(ellipsis_bytes):
+        return encoded[:max_bytes].decode("utf-8", errors="ignore").rstrip()
+    prefix = encoded[: max_bytes - len(ellipsis_bytes)]
+    return prefix.decode("utf-8", errors="ignore").rstrip() + ellipsis
+
+
+def _slot_source_citations(slot: Mapping[str, Any]) -> tuple[Any, ...]:
+    values = slot.get("source_citations") or ()
+    if isinstance(values, (str, bytes, bytearray, Mapping)):
+        raise ValueError("wiki media source citations must be an iterable of paths")
+    try:
+        return tuple(islice(iter(values), _DEFAULT_MAX_SOURCES))
+    except TypeError as exc:
+        raise ValueError(
+            "wiki media source citations must be an iterable of paths"
+        ) from exc
+
+
+def _mapping_candidates(
+    values: Iterable[Mapping[str, Any]], *, label: str
+) -> Iterable[Mapping[str, Any]]:
+    if isinstance(values, (str, bytes, bytearray, Mapping)):
+        raise ValueError(f"wiki media {label} must be an iterable of objects")
+    try:
+        candidates = iter(values or ())
+    except TypeError as exc:
+        raise ValueError(f"wiki media {label} must be an iterable of objects") from exc
+    return (
+        value
+        for value in islice(candidates, _MAX_INPUT_CANDIDATES)
+        if isinstance(value, Mapping)
+    )
+
+
+def _validated_limit(value: Any, *, name: str, maximum: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= maximum
+    ):
+        raise ValueError(f"{name} must be an integer between 0 and {maximum}")
+    return value
 
 
 def _positive_int(value: Any) -> int | None:
@@ -258,6 +363,7 @@ def _positive_int(value: Any) -> int | None:
 
 
 __all__ = [
+    "MAX_MEDIA_EVIDENCE_PACK_BYTES",
     "SourceReader",
     "WikiMediaEvidencePack",
     "WikiMediaRelationEvidence",
