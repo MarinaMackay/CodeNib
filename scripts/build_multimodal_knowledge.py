@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
-from codenib.wiki import build_multimodal_repository_knowledge
+from codenib.wiki import (
+    OpenAICompatibleVisualFactExtractor,
+    build_multimodal_repository_knowledge,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,14 +44,45 @@ def build_parser() -> argparse.ArgumentParser:
         default=8192,
         help="Maximum source-symbol candidates to consider for grounding",
     )
+    parser.add_argument(
+        "--visual-facts-model",
+        default=None,
+        help=(
+            "Optional OpenAI-compatible VLM model for extracting visual facts. "
+            "When omitted, deterministic local extraction is used."
+        ),
+    )
+    parser.add_argument(
+        "--visual-facts-api-base",
+        default=None,
+        help="OpenAI-compatible API base URL for --visual-facts-model",
+    )
+    parser.add_argument(
+        "--visual-facts-api-key-env",
+        default="CODENIB_WIKI_VISUAL_FACTS_API_KEY",
+        help="Environment variable that contains the visual-facts API key",
+    )
+    parser.add_argument(
+        "--visual-facts-provider",
+        default="openai-compatible",
+        help="Provider label recorded in extracted visual facts",
+    )
+    parser.add_argument(
+        "--visual-facts-timeout",
+        type=float,
+        default=120.0,
+        help="Timeout in seconds for each visual-fact VLM request",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    extractor = _build_visual_fact_extractor(args)
     bundle = build_multimodal_repository_knowledge(
         args.repo,
         commit=args.commit,
+        extractor=extractor,
         max_artifacts=args.max_artifacts,
         max_source_candidates=args.max_source_candidates,
     )
@@ -66,6 +101,22 @@ def main(argv: list[str] | None = None) -> int:
     }
     print(json.dumps(counts, sort_keys=True))
     return 0
+
+
+def _build_visual_fact_extractor(args: argparse.Namespace):
+    model = str(args.visual_facts_model or "").strip()
+    api_base = str(args.visual_facts_api_base or "").strip()
+    if not model and not api_base:
+        return None
+    extractor = OpenAICompatibleVisualFactExtractor(
+        model=model,
+        api_base=api_base,
+        api_key=os.environ.get(str(args.visual_facts_api_key_env or "")),
+        timeout=args.visual_facts_timeout,
+        provider=args.visual_facts_provider,
+    )
+    repo_path = Path(args.repo)
+    return lambda artifact: extractor.extract(artifact, repo_path=repo_path)
 
 
 if __name__ == "__main__":
