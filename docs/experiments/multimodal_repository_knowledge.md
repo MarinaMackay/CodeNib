@@ -15,7 +15,8 @@ repository images / svg / screenshots
   -> VisualFactPack
   -> VisualGroundingManifest
   -> MultimodalKnowledgeView
-  -> Wiki / future MCP query APIs
+  -> VisualGraphManifest
+  -> Wiki / MCP query APIs / local preview
 ```
 
 ## Components
@@ -34,6 +35,10 @@ supported visual artifacts:
 It respects the shared repository traversal and source-selection policy, skips
 symlinks, hashes media content, and records markdown references, alt text,
 captions, and surrounding documentation context.
+
+For SVG artifacts, it also extracts bounded embedded text from `<title>`,
+`<desc>`, `<text>`, and `<tspan>` elements. This makes the deterministic local
+fallback useful for real repository diagrams without requiring a VLM key.
 
 ### VisualFactPack
 
@@ -113,12 +118,42 @@ codenib mcp /path/to/repository \
 
 The bundle-backed MCP tools are:
 
+- `explore_visual_context`
 - `search_visual_context`
 - `get_visual_evidence`
 - `find_visual_code_links`
 
 If the MCP server starts without `--multimodal-bundle`, these tools return a
 clear runtime error rather than silently fabricating visual context.
+
+`explore_visual_context` is the agent-friendly entry point. It composes visual
+search, optional artifact evidence, and optional visual-code links in one
+bounded response so agents do not need to decide which lower-level visual tool
+to call first.
+
+### VisualGraphManifest
+
+`codenib.wiki.media_graph_plan` converts source-grounded visual knowledge into
+a validated renderable graph plan. The plan follows the same separation used by
+diagram-first systems: first produce a structured graph, validate it, then
+compile it to a rendering format such as Mermaid.
+
+Each `VisualGraphPlan` validates:
+
+- unique node ids;
+- bounded node and edge counts;
+- repository-relative source paths;
+- edges whose endpoints reference existing nodes;
+- stable plan hashes.
+
+The deterministic compiler can render a validated plan as Mermaid:
+
+```text
+flowchart LR
+  WikiRenderer["WikiRenderer"]
+  IndexCompiler["IndexCompiler"]
+  WikiRenderer -->|calls| IndexCompiler
+```
 
 ### Multimodal knowledge bundle
 
@@ -131,6 +166,7 @@ media_manifest
 visual_facts_manifest
 grounding_manifest
 knowledge_view
+visual_graph_manifest
 component_sha256
 bundle_sha256
 ```
@@ -154,6 +190,17 @@ media unchanged -> reuse existing VisualFactPack
 media changed   -> rerun VLM/extractor for that artifact
 media removed   -> drop stale visual facts and bindings
 ```
+
+The update path is exposed as a CLI:
+
+```text
+python scripts/update_multimodal_knowledge.py /path/to/repository \
+  --previous /tmp/old-multimodal-knowledge.json \
+  --output /tmp/new-multimodal-knowledge.json
+```
+
+It prints a compact summary with added/removed/changed/unchanged media counts,
+reused visual fact packs, regenerated fact packs, bindings, and graph plans.
 
 ### MMWiki-style evaluation
 
@@ -253,7 +300,8 @@ and generate a bundle in one command:
 ```text
 python scripts/smoke_multimodal_vlm.py \
   --output /tmp/mmwiki-smoke-bundle.json \
-  --keep-repo /tmp/mmwiki-smoke-repo
+  --keep-repo /tmp/mmwiki-smoke-repo \
+  --preview-html /tmp/mmwiki-smoke-preview.html
 ```
 
 The same smoke test can call an OpenAI-compatible VLM endpoint:

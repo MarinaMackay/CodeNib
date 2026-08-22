@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import html
 import json
 import os
 import tempfile
@@ -16,8 +18,10 @@ from pathlib import Path
 from codenib.wiki import (
     OpenAICompatibleVisualFactExtractor,
     build_multimodal_repository_knowledge,
+    compile_visual_graph_plan_to_mermaid,
     save_multimodal_knowledge_bundle,
 )
+from codenib.wiki.media_tools import MultimodalKnowledgeToolRouter
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,6 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-repo",
         default=None,
         help="Optional path where the synthetic repository should be kept",
+    )
+    parser.add_argument(
+        "--preview-html",
+        default=None,
+        help="Optional path to write a self-contained HTML preview",
     )
     parser.add_argument(
         "--visual-facts-model",
@@ -85,6 +94,8 @@ def _run_smoke(args: argparse.Namespace, repo: Path) -> int:
         extractor=extractor,
     )
     save_multimodal_knowledge_bundle(bundle, args.output)
+    if args.preview_html:
+        _write_preview_html(bundle, repo, Path(args.preview_html))
     facts = bundle["visual_facts_manifest"]["facts"]
     counts = {
         "bundle": str(Path(args.output).expanduser().resolve()),
@@ -93,10 +104,130 @@ def _run_smoke(args: argparse.Namespace, repo: Path) -> int:
         "media_artifacts": bundle["media_manifest"]["artifact_count"],
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
         "visual_code_bindings": bundle["grounding_manifest"]["binding_count"],
+        "visual_graph_plans": bundle["visual_graph_manifest"]["plan_count"],
         "knowledge_entries": bundle["knowledge_view"]["entry_count"],
     }
     print(json.dumps(counts, sort_keys=True))
     return 0
+
+
+def _write_preview_html(bundle: dict, repo: Path, output: Path) -> None:
+    view = bundle["knowledge_view"]
+    router = MultimodalKnowledgeToolRouter(view)
+    entry = view["entries"][0] if view.get("entries") else {}
+    artifact = entry.get("artifact") or {}
+    fact = entry.get("facts") or {}
+    bindings = entry.get("bindings") or []
+    graph_plans = (bundle.get("visual_graph_manifest") or {}).get("plans") or []
+    graph_plan = graph_plans[0] if graph_plans else {}
+    mermaid = compile_visual_graph_plan_to_mermaid(graph_plan) if graph_plan else ""
+    image_uri = _image_data_uri(repo / artifact.get("path", ""))
+    explore = router.call_tool(
+        "explore_visual_context",
+        {
+            "query": "WikiRenderer architecture VectorStore",
+            "artifact_path": artifact.get("path", ""),
+            "source_path": "src/compiler.py",
+            "symbol": "IndexCompiler",
+        },
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        _preview_html(
+            image_uri=image_uri,
+            artifact=artifact,
+            fact=fact,
+            bindings=bindings,
+            mermaid=mermaid,
+            explore=explore,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _preview_html(
+    *,
+    image_uri: str,
+    artifact: dict,
+    fact: dict,
+    bindings: list,
+    mermaid: str,
+    explore: dict,
+) -> str:
+    entities = fact.get("entities") or []
+    claims = fact.get("claims") or []
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CodeNib multimodal smoke preview</title>
+  <style>
+    body {{ margin: 0; font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f172a; color: #e5e7eb; }}
+    main {{ max-width: 1180px; margin: 0 auto; padding: 28px; }}
+    h1 {{ margin: 0 0 8px; font-size: 26px; }}
+    h2 {{ margin: 0 0 12px; font-size: 17px; color: #bfdbfe; }}
+    .sub {{ color: #94a3b8; margin-bottom: 24px; }}
+    .grid {{ display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px; }}
+    .card {{ background: #111827; border: 1px solid #334155; border-radius: 14px; padding: 16px; box-shadow: 0 20px 50px rgba(0,0,0,.25); }}
+    img {{ max-width: 100%; background: white; border-radius: 10px; }}
+    code, pre {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    pre {{ overflow: auto; background: #020617; border-radius: 10px; padding: 12px; color: #d1fae5; }}
+    .pill {{ display: inline-block; margin: 0 8px 8px 0; padding: 6px 10px; border-radius: 999px; background: #1e3a8a; color: #dbeafe; }}
+    .binding {{ padding: 8px 0; border-bottom: 1px solid #1f2937; }}
+    .muted {{ color: #94a3b8; }}
+  </style>
+</head>
+<body>
+<main>
+  <h1>CodeNib Multimodal CodeWiki Smoke Preview</h1>
+  <div class="sub">Real local chain: SVG artifact → visual facts → source grounding → multimodal tool response.</div>
+  <section class="grid">
+    <div class="card">
+      <h2>Repository visual artifact</h2>
+      <img alt="{_h(artifact.get("caption", "architecture"))}" src="{image_uri}">
+      <p><code>{_h(artifact.get("path", ""))}</code></p>
+      <p class="muted">{_h(artifact.get("embedded_text", ""))}</p>
+    </div>
+    <div class="card">
+      <h2>Extracted visual entities</h2>
+      {''.join(f'<span class="pill">{_h(entity.get("name", ""))}</span>' for entity in entities)}
+      <h2>Source-grounded bindings</h2>
+      {''.join(_binding_html(binding) for binding in bindings)}
+    </div>
+    <div class="card">
+      <h2>Validated graph plan as Mermaid</h2>
+      <pre>{_h(mermaid)}</pre>
+    </div>
+    <div class="card">
+      <h2>Claims and explore_visual_context output</h2>
+      <ul>{''.join(f'<li>{_h(claim.get("text", ""))}</li>' for claim in claims)}</ul>
+      <pre>{_h(json.dumps(explore, ensure_ascii=False, indent=2))}</pre>
+    </div>
+  </section>
+</main>
+</body>
+</html>
+"""
+
+
+def _binding_html(binding: dict) -> str:
+    return (
+        '<div class="binding">'
+        f'<strong>{_h(binding.get("entity_name", ""))}</strong>'
+        f' → <code>{_h(binding.get("source_path", ""))}</code>'
+        f' :: <code>{_h(binding.get("symbol", ""))}</code>'
+        f' <span class="muted">line {binding.get("line", 0)}</span>'
+        "</div>"
+    )
+
+
+def _image_data_uri(path: Path) -> str:
+    data = path.read_bytes()
+    return "data:image/svg+xml;base64," + base64.b64encode(data).decode("ascii")
+
+
+def _h(value: object) -> str:
+    return html.escape(str(value or ""), quote=True)
 
 
 def _build_visual_fact_extractor(args: argparse.Namespace, repo: Path):
