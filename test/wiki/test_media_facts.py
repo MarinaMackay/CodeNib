@@ -23,6 +23,7 @@ def _artifact():
         "role_hint": "architecture_diagram",
         "caption": "IndexCompiler to VectorStore architecture",
         "surrounding_text": "The diagram shows how IndexCompiler writes to VectorStore.",
+        "embedded_text": "WikiRenderer calls IndexCompiler and VectorStore",
         "references": [
             {
                 "markdown_path": "README.md",
@@ -42,6 +43,7 @@ def test_build_visual_fact_extraction_prompt_requests_structured_json():
     assert "relations" in prompt
     assert "grounding_candidates" in prompt
     assert "IndexCompiler" in prompt
+    assert "WikiRenderer" in prompt
     assert "Return JSON only" in prompt
 
 
@@ -55,7 +57,12 @@ def test_deterministic_visual_facts_extracts_metadata_entities_and_claims():
     entity_names = {entity["name"] for entity in facts["entities"]}
     assert "IndexCompiler" in entity_names
     assert "VectorStore" in entity_names
+    assert "WikiRenderer" in entity_names
     assert facts["claims"]
+    assert any(
+        claim["evidence"] == "WikiRenderer calls IndexCompiler and VectorStore"
+        for claim in facts["claims"]
+    )
     assert facts["fact_pack_sha256"]
 
 

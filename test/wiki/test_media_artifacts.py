@@ -16,7 +16,14 @@ def test_discover_media_manifest_collects_markdown_context(tmp_path):
     assets = docs / "assets"
     assets.mkdir(parents=True)
     image = assets / "architecture.svg"
-    image.write_text("<svg>architecture</svg>", encoding="utf-8")
+    image.write_text(
+        (
+            "<svg><title>Runtime Architecture</title>"
+            "<desc>IndexCompiler writes VectorStore</desc>"
+            "<text>WikiRenderer</text></svg>"
+        ),
+        encoding="utf-8",
+    )
     (repo / "README.md").write_text(
         "\n".join(
             [
@@ -39,10 +46,22 @@ def test_discover_media_manifest_collects_markdown_context(tmp_path):
     assert artifact["path"] == "docs/assets/architecture.svg"
     assert artifact["media_type"] == "svg"
     assert artifact["mime_type"] == "image/svg+xml"
-    assert artifact["sha256"] == hashlib.sha256(b"<svg>architecture</svg>").hexdigest()
+    assert (
+        artifact["sha256"]
+        == hashlib.sha256(
+            (
+                b"<svg><title>Runtime Architecture</title>"
+                b"<desc>IndexCompiler writes VectorStore</desc>"
+                b"<text>WikiRenderer</text></svg>"
+            )
+        ).hexdigest()
+    )
     assert artifact["role_hint"] == "architecture_diagram"
     assert artifact["caption"] == "Architecture overview"
     assert "service architecture" in artifact["surrounding_text"]
+    assert artifact["embedded_text"] == (
+        "Runtime Architecture IndexCompiler writes VectorStore WikiRenderer"
+    )
     assert artifact["references"] == [
         {
             "markdown_path": "README.md",

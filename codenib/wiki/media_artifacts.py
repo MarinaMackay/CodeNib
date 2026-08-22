@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import mimetypes
 import os
@@ -32,6 +33,7 @@ _MAX_MEDIA_ARTIFACTS = 4096
 _MAX_MEDIA_BYTES = 32 * 1024 * 1024
 _MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
 _MAX_TEXT_BYTES = 4096
+_MAX_SVG_TEXT_SOURCE_BYTES = 512 * 1024
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[(?P<alt>[^\]]{0,2048})\]\((?P<target>[^)\s]{1,4096})(?:\s+\"(?P<title>[^\"]{0,2048})\")?\)"
 )
@@ -43,6 +45,12 @@ _HTML_ALT_RE = re.compile(
     r"\balt=[\"'](?P<alt>[^\"']{0,2048})[\"']",
     flags=re.IGNORECASE,
 )
+_SVG_TEXT_RE = re.compile(
+    r"<(?P<tag>title|desc|text|tspan)\b[^>]*>(?P<text>.*?)</(?P=tag)>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+_SPACE_RE = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
@@ -72,6 +80,7 @@ class MediaArtifact:
     references: tuple[MediaReference, ...] = ()
     caption: str = ""
     surrounding_text: str = ""
+    embedded_text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -162,6 +171,7 @@ def discover_media_manifest(
                 references=artifact_references,
                 caption=caption,
                 surrounding_text=_surrounding_text(artifact_references),
+                embedded_text=_embedded_text(path),
             )
         )
 
@@ -307,6 +317,35 @@ def _role_hint(path: str, references: tuple[MediaReference, ...]) -> str:
     if any(token in text for token in ("screenshot", "screen shot", "ui", "dashboard")):
         return "ui_screenshot"
     return "repository_image"
+
+
+def _embedded_text(path: Path) -> str:
+    if path.suffix.lower() != ".svg":
+        return ""
+    try:
+        if path.stat().st_size > _MAX_SVG_TEXT_SOURCE_BYTES:
+            return ""
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    if len(raw) > _MAX_SVG_TEXT_SOURCE_BYTES:
+        return ""
+    document = raw.decode("utf-8", errors="ignore")
+    values: list[str] = []
+    seen: set[str] = set()
+    for match in _SVG_TEXT_RE.finditer(document):
+        value = html.unescape(_TAG_RE.sub(" ", match.group("text")))
+        value = _SPACE_RE.sub(" ", value).strip()
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(value)
+        if len(" ".join(values).encode("utf-8")) > _MAX_TEXT_BYTES:
+            break
+    return _safe_text(" ".join(values))
 
 
 def _sha256_file(path: Path) -> str:

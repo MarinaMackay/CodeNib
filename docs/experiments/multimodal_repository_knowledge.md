@@ -100,8 +100,25 @@ a queryable view. It exposes three functions that future MCP tools can wrap:
 
 `codenib.wiki.media_tools.MultimodalKnowledgeToolRouter` exposes the same
 surface as an MCP-compatible tool router with stable tool schemas and bounded
-input validation. This keeps the query surface testable before wiring it into a
-server-specific MCP registration path.
+input validation. The production MCP server uses this router when it is started
+with a persisted multimodal bundle.
+
+The production MCP server can load a persisted bundle and expose these tools
+directly:
+
+```text
+codenib mcp /path/to/repository \
+  --multimodal-bundle /tmp/multimodal-knowledge.json
+```
+
+The bundle-backed MCP tools are:
+
+- `search_visual_context`
+- `get_visual_evidence`
+- `find_visual_code_links`
+
+If the MCP server starts without `--multimodal-bundle`, these tools return a
+clear runtime error rather than silently fabricating visual context.
 
 ### Multimodal knowledge bundle
 
@@ -225,6 +242,26 @@ To use an OpenAI-compatible VLM for visual fact extraction:
 export CODENIB_WIKI_VISUAL_FACTS_API_KEY=...
 python scripts/build_multimodal_knowledge.py /path/to/repository \
   --output /tmp/multimodal-knowledge.json \
+  --visual-facts-model qwen-vl \
+  --visual-facts-api-base http://localhost:8000/v1 \
+  --visual-facts-provider qwen
+```
+
+A minimal smoke test can create a synthetic repository with a real SVG diagram
+and generate a bundle in one command:
+
+```text
+python scripts/smoke_multimodal_vlm.py \
+  --output /tmp/mmwiki-smoke-bundle.json \
+  --keep-repo /tmp/mmwiki-smoke-repo
+```
+
+The same smoke test can call an OpenAI-compatible VLM endpoint:
+
+```text
+export CODENIB_WIKI_VISUAL_FACTS_API_KEY=...
+python scripts/smoke_multimodal_vlm.py \
+  --output /tmp/mmwiki-smoke-bundle.json \
   --visual-facts-model qwen-vl \
   --visual-facts-api-base http://localhost:8000/v1 \
   --visual-facts-provider qwen
