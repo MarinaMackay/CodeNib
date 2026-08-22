@@ -58,6 +58,8 @@ def test_deterministic_visual_facts_extracts_metadata_entities_and_claims():
     assert "IndexCompiler" in entity_names
     assert "VectorStore" in entity_names
     assert "WikiRenderer" in entity_names
+    assert "calls" not in entity_names
+    assert "architecture" not in entity_names
     assert facts["claims"]
     assert any(
         claim["evidence"] == "WikiRenderer calls IndexCompiler and VectorStore"
