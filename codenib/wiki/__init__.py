@@ -36,7 +36,10 @@ from .media_knowledge import (
 )
 from .media_pipeline import build_multimodal_repository_knowledge
 from .media_tools import MULTIMODAL_TOOL_SCHEMAS, MultimodalKnowledgeToolRouter
-from .media_vlm import OpenAICompatibleVisualFactExtractor
+from .media_vlm import (
+    OpenAICompatibleVisualFactExtractor,
+    visual_fact_extractor_from_config,
+)
 
 __all__ = [
     "MULTIMODAL_TOOL_SCHEMAS",
@@ -60,4 +63,5 @@ __all__ = [
     "merge_incremental_visual_facts",
     "plan_incremental_visual_fact_update",
     "search_visual_context",
+    "visual_fact_extractor_from_config",
 ]
