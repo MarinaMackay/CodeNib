@@ -23,6 +23,16 @@ from .media_grounding import (
     discover_source_symbol_candidates,
     ground_visual_facts_to_sources,
 )
+from .media_graph_plan import (
+    VISUAL_GRAPH_MANIFEST_SCHEMA,
+    VISUAL_GRAPH_MANIFEST_VERSION,
+    VISUAL_GRAPH_PLAN_SCHEMA,
+    VISUAL_GRAPH_PLAN_VERSION,
+    build_visual_graph_manifest,
+    build_visual_graph_plan,
+    compile_visual_graph_plan_to_mermaid,
+    validate_visual_graph_plan,
+)
 from .media_incremental import (
     diff_media_manifests,
     merge_incremental_visual_facts,
@@ -54,6 +64,10 @@ __all__ = [
     "MULTIMODAL_KNOWLEDGE_BUNDLE_SCHEMA",
     "MULTIMODAL_KNOWLEDGE_BUNDLE_VERSION",
     "MultimodalKnowledgeToolRouter",
+    "VISUAL_GRAPH_MANIFEST_SCHEMA",
+    "VISUAL_GRAPH_MANIFEST_VERSION",
+    "VISUAL_GRAPH_PLAN_SCHEMA",
+    "VISUAL_GRAPH_PLAN_VERSION",
     "WikiBuilder",
     "OpenAICompatibleVisualFactExtractor",
     "build_media_evidence_pack",
@@ -61,6 +75,9 @@ __all__ = [
     "build_multimodal_knowledge_bundle",
     "build_multimodal_repository_knowledge",
     "build_visual_facts_manifest",
+    "build_visual_graph_manifest",
+    "build_visual_graph_plan",
+    "compile_visual_graph_plan_to_mermaid",
     "deterministic_visual_facts",
     "diff_media_manifests",
     "discover_media_manifest",
@@ -77,5 +94,6 @@ __all__ = [
     "save_multimodal_knowledge_bundle",
     "search_visual_context",
     "validate_multimodal_knowledge_bundle",
+    "validate_visual_graph_plan",
     "visual_fact_extractor_from_config",
 ]

@@ -82,3 +82,7 @@ def test_build_multimodal_repository_knowledge_wraps_pipeline(tmp_path):
     assert bundle["visual_facts_manifest"]["fact_count"] == 1
     assert bundle["source_candidate_count"] >= 1
     assert bundle["knowledge_view"]["entry_count"] == 1
+    assert bundle["visual_graph_manifest"]["schema"] == (
+        "codenib.visual-graph-manifest.v1"
+    )
+    assert bundle["visual_graph_manifest"]["plan_count"] == 1
