@@ -39,6 +39,10 @@ def test_discover_source_symbol_candidates_extracts_files_and_symbols(tmp_path):
     assert "IndexCompiler" in symbols
     assert "build_vector_store" in symbols
     assert "VectorStore" in symbols
+    symbol_candidates = [
+        candidate for candidate in candidates if candidate["symbol"] == "IndexCompiler"
+    ]
+    assert "class IndexCompiler" in symbol_candidates[0]["context"]
 
 
 def test_discover_source_symbol_candidates_respects_source_selection(tmp_path):
@@ -213,3 +217,42 @@ def test_ground_visual_facts_to_sources_accepts_custom_scorer():
             "evidence": "graph scorer match",
         }
     ]
+
+
+def test_ground_visual_facts_to_sources_uses_source_context_tokens():
+    visual_facts = {
+        "manifest_sha256": "visual-facts-hash",
+        "facts": [
+            {
+                "artifact_path": "docs/request-flow.svg",
+                "entities": [
+                    {
+                        "name": "Request Flow",
+                        "type": "concept",
+                        "evidence": "route request flow",
+                    }
+                ],
+            }
+        ],
+    }
+    source_candidates = [
+        {
+            "path": "src/misc.py",
+            "symbol": "FlowBox",
+            "kind": "symbol",
+            "line": 4,
+            "context": "class FlowBox:\n    pass",
+        },
+        {
+            "path": "src/router.py",
+            "symbol": "RequestRouter",
+            "kind": "symbol",
+            "line": 8,
+            "context": 'class RequestRouter:\n    """Handles route request flow."""',
+        },
+    ]
+
+    manifest = ground_visual_facts_to_sources(visual_facts, source_candidates)
+
+    assert manifest["bindings"][0]["source_path"] == "src/router.py"
+    assert manifest["bindings"][0]["evidence"] == "source context token match"

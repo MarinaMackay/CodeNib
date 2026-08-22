@@ -40,10 +40,12 @@ _SOURCE_EXTENSIONS = frozenset(
 _MAX_SOURCE_BYTES = 1024 * 1024
 _MAX_CANDIDATES = 8192
 _MAX_BINDINGS_PER_ENTITY = 5
+_MAX_CONTEXT_BYTES = 512
 _SYMBOL_RE = re.compile(
     r"\b(?:class|def|function|const|let|var|interface|type|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
 _CAMEL_RE = re.compile(r"\b[A-Z][A-Za-z0-9_]{2,}\b")
+_TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
 VisualGroundingScorer = Callable[
     [Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any] | None
 ]
@@ -57,9 +59,13 @@ class SourceSymbolCandidate:
     symbol: str = ""
     kind: str = "source"
     line: int = 0
+    context: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        if not payload["context"]:
+            payload.pop("context")
+        return payload
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,7 @@ def discover_source_symbol_candidates(
                     symbol=symbol,
                     kind="symbol",
                     line=line,
+                    context=_source_context(text, line),
                 )
             )
             if len(candidates) >= max(0, max_candidates):
@@ -189,6 +196,8 @@ def ground_visual_facts_to_sources(
                 continue
             hints = [
                 entity_name,
+                _safe_text(entity.get("type")),
+                _safe_text(entity.get("evidence")),
                 *[
                     _safe_text(candidate)
                     for candidate in entity.get("grounding_candidates") or ()
@@ -285,6 +294,16 @@ def _score_candidate(
     candidate_symbol = _normalize(candidate.symbol)
     candidate_path = _normalize(Path(candidate.path).stem)
     candidate_full_path = _normalize(candidate.path)
+    candidate_tokens = _tokens(
+        " ".join(
+            [
+                candidate.path,
+                candidate.symbol,
+                candidate.kind,
+                candidate.context,
+            ]
+        )
+    )
     score = 0.0
     evidence = ""
     for hint in normalized_hints:
@@ -302,6 +321,15 @@ def _score_candidate(
         elif hint in candidate_full_path:
             score = max(score, 0.45)
             evidence = "path match"
+    hint_tokens = set().union(*(_tokens(hint) for hint in hints)) if hints else set()
+    if hint_tokens and candidate_tokens:
+        overlap = len(hint_tokens & candidate_tokens)
+        if overlap:
+            denominator = max(1, min(len(hint_tokens), len(candidate_tokens)))
+            token_score = min(0.7, 0.35 + 0.35 * (overlap / denominator))
+            if token_score > score:
+                score = token_score
+                evidence = "source context token match"
     if score <= 0:
         return None
     return VisualCodeBinding(
@@ -328,12 +356,26 @@ def _symbols(text: str) -> Iterable[tuple[str, int]]:
                 yield symbol, line_number
 
 
+def _source_context(text: str, line_number: int) -> str:
+    lines = text.splitlines()
+    if line_number <= 0 or line_number > len(lines):
+        return ""
+    start = max(0, line_number - 3)
+    end = min(len(lines), line_number + 2)
+    context = "\n".join(lines[start:end])
+    encoded = context.encode("utf-8")
+    if len(encoded) <= _MAX_CONTEXT_BYTES:
+        return context
+    return encoded[:_MAX_CONTEXT_BYTES].decode("utf-8", "ignore").rstrip()
+
+
 def _candidate_from_mapping(value: Mapping[str, Any]) -> SourceSymbolCandidate:
     return SourceSymbolCandidate(
         path=_safe_text(value.get("path")),
         symbol=_safe_text(value.get("symbol")),
         kind=_safe_text(value.get("kind") or "source"),
         line=_positive_int(value.get("line")),
+        context=_safe_text(value.get("context")),
     )
 
 
@@ -357,6 +399,10 @@ def _dedupe_bindings(
 
 def _normalize(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _tokens(value: str) -> set[str]:
+    return set(_TOKEN_RE.findall(str(value or "").lower()))
 
 
 def _positive_int(value: Any) -> int:
