@@ -140,6 +140,14 @@ def test_search_tool_schemas_publish_bounded_inputs() -> None:
 def test_multimodal_tool_schemas_publish_bounded_inputs() -> None:
     tools = {tool.name: tool for tool in asyncio.run(server_module.mcp.list_tools())}
 
+    explore = tools["explore_visual_context"].input_schema["properties"]
+    assert explore["query"]["minLength"] == 1
+    assert explore["query"]["maxLength"] == 4096
+    assert explore["artifact_path"]["maxLength"] == 4096
+    assert explore["source_path"]["maxLength"] == 4096
+    assert explore["symbol"]["maxLength"] == 4096
+    assert explore["limit"]["maximum"] == 20
+
     visual_search = tools["search_visual_context"].input_schema["properties"]
     assert visual_search["query"]["minLength"] == 1
     assert visual_search["query"]["maxLength"] == 4096
@@ -293,6 +301,14 @@ def test_multimodal_mcp_tools_query_loaded_bundle():
         ),
     )
 
+    explore = asyncio.run(
+        server_module.explore_visual_context(
+            "IndexCompiler architecture",
+            artifact_path="docs/architecture.svg",
+            source_path="src/compiler.py",
+            symbol="IndexCompiler",
+        )
+    )
     search = asyncio.run(
         server_module.search_visual_context("IndexCompiler architecture")
     )
@@ -304,6 +320,9 @@ def test_multimodal_mcp_tools_query_loaded_bundle():
         )
     )
 
+    assert explore["search_results"][0]["artifact_path"] == "docs/architecture.svg"
+    assert explore["evidence"]["artifact"]["path"] == "docs/architecture.svg"
+    assert explore["code_links"][0]["binding"]["symbol"] == "IndexCompiler"
     assert search["results"][0]["artifact_path"] == "docs/architecture.svg"
     assert evidence["evidence"]["artifact"]["path"] == "docs/architecture.svg"
     assert links["links"][0]["binding"]["symbol"] == "IndexCompiler"
@@ -313,7 +332,7 @@ def test_multimodal_mcp_tools_report_missing_bundle():
     server_module._ctx = ServerContext(manifest=MagicMock())
 
     with pytest.raises(RuntimeError, match="--multimodal-bundle"):
-        asyncio.run(server_module.search_visual_context("architecture"))
+        asyncio.run(server_module.explore_visual_context("architecture"))
 
 
 def test_get_context_uninitialized():

@@ -21,6 +21,26 @@ _MAX_LIMIT = 20
 
 MULTIMODAL_TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     {
+        "name": "explore_visual_context",
+        "description": (
+            "Agent-friendly visual repository context exploration. Combines "
+            "visual search, optional artifact evidence, and optional source-link "
+            "lookup in one bounded response."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "artifact_path": {"type": "string"},
+                "source_path": {"type": "string"},
+                "symbol": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": _MAX_LIMIT},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "search_visual_context",
         "description": "Search repository visual artifacts, facts, and source bindings.",
         "input_schema": {
@@ -71,6 +91,53 @@ class MultimodalKnowledgeToolRouter:
     def call_tool(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(arguments, Mapping):
             raise ValueError("multimodal tool arguments must be an object")
+        if name == "explore_visual_context":
+            query = _bounded_text(arguments.get("query"), label="query")
+            limit = _limit(arguments.get("limit", 5))
+            artifact_path = _bounded_text(
+                arguments.get("artifact_path", ""),
+                label="artifact_path",
+                max_bytes=_MAX_PATH_BYTES,
+                allow_empty=True,
+            )
+            source_path = _bounded_text(
+                arguments.get("source_path", ""),
+                label="source_path",
+                max_bytes=_MAX_PATH_BYTES,
+                allow_empty=True,
+            )
+            symbol = _bounded_text(
+                arguments.get("symbol", ""),
+                label="symbol",
+                max_bytes=_MAX_PATH_BYTES,
+                allow_empty=True,
+            )
+            evidence = (
+                get_visual_evidence(self.view, artifact_path) if artifact_path else None
+            )
+            links = (
+                find_visual_code_links(self.view, source_path, symbol=symbol)
+                if source_path
+                else []
+            )
+            return {
+                "query": query,
+                "search_results": search_visual_context(
+                    self.view,
+                    query,
+                    limit=limit,
+                ),
+                "evidence": evidence,
+                "code_links": links,
+                "recommended_next_tools": [
+                    tool
+                    for tool in (
+                        "get_visual_evidence" if not artifact_path else "",
+                        "find_visual_code_links" if not source_path else "",
+                    )
+                    if tool
+                ],
+            }
         if name == "search_visual_context":
             query = _bounded_text(arguments.get("query"), label="query")
             limit = _limit(arguments.get("limit", 5))
