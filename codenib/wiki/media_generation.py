@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
-from .media_evidence import MAX_MEDIA_EVIDENCE_PACK_BYTES
+from .media_evidence import MAX_MEDIA_EVIDENCE_PACK_BYTES, normalize_media_evidence_pack
 
 _GENERATABLE_IMAGE_KINDS = frozenset({"diagram", "image", "storyboard"})
 _MAX_MEDIA_SLOTS = 12
@@ -342,7 +342,9 @@ def materialize_media_slots(
                             raise ValueError(
                                 "wiki media evidence builder must return a mapping or None"
                             )
-                        generation_slot = {**updated, "evidence_pack": evidence_pack}
+                        generation_slot = _normalized_slot(
+                            {**updated, "evidence_pack": evidence_pack}
+                        )
                 updated["asset"] = generator.generate(
                     generation_slot,
                     output_dir=output_dir,
@@ -350,6 +352,29 @@ def materialize_media_slots(
                 )
         slots.append(updated)
     return {**dict(page), "media_slots": slots}
+
+
+def redact_media_evidence_packs(page: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a public page payload without server-only media evidence."""
+
+    public_page = dict(page)
+    raw_slots = public_page.get("media_slots")
+    if raw_slots is None:
+        return public_page
+    if not isinstance(raw_slots, (list, tuple)):
+        public_page["media_slots"] = []
+        return public_page
+
+    public_slots = []
+    for slot in raw_slots:
+        if isinstance(slot, Mapping):
+            public_slot = dict(slot)
+            public_slot.pop("evidence_pack", None)
+            public_slots.append(public_slot)
+        else:
+            public_slots.append(slot)
+    public_page["media_slots"] = public_slots
+    return public_page
 
 
 def image_generator_from_config(
@@ -453,6 +478,25 @@ def _source_citations(slot: Mapping[str, Any]) -> tuple[str, ...]:
 def _normalized_slot(slot: Mapping[str, Any]) -> dict[str, Any]:
     normalized = dict(slot)
     normalized["source_citations"] = list(_source_citations(slot))
+    if "evidence_pack" in normalized:
+        raw_evidence = normalized["evidence_pack"]
+        if raw_evidence is None:
+            normalized.pop("evidence_pack")
+        elif not isinstance(raw_evidence, Mapping):
+            raise ValueError("wiki media evidence pack must be a mapping")
+        else:
+            evidence_pack = normalize_media_evidence_pack(raw_evidence)
+            slot_id = str(normalized.get("id") or "").strip()
+            kind = str(normalized.get("kind") or "").strip()
+            if evidence_pack["slot_id"] != slot_id:
+                raise ValueError(
+                    "wiki media evidence pack slot_id does not match the slot"
+                )
+            if evidence_pack["kind"] != kind:
+                raise ValueError(
+                    "wiki media evidence pack kind does not match the slot"
+                )
+            normalized["evidence_pack"] = evidence_pack
     return normalized
 
 

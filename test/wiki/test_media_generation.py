@@ -251,6 +251,7 @@ def test_asset_prompt_redacts_evidence_pack_contents(tmp_path):
         "source_citations": ["src/app.py"],
         "evidence_pack": {
             "slot_id": "overview-image",
+            "kind": "image",
             "sources": [
                 {"file": "src/app.py", "snippet": "private code snippet"},
             ],
@@ -272,7 +273,11 @@ def test_materialize_media_slots_redacts_input_evidence_pack(tmp_path):
                 "kind": "image",
                 "prompt": "Draw it.",
                 "evidence_pack": {
-                    "sources": [{"file": "src/app.py", "snippet": "server-only source"}]
+                    "slot_id": "overview-image",
+                    "kind": "image",
+                    "sources": [
+                        {"file": "src/app.py", "snippet": "server-only source"}
+                    ],
                 },
             }
         ],
@@ -304,23 +309,53 @@ def test_materialize_media_slots_rejects_non_mapping_evidence(tmp_path):
         )
 
 
-def test_generation_prompt_rejects_oversized_evidence_pack(tmp_path):
-    generator = DeterministicSvgMediaGenerator()
-    oversized = {
-        "slot_id": "overview-image",
-        "sources": [{"file": "src/app.py", "snippet": "x" * (25 * 1024)}],
-    }
+def test_generation_normalizes_caller_supplied_evidence_pack(tmp_path):
+    requests = []
+    png = base64.b64encode(_PNG).decode("ascii")
 
-    with pytest.raises(ValueError, match="evidence pack exceeds"):
-        generator.generate(
-            {
-                "id": "overview-image",
+    def fake_urlopen(request, timeout):
+        requests.append(request)
+        assert timeout == 120.0
+        return _Response({"data": [{"b64_json": png}]})
+
+    generator = OpenAICompatibleImageGenerator(
+        model="image-model",
+        api_base="https://api.example/v1",
+        urlopen=fake_urlopen,
+    )
+    generator.generate(
+        {
+            "id": "overview-image",
+            "kind": "image",
+            "prompt": "Draw it.",
+            "evidence_pack": {
+                "slot_id": "overview-image",
                 "kind": "image",
-                "prompt": "Draw it.",
-                "evidence_pack": oversized,
+                "unknown": "must not reach the provider",
+                "sources": [
+                    {"file": "../secret.py", "snippet": "server-only secret"},
+                    {
+                        "file": "src/app.py",
+                        "node_name": "create_app",
+                        "content": "safe source",
+                    },
+                ],
             },
-            output_dir=tmp_path,
-        )
+        },
+        output_dir=tmp_path,
+    )
+
+    prompt = json.loads(requests[0].data.decode("utf-8"))["prompt"]
+    assert "safe source" in prompt
+    assert "create_app" in prompt
+    assert "server-only secret" not in prompt
+    assert "../secret.py" not in prompt
+    assert "must not reach the provider" not in prompt
+
+
+def test_evidence_serialization_rejects_oversized_noncanonical_payload():
+    with pytest.raises(ValueError, match="evidence pack exceeds"):
+        media_generation._serialized_evidence_pack({"raw": "x" * (25 * 1024)})
 
 
 def test_hosted_image_url_is_validated_and_cached(tmp_path):

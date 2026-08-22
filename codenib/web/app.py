@@ -41,6 +41,7 @@ from ..wiki.media_generation import (
     image_generator_from_config,
     materialize_media_slots,
     read_generated_media_asset,
+    redact_media_evidence_packs,
 )
 from ..wiki.narrator import Narrator
 from .config import load_config
@@ -255,10 +256,11 @@ def _wiki_media_dir(config, repo_id: str, page_id: str) -> Path:
 def _materialize_wiki_media(repo_id: str, page_id: str, page: dict) -> dict:
     """Attach generated media assets when a wiki media provider is configured."""
 
+    public_page = redact_media_evidence_packs(page)
     config = load_config()
     generator = image_generator_from_config(config)
     if generator is None:
-        return page
+        return public_page
     try:
         asset_base = (
             f"api/repos/{quote(repo_id, safe='')}/wiki-media/"
@@ -280,7 +282,7 @@ def _materialize_wiki_media(repo_id: str, page_id: str, page: dict) -> dict:
             exc,
             exc_info=True,
         )
-        return page
+        return public_page
 
 
 def _safe_media_filename(value: str) -> str:
