@@ -218,9 +218,10 @@ def deterministic_visual_facts(artifact: Mapping[str, Any]) -> dict[str, Any]:
     role = _safe_text(artifact.get("role_hint") or "repository_image")
     caption = _safe_text(artifact.get("caption"))
     surrounding = _safe_text(artifact.get("surrounding_text"))
+    embedded = _safe_text(artifact.get("embedded_text"))
     references = artifact.get("references") or ()
-    entities = _metadata_entities(path, role, caption, surrounding)
-    claims = _metadata_claims(path, role, caption, surrounding, references)
+    entities = _metadata_entities(path, role, caption, surrounding, embedded)
+    claims = _metadata_claims(path, role, caption, surrounding, embedded, references)
     pack = VisualFactPack(
         artifact_path=path,
         artifact_sha256=sha256,
@@ -228,7 +229,7 @@ def deterministic_visual_facts(artifact: Mapping[str, Any]) -> dict[str, Any]:
         extractor="local/metadata",
         entities=tuple(entities[:_MAX_FACTS_PER_ARTIFACT]),
         claims=tuple(claims[:_MAX_FACTS_PER_ARTIFACT]),
-        metadata={"source": "artifact-path-caption-surrounding-markdown"},
+        metadata={"source": "artifact-path-caption-surrounding-markdown-svg-text"},
     )
     return pack.to_dict()
 
@@ -268,6 +269,7 @@ def _artifact_prompt_payload(artifact: Mapping[str, Any]) -> dict[str, Any]:
         "role_hint": _safe_text(artifact.get("role_hint")),
         "caption": _safe_text(artifact.get("caption")),
         "surrounding_text": _safe_text(artifact.get("surrounding_text")),
+        "embedded_text": _safe_text(artifact.get("embedded_text")),
         "references": [
             {
                 "markdown_path": _safe_text(reference.get("markdown_path")),
@@ -287,8 +289,9 @@ def _metadata_entities(
     role: str,
     caption: str,
     surrounding: str,
+    embedded: str = "",
 ) -> list[VisualEntity]:
-    names = _entity_names(" ".join([path, caption, surrounding]))
+    names = _entity_names(" ".join([path, caption, surrounding, embedded]))
     entity_type = {
         "architecture_diagram": "component",
         "ui_screenshot": "ui_element",
@@ -297,8 +300,8 @@ def _metadata_entities(
         VisualEntity(
             name=name,
             type=entity_type,
-            evidence=caption or path,
-            confidence=0.35,
+            evidence=embedded if name in embedded else caption or path,
+            confidence=0.4 if embedded and name in embedded else 0.35,
             grounding_candidates=(name,),
         )
         for name in names
@@ -320,6 +323,7 @@ def _metadata_claims(
     role: str,
     caption: str,
     surrounding: str,
+    embedded: str,
     references: Any,
 ) -> list[VisualClaim]:
     claims = [
@@ -343,6 +347,14 @@ def _metadata_claims(
                 text=f"{path} is referenced from nearby documentation context.",
                 evidence=surrounding,
                 confidence=0.4,
+            )
+        )
+    if embedded:
+        claims.append(
+            VisualClaim(
+                text=f"{path} contains embedded SVG text labels.",
+                evidence=embedded,
+                confidence=0.45,
             )
         )
     reference_count = len(list(_mapping_items(references)))
