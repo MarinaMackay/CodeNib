@@ -25,6 +25,8 @@ def build_multimodal_knowledge_bundle(
     source_candidate_count: int,
     grounding_manifest: Mapping[str, Any],
     knowledge_view: Mapping[str, Any],
+    incremental_update: Mapping[str, Any] | None = None,
+    visual_graph_manifest: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Wrap multimodal pipeline outputs in a versioned, hashable bundle."""
 
@@ -45,6 +47,13 @@ def build_multimodal_knowledge_bundle(
             "knowledge_view": str(knowledge_view.get("view_sha256") or ""),
         },
     }
+    if incremental_update is not None:
+        bundle["incremental_update"] = dict(incremental_update)
+    if visual_graph_manifest is not None:
+        bundle["visual_graph_manifest"] = dict(visual_graph_manifest)
+        bundle["component_sha256"]["visual_graph_manifest"] = str(
+            visual_graph_manifest.get("manifest_sha256") or ""
+        )
     bundle["bundle_sha256"] = _stable_sha256(
         {key: value for key, value in bundle.items() if key != "bundle_sha256"}
     )
@@ -115,6 +124,13 @@ def validate_multimodal_knowledge_bundle(bundle: Mapping[str, Any]) -> dict[str,
         if not isinstance(data.get(key), Mapping):
             raise ValueError(f"multimodal knowledge bundle field {key!r} is invalid")
         data[key] = dict(data[key])
+    for key in ("incremental_update", "visual_graph_manifest"):
+        if key in data:
+            if not isinstance(data.get(key), Mapping):
+                raise ValueError(
+                    f"multimodal knowledge bundle field {key!r} is invalid"
+                )
+            data[key] = dict(data[key])
     source_candidate_count = data.get("source_candidate_count")
     if isinstance(source_candidate_count, bool) or not isinstance(
         source_candidate_count, int
