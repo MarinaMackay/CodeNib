@@ -22,13 +22,17 @@ _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
 _STOPWORDS = frozenset(
     {
         "and",
+        "architecture",
         "are",
         "asset",
         "below",
+        "calls",
         "code",
         "diagram",
         "docs",
         "image",
+        "render",
+        "runtime",
         "maps",
         "media",
         "overview",
