@@ -50,10 +50,31 @@ def test_multimodal_tool_schemas_are_exposed():
     names = {schema["name"] for schema in MULTIMODAL_TOOL_SCHEMAS}
 
     assert names == {
+        "explore_visual_context",
         "search_visual_context",
         "get_visual_evidence",
         "find_visual_code_links",
     }
+
+
+def test_tool_router_explores_visual_context():
+    router = MultimodalKnowledgeToolRouter(_view())
+
+    result = router.call_tool(
+        "explore_visual_context",
+        {
+            "query": "IndexCompiler architecture",
+            "artifact_path": "docs/architecture.svg",
+            "source_path": "codenib/compiler/index_compiler.py",
+            "symbol": "IndexCompiler",
+            "limit": 1,
+        },
+    )
+
+    assert result["search_results"][0]["artifact_path"] == "docs/architecture.svg"
+    assert result["evidence"]["artifact"]["caption"] == "IndexCompiler architecture"
+    assert result["code_links"][0]["binding"]["symbol"] == "IndexCompiler"
+    assert result["recommended_next_tools"] == []
 
 
 def test_tool_router_searches_visual_context():
@@ -96,6 +117,7 @@ def test_tool_router_finds_visual_code_links():
     ("name", "arguments", "message"),
     [
         ("unknown", {}, "unknown"),
+        ("explore_visual_context", {"query": ""}, "query"),
         ("search_visual_context", {"query": ""}, "query"),
         ("search_visual_context", {"query": "x", "limit": 100}, "limit"),
         ("get_visual_evidence", {"artifact_path": "bad\npath"}, "control"),

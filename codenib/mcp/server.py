@@ -599,6 +599,38 @@ async def get_manifest() -> dict[str, Any]:
 
 
 @mcp.tool(
+    name="explore_visual_context",
+    description=(
+        "Recommended multimodal repository exploration. Searches visual "
+        "artifacts/facts and can include optional artifact evidence and "
+        "visual-code links in one bounded response. Requires starting the MCP "
+        "server with --multimodal-bundle."
+    ),
+)
+async def explore_visual_context(
+    query: _VisualQuery,
+    artifact_path: _VisualSymbol = "",
+    source_path: _VisualSymbol = "",
+    symbol: _VisualSymbol = "",
+    limit: _VisualLimit = 5,
+) -> dict[str, Any]:
+    """Compose loaded visual repository context for an agent."""
+
+    router = _get_multimodal_router()
+    return await asyncio.to_thread(
+        router.call_tool,
+        "explore_visual_context",
+        {
+            "query": query,
+            "artifact_path": artifact_path,
+            "source_path": source_path,
+            "symbol": symbol,
+            "limit": limit,
+        },
+    )
+
+
+@mcp.tool(
     name="search_visual_context",
     description=(
         "Search the loaded multimodal repository knowledge bundle across visual "
