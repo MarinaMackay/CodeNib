@@ -19,6 +19,7 @@ from codenib.wiki import (
     build_multimodal_knowledge_view,
     build_visual_facts_manifest,
     build_visual_graph_manifest,
+    build_visual_storyboard_manifest,
     discover_media_manifest,
     discover_source_symbol_candidates,
     ground_visual_facts_to_sources,
@@ -131,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         grounding,
     )
     visual_graph_manifest = build_visual_graph_manifest(knowledge_view)
+    visual_storyboard_manifest = build_visual_storyboard_manifest(visual_graph_manifest)
     bundle = build_multimodal_knowledge_bundle(
         media_manifest=current_media,
         visual_facts_manifest=visual_facts,
@@ -139,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         knowledge_view=knowledge_view,
         incremental_update=plan,
         visual_graph_manifest=visual_graph_manifest,
+        visual_storyboard_manifest=visual_storyboard_manifest,
     )
     save_multimodal_knowledge_bundle(bundle, args.output)
     print(json.dumps(_summary(bundle, plan, new_facts), sort_keys=True))
@@ -180,6 +183,7 @@ def _summary(bundle: dict, plan: dict, new_facts: dict) -> dict:
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
         "visual_code_bindings": bundle["grounding_manifest"]["binding_count"],
         "visual_graph_plans": bundle["visual_graph_manifest"]["plan_count"],
+        "visual_storyboards": bundle["visual_storyboard_manifest"]["storyboard_count"],
         "knowledge_entries": bundle["knowledge_view"]["entry_count"],
     }
 

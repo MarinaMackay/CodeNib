@@ -19,6 +19,7 @@ from codenib.wiki import (
     OpenAICompatibleVisualFactExtractor,
     build_multimodal_repository_knowledge,
     compile_visual_graph_plan_to_mermaid,
+    compile_visual_storyboard_to_markdown,
     save_multimodal_knowledge_bundle,
 )
 from codenib.wiki.media_tools import MultimodalKnowledgeToolRouter
@@ -105,6 +106,7 @@ def _run_smoke(args: argparse.Namespace, repo: Path) -> int:
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
         "visual_code_bindings": bundle["grounding_manifest"]["binding_count"],
         "visual_graph_plans": bundle["visual_graph_manifest"]["plan_count"],
+        "visual_storyboards": bundle["visual_storyboard_manifest"]["storyboard_count"],
         "knowledge_entries": bundle["knowledge_view"]["entry_count"],
     }
     print(json.dumps(counts, sort_keys=True))
@@ -121,6 +123,13 @@ def _write_preview_html(bundle: dict, repo: Path, output: Path) -> None:
     graph_plans = (bundle.get("visual_graph_manifest") or {}).get("plans") or []
     graph_plan = graph_plans[0] if graph_plans else {}
     mermaid = compile_visual_graph_plan_to_mermaid(graph_plan) if graph_plan else ""
+    storyboards = (bundle.get("visual_storyboard_manifest") or {}).get(
+        "storyboards"
+    ) or []
+    storyboard = storyboards[0] if storyboards else {}
+    storyboard_markdown = (
+        compile_visual_storyboard_to_markdown(storyboard) if storyboard else ""
+    )
     image_uri = _image_data_uri(repo / artifact.get("path", ""))
     explore = router.call_tool(
         "explore_visual_context",
@@ -139,6 +148,7 @@ def _write_preview_html(bundle: dict, repo: Path, output: Path) -> None:
             fact=fact,
             bindings=bindings,
             mermaid=mermaid,
+            storyboard_markdown=storyboard_markdown,
             explore=explore,
         ),
         encoding="utf-8",
@@ -152,6 +162,7 @@ def _preview_html(
     fact: dict,
     bindings: list,
     mermaid: str,
+    storyboard_markdown: str,
     explore: dict,
 ) -> str:
     entities = fact.get("entities") or []
@@ -197,6 +208,10 @@ def _preview_html(
     <div class="card">
       <h2>Validated graph plan as Mermaid</h2>
       <pre>{_h(mermaid)}</pre>
+    </div>
+    <div class="card">
+      <h2>Video-ready storyboard</h2>
+      <pre>{_h(storyboard_markdown)}</pre>
     </div>
     <div class="card">
       <h2>Claims and explore_visual_context output</h2>

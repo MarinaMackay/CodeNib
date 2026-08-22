@@ -94,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         "source_candidates": bundle["source_candidate_count"],
         "visual_code_bindings": bundle["grounding_manifest"]["binding_count"],
         "visual_graph_plans": bundle["visual_graph_manifest"]["plan_count"],
+        "visual_storyboards": bundle["visual_storyboard_manifest"]["storyboard_count"],
         "knowledge_entries": bundle["knowledge_view"]["entry_count"],
     }
     print(json.dumps(counts, sort_keys=True))

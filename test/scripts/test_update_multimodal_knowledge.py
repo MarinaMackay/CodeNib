@@ -89,6 +89,8 @@ def test_update_multimodal_knowledge_script_reuses_unchanged_facts(tmp_path):
     assert summary["regenerated_visual_fact_packs"] == 1
     assert summary["visual_fact_packs"] == 2
     assert summary["visual_graph_plans"] == 2
+    assert summary["visual_storyboards"] == 2
     assert fact_paths == {"docs/renderer.svg", "docs/store.svg"}
     assert bundle["visual_graph_manifest"]["plan_count"] == 2
+    assert bundle["visual_storyboard_manifest"]["storyboard_count"] == 2
     assert bundle["incremental_update"]["extract_artifact_paths"] == ["docs/store.svg"]

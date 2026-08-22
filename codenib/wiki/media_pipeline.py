@@ -22,6 +22,7 @@ from .media_grounding import (
 from .media_graph_plan import build_visual_graph_manifest
 from .media_knowledge import build_multimodal_knowledge_view
 from .media_storage import build_multimodal_knowledge_bundle
+from .media_storyboard import build_visual_storyboard_manifest
 
 
 def build_multimodal_repository_knowledge(
@@ -63,6 +64,7 @@ def build_multimodal_repository_knowledge(
         grounding_manifest,
     )
     visual_graph_manifest = build_visual_graph_manifest(knowledge_view)
+    visual_storyboard_manifest = build_visual_storyboard_manifest(visual_graph_manifest)
     return build_multimodal_knowledge_bundle(
         media_manifest=media_manifest,
         visual_facts_manifest=visual_facts_manifest,
@@ -70,6 +72,7 @@ def build_multimodal_repository_knowledge(
         grounding_manifest=grounding_manifest,
         knowledge_view=knowledge_view,
         visual_graph_manifest=visual_graph_manifest,
+        visual_storyboard_manifest=visual_storyboard_manifest,
     )
 
 

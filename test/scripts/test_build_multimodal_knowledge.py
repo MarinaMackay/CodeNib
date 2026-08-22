@@ -50,10 +50,12 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
     assert counts["media_artifacts"] == 1
     assert counts["knowledge_entries"] == 1
     assert counts["visual_graph_plans"] == 1
+    assert counts["visual_storyboards"] == 1
     assert bundle["schema"] == "codenib.multimodal-knowledge-bundle.v1"
     assert len(bundle["bundle_sha256"]) == 64
     assert bundle["media_manifest"]["commit"] == "abc123"
     assert bundle["knowledge_view"]["entry_count"] == 1
+    assert bundle["visual_storyboard_manifest"]["storyboard_count"] == 1
 
 
 def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):

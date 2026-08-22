@@ -33,6 +33,16 @@ from .media_graph_plan import (
     compile_visual_graph_plan_to_mermaid,
     validate_visual_graph_plan,
 )
+from .media_storyboard import (
+    VISUAL_STORYBOARD_MANIFEST_SCHEMA,
+    VISUAL_STORYBOARD_MANIFEST_VERSION,
+    VISUAL_STORYBOARD_SCHEMA,
+    VISUAL_STORYBOARD_VERSION,
+    build_visual_storyboard,
+    build_visual_storyboard_manifest,
+    compile_visual_storyboard_to_markdown,
+    validate_visual_storyboard,
+)
 from .media_incremental import (
     diff_media_manifests,
     merge_incremental_visual_facts,
@@ -68,6 +78,10 @@ __all__ = [
     "VISUAL_GRAPH_MANIFEST_VERSION",
     "VISUAL_GRAPH_PLAN_SCHEMA",
     "VISUAL_GRAPH_PLAN_VERSION",
+    "VISUAL_STORYBOARD_MANIFEST_SCHEMA",
+    "VISUAL_STORYBOARD_MANIFEST_VERSION",
+    "VISUAL_STORYBOARD_SCHEMA",
+    "VISUAL_STORYBOARD_VERSION",
     "WikiBuilder",
     "OpenAICompatibleVisualFactExtractor",
     "build_media_evidence_pack",
@@ -77,7 +91,10 @@ __all__ = [
     "build_visual_facts_manifest",
     "build_visual_graph_manifest",
     "build_visual_graph_plan",
+    "build_visual_storyboard",
+    "build_visual_storyboard_manifest",
     "compile_visual_graph_plan_to_mermaid",
+    "compile_visual_storyboard_to_markdown",
     "deterministic_visual_facts",
     "diff_media_manifests",
     "discover_media_manifest",
@@ -95,5 +112,6 @@ __all__ = [
     "search_visual_context",
     "validate_multimodal_knowledge_bundle",
     "validate_visual_graph_plan",
+    "validate_visual_storyboard",
     "visual_fact_extractor_from_config",
 ]
