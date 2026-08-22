@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from codenib.wiki.media_evidence import build_media_evidence_pack
 
 
@@ -83,7 +85,8 @@ def test_build_media_evidence_pack_reads_bounded_snippets():
         max_snippet_bytes=12,
     )
 
-    assert pack["sources"][0]["snippet"] == "xxxxxxxxxxx…"
+    assert pack["sources"][0]["snippet"] == "xxxxxxxxx…"
+    assert len(pack["sources"][0]["snippet"].encode("utf-8")) <= 12
     assert pack["sources"][0]["start_line"] == 7
 
 
@@ -105,3 +108,43 @@ def test_build_media_evidence_pack_deduplicates_relations_and_sources():
     assert pack["relations"] == [
         {"source": "app", "target": "view", "relation": "calls"}
     ]
+
+
+def test_build_media_evidence_pack_zero_limits_do_not_consume_inputs():
+    def unexpected_values():
+        raise AssertionError("zero limits must not consume evidence iterables")
+        yield {}
+
+    pack = build_media_evidence_pack(
+        {"id": "slot", "kind": "diagram", "source_citations": ["src/app.py"]},
+        citations=unexpected_values(),
+        relations=unexpected_values(),
+        source_reader=lambda _citation: (_ for _ in ()).throw(AssertionError()),
+        max_sources=0,
+        max_relations=0,
+        max_snippet_bytes=0,
+    )
+
+    assert pack["sources"] == []
+    assert pack["relations"] == []
+
+
+def test_build_media_evidence_pack_does_not_broaden_unsafe_file_selectors():
+    reader_calls = []
+    pack = build_media_evidence_pack(
+        {"id": "slot", "kind": "image", "source_citations": ["../secret.py"]},
+        citations=[{"file": "src/app.py", "start_line": 1}],
+        source_reader=lambda citation: reader_calls.append(citation) or "source",
+    )
+
+    assert pack["sources"] == []
+    assert reader_calls == []
+
+
+def test_build_media_evidence_pack_rejects_oversized_total_payload():
+    human_prior = {f"key-{index}": "x" * 4096 for index in range(16)}
+
+    with pytest.raises(ValueError, match="evidence pack exceeds"):
+        build_media_evidence_pack(
+            {"id": "slot", "kind": "image", "human_prior": human_prior}
+        )

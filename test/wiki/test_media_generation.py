@@ -263,6 +263,47 @@ def test_asset_prompt_redacts_evidence_pack_contents(tmp_path):
     assert asset["metadata"]["evidence_pack_sha256"]
 
 
+def test_materialize_media_slots_redacts_input_evidence_pack(tmp_path):
+    page = {
+        "id": "overview",
+        "media_slots": [
+            {
+                "id": "overview-image",
+                "kind": "image",
+                "prompt": "Draw it.",
+                "evidence_pack": {
+                    "sources": [{"file": "src/app.py", "snippet": "server-only source"}]
+                },
+            }
+        ],
+    }
+
+    materialized = materialize_media_slots(
+        page,
+        generator=DeterministicSvgMediaGenerator(),
+        output_dir=tmp_path,
+    )
+
+    slot = materialized["media_slots"][0]
+    assert "evidence_pack" not in slot
+    assert "server-only source" not in json.dumps(materialized)
+    assert slot["asset"]["metadata"]["evidence_pack_sha256"]
+
+
+def test_materialize_media_slots_rejects_non_mapping_evidence(tmp_path):
+    page = {
+        "media_slots": [{"id": "overview-image", "kind": "image", "prompt": "Draw it."}]
+    }
+
+    with pytest.raises(ValueError, match="must return a mapping or None"):
+        materialize_media_slots(
+            page,
+            generator=DeterministicSvgMediaGenerator(),
+            output_dir=tmp_path,
+            evidence_builder=lambda _slot: ["not", "a", "mapping"],
+        )
+
+
 def test_generation_prompt_rejects_oversized_evidence_pack(tmp_path):
     generator = DeterministicSvgMediaGenerator()
     oversized = {

@@ -24,10 +24,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from .media_evidence import MAX_MEDIA_EVIDENCE_PACK_BYTES
+
 _GENERATABLE_IMAGE_KINDS = frozenset({"diagram", "image", "storyboard"})
 _MAX_MEDIA_SLOTS = 12
 _MAX_PROMPT_BYTES = 32 * 1024
-_MAX_EVIDENCE_PACK_BYTES = 24 * 1024
 _MAX_IMAGE_RESPONSE_BYTES = 32 * 1024 * 1024
 _MAX_IMAGE_BYTES = 16 * 1024 * 1024
 _MAX_MANIFEST_BYTES = 256 * 1024
@@ -43,9 +44,9 @@ _WINDOWS_RESERVED_NAMES = frozenset(
     | {f"LPT{index}" for index in range(1, 10)}
 )
 _ASSET_LOCKS_GUARD = threading.Lock()
-_ASSET_LOCKS: weakref.WeakValueDictionary[
-    str, threading.Lock
-] = weakref.WeakValueDictionary()
+_ASSET_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
 MediaEvidenceBuilder = Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
 
 
@@ -326,13 +327,21 @@ def materialize_media_slots(
         if not isinstance(slot, Mapping):
             continue
         updated = _normalized_slot(slot)
+        generation_slot = dict(updated)
+        updated.pop("evidence_pack", None)
         if "asset" not in updated:
             kind = str(updated.get("kind") or "")
             if kind in _GENERATABLE_IMAGE_KINDS:
-                generation_slot = updated
-                if evidence_builder is not None and "evidence_pack" not in updated:
-                    evidence_pack = evidence_builder(updated)
-                    if evidence_pack:
+                if (
+                    evidence_builder is not None
+                    and "evidence_pack" not in generation_slot
+                ):
+                    evidence_pack = evidence_builder(dict(updated))
+                    if evidence_pack is not None:
+                        if not isinstance(evidence_pack, Mapping):
+                            raise ValueError(
+                                "wiki media evidence builder must return a mapping or None"
+                            )
                         generation_slot = {**updated, "evidence_pack": evidence_pack}
                 updated["asset"] = generator.generate(
                     generation_slot,
@@ -397,14 +406,7 @@ def _generation_prompt(
 def _evidence_pack_prompt(value: Any) -> str:
     if not isinstance(value, Mapping):
         return ""
-    evidence = json.dumps(
-        value,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    if len(evidence.encode("utf-8")) > _MAX_EVIDENCE_PACK_BYTES:
-        raise ValueError("wiki media evidence pack exceeds the byte limit")
+    evidence = _serialized_evidence_pack(value)
     return "Source-grounded media evidence pack:\n" + evidence
 
 
@@ -412,14 +414,25 @@ def _asset_metadata(slot: Mapping[str, Any], **values: Any) -> dict[str, Any]:
     metadata = dict(values)
     if isinstance(slot.get("evidence_pack"), Mapping):
         metadata["evidence_pack_sha256"] = _sha256_text(
-            json.dumps(
-                slot["evidence_pack"],
-                ensure_ascii=True,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
+            _serialized_evidence_pack(slot["evidence_pack"])
         )
     return metadata
+
+
+def _serialized_evidence_pack(value: Mapping[str, Any]) -> str:
+    try:
+        evidence = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise ValueError("wiki media evidence pack must contain bounded JSON") from exc
+    if len(evidence.encode("utf-8")) > MAX_MEDIA_EVIDENCE_PACK_BYTES:
+        raise ValueError("wiki media evidence pack exceeds the byte limit")
+    return evidence
 
 
 def _source_citations(slot: Mapping[str, Any]) -> tuple[str, ...]:
