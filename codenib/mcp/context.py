@@ -302,6 +302,8 @@ class ServerContext:
     vector: Optional[CodeVectorStore] = None
     lsp_provider: Optional[Any] = field(default=None, repr=False)
     lsp_provider_selection: Dict[str, Any] = field(default_factory=dict)
+    multimodal_knowledge_bundle: Optional[Mapping[str, Any]] = None
+    multimodal_knowledge_router: Optional[Any] = field(default=None, repr=False)
     errors: Dict[str, str] = field(default_factory=dict)
     artifact: Optional[Mapping[str, Any]] = None
     source_error: Optional[str] = "source binding has not been verified"

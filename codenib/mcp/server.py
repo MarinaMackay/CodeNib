@@ -107,6 +107,10 @@ _RouteSymbols = Annotated[
 _SourcePath = Annotated[str, Field(min_length=1, max_length=MAX_SOURCE_PATH_CHARS)]
 _ExploreTopK = Annotated[int, Field(ge=1, le=MAX_EXPLORE_WINDOWS)]
 _ExploreBudget = Literal["fast", "balanced", "thorough"]
+_VisualQuery = Annotated[str, Field(min_length=1, max_length=4096)]
+_VisualLimit = Annotated[int, Field(ge=1, le=20)]
+_VisualPath = Annotated[str, Field(min_length=1, max_length=4096)]
+_VisualSymbol = Annotated[str, Field(max_length=4096)]
 
 
 @asynccontextmanager
@@ -129,6 +133,17 @@ def get_context() -> ServerContext:
     if _ctx is None:
         raise RuntimeError("ServerContext not initialized. Call init_server() first.")
     return _ctx
+
+
+def _get_multimodal_router() -> Any:
+    ctx = get_context()
+    router = getattr(ctx, "multimodal_knowledge_router", None)
+    if router is None:
+        raise RuntimeError(
+            "Multimodal repository knowledge is not loaded. Start the MCP server "
+            "with --multimodal-bundle <bundle.json>."
+        )
+    return router
 
 
 # MCPServer configures the process-wide root logger while it is constructed.
@@ -576,10 +591,86 @@ async def get_manifest() -> dict[str, Any]:
             "checkout_state": "not-attested",
         },
         "lsp_provider": dict(_ctx.lsp_provider_selection),
+        "multimodal_knowledge": _multimodal_runtime_status(_ctx),
     }
     if _ctx.artifact is not None:
         result["artifact"] = dict(_ctx.artifact)
     return result
+
+
+@mcp.tool(
+    name="search_visual_context",
+    description=(
+        "Search the loaded multimodal repository knowledge bundle across visual "
+        "artifacts, extracted visual facts, and source-code bindings. Requires "
+        "starting the MCP server with --multimodal-bundle."
+    ),
+)
+async def search_visual_context(
+    query: _VisualQuery,
+    limit: _VisualLimit = 5,
+) -> dict[str, Any]:
+    """Search loaded multimodal repository knowledge."""
+
+    router = _get_multimodal_router()
+    return await asyncio.to_thread(
+        router.call_tool,
+        "search_visual_context",
+        {"query": query, "limit": limit},
+    )
+
+
+@mcp.tool(
+    name="get_visual_evidence",
+    description=(
+        "Return one visual evidence entry by repository-relative artifact path "
+        "from the loaded multimodal repository knowledge bundle."
+    ),
+)
+async def get_visual_evidence(artifact_path: _VisualPath) -> dict[str, Any]:
+    """Return one loaded multimodal evidence entry."""
+
+    router = _get_multimodal_router()
+    return await asyncio.to_thread(
+        router.call_tool,
+        "get_visual_evidence",
+        {"artifact_path": artifact_path},
+    )
+
+
+@mcp.tool(
+    name="find_visual_code_links",
+    description=(
+        "Find visual artifacts grounded to a source file and optional symbol in "
+        "the loaded multimodal repository knowledge bundle."
+    ),
+)
+async def find_visual_code_links(
+    source_path: _VisualPath,
+    symbol: _VisualSymbol = "",
+) -> dict[str, Any]:
+    """Find loaded visual-to-code links."""
+
+    router = _get_multimodal_router()
+    return await asyncio.to_thread(
+        router.call_tool,
+        "find_visual_code_links",
+        {"source_path": source_path, "symbol": symbol},
+    )
+
+
+def _multimodal_runtime_status(ctx: ServerContext) -> dict[str, Any]:
+    bundle = getattr(ctx, "multimodal_knowledge_bundle", None)
+    if not isinstance(bundle, dict):
+        return {"loaded": False}
+    view = bundle.get("knowledge_view") or {}
+    return {
+        "loaded": True,
+        "schema": str(bundle.get("schema") or ""),
+        "schema_version": bundle.get("schema_version"),
+        "bundle_sha256": str(bundle.get("bundle_sha256") or ""),
+        "entry_count": view.get("entry_count") if isinstance(view, dict) else None,
+    }
 
 
 # ------------------------------------------------------------------
@@ -722,6 +813,14 @@ def _parse_args(
         default=TOOL_SURFACE_FULL,
         help="MCP tool discovery and call surface.",
     )
+    parser.add_argument(
+        "--multimodal-bundle",
+        type=str,
+        help=(
+            "Optional codenib.multimodal-knowledge-bundle.v1 JSON file produced "
+            "by scripts/build_multimodal_knowledge.py."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -731,6 +830,7 @@ def init_server(
     artifact: dict[str, Any] | None = None,
     artifact_binding: ContextArtifactBinding | None = None,
     source_binding: RepositorySourceBinding | None = None,
+    multimodal_bundle_path: str | Path | None = None,
 ) -> None:
     """Initialize the global ServerContext from a manifest file.
 
@@ -900,6 +1000,17 @@ def init_server(
                 native_index_authorization=native_authorization,
                 source_binding=retained_source,
             )
+            if multimodal_bundle_path is not None:
+                from ..wiki.media_storage import load_multimodal_knowledge_bundle
+                from ..wiki.media_tools import MultimodalKnowledgeToolRouter
+
+                multimodal_bundle = load_multimodal_knowledge_bundle(
+                    multimodal_bundle_path
+                )
+                new_context.multimodal_knowledge_bundle = multimodal_bundle
+                new_context.multimodal_knowledge_router = MultimodalKnowledgeToolRouter(
+                    multimodal_bundle["knowledge_view"],
+                )
             new_context.source_error = source_error
             portable_artifact = artifact is not None or artifact_binding is not None
             new_context.configure_lsp_provider(
@@ -1061,6 +1172,7 @@ def main(argv: list[str] | None = None) -> None:
                         "views": list(artifact.views),
                     },
                     artifact_binding=binding,
+                    multimodal_bundle_path=args.multimodal_bundle,
                 )
             except BaseException:  # noqa: B036 - preserve startup failure
                 try:
@@ -1070,7 +1182,7 @@ def main(argv: list[str] | None = None) -> None:
                 raise
             binding.close()
         else:
-            init_server(manifest_path)
+            init_server(manifest_path, multimodal_bundle_path=args.multimodal_bundle)
         logger.info("Starting MCP server on stdio...")
         mcp.run(transport="stdio")
     except FileNotFoundError as exc:
