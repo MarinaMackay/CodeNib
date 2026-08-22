@@ -726,18 +726,21 @@ def _run_mcp(args: argparse.Namespace) -> int:
         )
         if args.repository:
             command.extend(("--repository", args.repository))
+        if args.multimodal_bundle:
+            command.extend(("--multimodal-bundle", args.multimodal_bundle))
         mcp_main(command)
     else:
         manifest_path = resolve_manifest_path(args.path)
-        mcp_main(
-            [
-                str(manifest_path),
-                "--log-level",
-                args.log_level,
-                "--tool-surface",
-                args.tool_surface,
-            ]
-        )
+        command = [
+            str(manifest_path),
+            "--log-level",
+            args.log_level,
+            "--tool-surface",
+            args.tool_surface,
+        ]
+        if args.multimodal_bundle:
+            command.extend(("--multimodal-bundle", args.multimodal_bundle))
+        mcp_main(command)
     return 0
 
 
@@ -3940,9 +3943,9 @@ def _codegraph_index_report(repo_path: Path) -> dict[str, object]:
                 ),
             )
         if report["symbol_graph_manifest_current"] and graph_entry is not None:
-            report["symbol_graph_artifact_matches"] = (
-                authenticated_graph_artifact_matches(graph_entry)
-            )
+            report[
+                "symbol_graph_artifact_matches"
+            ] = authenticated_graph_artifact_matches(graph_entry)
         report["bm25"] = bool(
             report["bm25_manifest_current"] and report["bm25_artifact_matches"]
         )
@@ -4728,6 +4731,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("full", "explore"),
         default="full",
         help="MCP tool surface to expose",
+    )
+    mcp_parser.add_argument(
+        "--multimodal-bundle",
+        help="optional codenib.multimodal-knowledge-bundle.v1 JSON file",
     )
     mcp_parser.add_argument(
         "--runtime-probe",

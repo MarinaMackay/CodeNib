@@ -33,6 +33,11 @@ from codenib.mcp.tools.lsp import (
     lsp_route_impl,
 )
 from codenib.repository_source_selection import DEFAULT_REPOSITORY_SOURCE_SELECTION
+from codenib.wiki.media_storage import (
+    build_multimodal_knowledge_bundle,
+    save_multimodal_knowledge_bundle,
+)
+from codenib.wiki.media_tools import MultimodalKnowledgeToolRouter
 
 SOURCE_FINGERPRINT = "sha256-v2:" + ("a" * 64)
 SOURCE_SELECTION_DIGEST = DEFAULT_REPOSITORY_SOURCE_SELECTION.digest
@@ -132,6 +137,24 @@ def test_search_tool_schemas_publish_bounded_inputs() -> None:
     assert source["start_line"]["minimum"] == 1
 
 
+def test_multimodal_tool_schemas_publish_bounded_inputs() -> None:
+    tools = {tool.name: tool for tool in asyncio.run(server_module.mcp.list_tools())}
+
+    visual_search = tools["search_visual_context"].input_schema["properties"]
+    assert visual_search["query"]["minLength"] == 1
+    assert visual_search["query"]["maxLength"] == 4096
+    assert visual_search["limit"]["maximum"] == 20
+
+    evidence = tools["get_visual_evidence"].input_schema["properties"]
+    assert evidence["artifact_path"]["minLength"] == 1
+    assert evidence["artifact_path"]["maxLength"] == 4096
+
+    links = tools["find_visual_code_links"].input_schema["properties"]
+    assert links["source_path"]["minLength"] == 1
+    assert links["source_path"]["maxLength"] == 4096
+    assert links["symbol"]["maxLength"] == 4096
+
+
 @pytest.fixture
 def mock_manifest(tmp_path: Path) -> Path:
     """Create a mock manifest file."""
@@ -194,6 +217,103 @@ def test_init_server_success(mock_manifest: Path):
                     assert isinstance(ctx, ServerContext)
                     # Check basic manifest loading worked
                     assert ctx.manifest is not None
+
+
+def _multimodal_bundle() -> dict:
+    knowledge_view = {
+        "view_sha256": "view-hash",
+        "entry_count": 1,
+        "entries": [
+            {
+                "artifact": {
+                    "path": "docs/architecture.svg",
+                    "caption": "IndexCompiler architecture",
+                },
+                "facts": {
+                    "artifact_path": "docs/architecture.svg",
+                    "entities": [{"name": "IndexCompiler", "type": "component"}],
+                },
+                "bindings": [
+                    {
+                        "entity_name": "IndexCompiler",
+                        "source_path": "src/compiler.py",
+                        "symbol": "IndexCompiler",
+                    }
+                ],
+                "search_text": (
+                    "IndexCompiler architecture docs/architecture.svg "
+                    "src/compiler.py"
+                ),
+            }
+        ],
+    }
+    return build_multimodal_knowledge_bundle(
+        media_manifest={
+            "manifest_sha256": "media-hash",
+            "artifact_count": 1,
+            "artifacts": [],
+        },
+        visual_facts_manifest={
+            "manifest_sha256": "facts-hash",
+            "fact_count": 1,
+            "facts": [],
+        },
+        source_candidate_count=1,
+        grounding_manifest={
+            "manifest_sha256": "grounding-hash",
+            "binding_count": 1,
+            "bindings": [],
+        },
+        knowledge_view=knowledge_view,
+    )
+
+
+def test_init_server_loads_multimodal_bundle(mock_manifest: Path, tmp_path: Path):
+    bundle_path = tmp_path / "multimodal.json"
+    save_multimodal_knowledge_bundle(_multimodal_bundle(), bundle_path)
+
+    with patch.object(CodeVectorStore, "load", side_effect=Exception("skip vector")):
+        server_module.init_server(
+            str(mock_manifest), multimodal_bundle_path=bundle_path
+        )
+
+    ctx = server_module.get_context()
+    assert ctx.multimodal_knowledge_bundle["schema"] == (
+        "codenib.multimodal-knowledge-bundle.v1"
+    )
+    assert isinstance(ctx.multimodal_knowledge_router, MultimodalKnowledgeToolRouter)
+
+
+def test_multimodal_mcp_tools_query_loaded_bundle():
+    server_module._ctx = ServerContext(
+        manifest=MagicMock(),
+        multimodal_knowledge_bundle=_multimodal_bundle(),
+        multimodal_knowledge_router=MultimodalKnowledgeToolRouter(
+            _multimodal_bundle()["knowledge_view"]
+        ),
+    )
+
+    search = asyncio.run(
+        server_module.search_visual_context("IndexCompiler architecture")
+    )
+    evidence = asyncio.run(server_module.get_visual_evidence("docs/architecture.svg"))
+    links = asyncio.run(
+        server_module.find_visual_code_links(
+            "src/compiler.py",
+            symbol="IndexCompiler",
+        )
+    )
+
+    assert search["results"][0]["artifact_path"] == "docs/architecture.svg"
+    assert evidence["evidence"]["artifact"]["path"] == "docs/architecture.svg"
+    assert links["links"][0]["binding"]["symbol"] == "IndexCompiler"
+
+
+def test_multimodal_mcp_tools_report_missing_bundle():
+    server_module._ctx = ServerContext(manifest=MagicMock())
+
+    with pytest.raises(RuntimeError, match="--multimodal-bundle"):
+        asyncio.run(server_module.search_visual_context("architecture"))
 
 
 def test_get_context_uninitialized():
