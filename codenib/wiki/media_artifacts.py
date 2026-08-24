@@ -10,6 +10,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import posixpath
 import re
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -22,6 +23,7 @@ from ..repository_source_selection import (
     DEFAULT_REPOSITORY_SOURCE_SELECTION,
     RepositorySourceSelection,
 )
+from ._safe_file_reads import read_regular_bytes
 
 MEDIA_MANIFEST_SCHEMA = "codenib.media-manifest.v1"
 MEDIA_MANIFEST_VERSION = 1
@@ -31,6 +33,8 @@ _MARKDOWN_EXTENSIONS = frozenset({".md", ".mdx"})
 _MAX_MEDIA_ARTIFACTS = 4096
 _MAX_MEDIA_BYTES = 32 * 1024 * 1024
 _MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
+_MAX_MARKDOWN_FILES = 8192
+_MAX_REFERENCES_PER_ARTIFACT = 64
 _MAX_TEXT_BYTES = 4096
 _MARKDOWN_IMAGE_RE = re.compile(
     r"!\[(?P<alt>[^\]]{0,2048})\]\((?P<target>[^)\s]{1,4096})(?:\s+\"(?P<title>[^\"]{0,2048})\")?\)"
@@ -127,34 +131,40 @@ def discover_media_manifest(
 
     root = Path(repo_path).expanduser().resolve()
     selected = RepositorySourceSelection(selection.exclude_subtrees)
-    references = _discover_markdown_references(
-        root,
-        exclude_roots=exclude_roots,
-        selection=selected,
+    artifact_limit = _validated_limit(
+        max_artifacts,
+        name="max_artifacts",
+        maximum=_MAX_MEDIA_ARTIFACTS,
     )
-    artifacts: list[MediaArtifact] = []
+    excluded = tuple(exclude_roots)
+    discovered: list[tuple[Path, str, str, int]] = []
     for path in walk_repository_files(
         root,
-        exclude_roots=exclude_roots,
+        exclude_roots=excluded,
         selection=selected,
     ):
-        if len(artifacts) >= max(0, max_artifacts):
+        if len(discovered) >= artifact_limit:
             break
         if path.is_symlink() or path.suffix.lower() not in SUPPORTED_MEDIA_EXTENSIONS:
             continue
-        try:
-            size = path.stat().st_size
-        except OSError:
-            continue
-        if size < 0 or size > _MAX_MEDIA_BYTES:
+        payload = read_regular_bytes(path, max_bytes=_MAX_MEDIA_BYTES)
+        if payload is None:
             continue
         relative = path.relative_to(root).as_posix()
+        discovered.append(
+            (path, relative, hashlib.sha256(payload).hexdigest(), len(payload))
+        )
+
+    references = _discover_markdown_references(
+        root,
+        artifact_paths=frozenset(relative for _, relative, _, _ in discovered),
+        exclude_roots=excluded,
+        selection=selected,
+    )
+    artifacts: list[MediaArtifact] = []
+    for path, relative, digest, size in discovered:
         artifact_references = tuple(references.get(relative, ()))
         caption = _caption(artifact_references)
-        try:
-            digest = _sha256_file(path, max_bytes=_MAX_MEDIA_BYTES)
-        except (OSError, ValueError):
-            continue
         artifacts.append(
             MediaArtifact(
                 path=relative,
@@ -186,10 +196,14 @@ def discover_media_manifest(
 def _discover_markdown_references(
     root: Path,
     *,
+    artifact_paths: frozenset[str],
     exclude_roots: Iterable[str | Path],
     selection: RepositorySourceSelection,
 ) -> dict[str, list[MediaReference]]:
+    if not artifact_paths:
+        return {}
     references: dict[str, list[MediaReference]] = {}
+    markdown_files = 0
     for path in walk_repository_files(
         root,
         exclude_roots=exclude_roots,
@@ -197,11 +211,15 @@ def _discover_markdown_references(
     ):
         if path.is_symlink() or path.suffix.lower() not in _MARKDOWN_EXTENSIONS:
             continue
+        if markdown_files >= _MAX_MARKDOWN_FILES:
+            break
+        markdown_files += 1
+        payload = read_regular_bytes(path, max_bytes=_MAX_MARKDOWN_BYTES)
+        if payload is None:
+            continue
         try:
-            if path.stat().st_size > _MAX_MARKDOWN_BYTES:
-                continue
-            markdown = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            markdown = payload.decode("utf-8")
+        except UnicodeDecodeError:
             continue
         lines = markdown.splitlines()
         relative_markdown = path.relative_to(root).as_posix()
@@ -211,9 +229,12 @@ def _discover_markdown_references(
                     target,
                     markdown_path=Path(relative_markdown),
                 )
-                if target_path is None:
+                if target_path is None or target_path not in artifact_paths:
                     continue
-                references.setdefault(target_path, []).append(
+                target_references = references.setdefault(target_path, [])
+                if len(target_references) >= _MAX_REFERENCES_PER_ARTIFACT:
+                    continue
+                target_references.append(
                     MediaReference(
                         markdown_path=relative_markdown,
                         line=line_number,
@@ -252,16 +273,24 @@ def _resolve_media_target(target: str, *, markdown_path: Path) -> str | None:
     value = unquote(str(target or "").strip()).split("#", 1)[0].split("?", 1)[0]
     if not value:
         return None
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
     if parsed.scheme or parsed.netloc or value.startswith("//"):
         return None
     candidate = PurePosixPath(value)
-    if candidate.is_absolute() or ".." in candidate.parts:
+    if candidate.is_absolute():
         return None
-    resolved = (markdown_path.parent / candidate).as_posix()
-    normalized = PurePosixPath(resolved).as_posix()
-    if normalized == "." or normalized.startswith("../"):
+    resolved = posixpath.normpath((markdown_path.parent / candidate).as_posix())
+    normalized_path = PurePosixPath(resolved)
+    if (
+        resolved == "."
+        or normalized_path.is_absolute()
+        or (normalized_path.parts and normalized_path.parts[0] == "..")
+    ):
         return None
+    normalized = normalized_path.as_posix()
     if PurePosixPath(normalized).suffix.lower() not in SUPPORTED_MEDIA_EXTENSIONS:
         return None
     return normalized
@@ -313,18 +342,6 @@ def _role_hint(path: str, references: tuple[MediaReference, ...]) -> str:
     return "repository_image"
 
 
-def _sha256_file(path: Path, *, max_bytes: int) -> str:
-    digest = hashlib.sha256()
-    consumed = 0
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            consumed += len(chunk)
-            if consumed > max_bytes:
-                raise ValueError("media artifact exceeds the byte limit")
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _sha256_json(payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(
         payload,
@@ -357,6 +374,16 @@ def _safe_text(value: Any, *, max_bytes: int = _MAX_TEXT_BYTES) -> str:
         return text
     encoded = text.encode("utf-8")[: max(0, max_bytes - 1)]
     return encoded.decode("utf-8", errors="ignore").rstrip() + "…"
+
+
+def _validated_limit(value: Any, *, name: str, maximum: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= maximum
+    ):
+        raise ValueError(f"{name} must be an integer between 0 and {maximum}")
+    return value
 
 
 __all__ = [

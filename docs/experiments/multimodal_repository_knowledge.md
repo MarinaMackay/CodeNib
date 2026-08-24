@@ -32,8 +32,11 @@ supported visual artifacts:
 - `.webp`
 
 It respects the shared repository traversal and source-selection policy, skips
-symlinks, hashes media content, and records markdown references, alt text,
-captions, and surrounding documentation context.
+symlinks, reads bounded stable regular files, hashes media content, and records
+bounded markdown references, alt text, captions, and surrounding documentation
+context. Repository-contained parent references such as
+`../assets/architecture.svg` are normalized while paths that escape the
+repository are ignored.
 
 ### VisualFactPack
 
@@ -52,9 +55,9 @@ while keeping the same schema.
 
 `codenib.wiki.media_grounding` grounds extracted visual entities to repository
 files and symbols. The first implementation uses deterministic lexical scoring
-against a bounded source-symbol inventory. Later versions can replace the
-scorer with BM25, embeddings, CodeGraph, LSP facts, or `FactQueryIndex` /
-`FactBatch`.
+against a bounded source-symbol inventory derived from the shared language
+registry. Later versions can replace the scorer with BM25, embeddings,
+CodeGraph, LSP facts, or `FactQueryIndex` / `FactBatch`.
 
 ### MultimodalKnowledgeView
 

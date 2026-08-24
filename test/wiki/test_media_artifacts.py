@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import hashlib
 
-from codenib.repository_source_selection import RepositorySourceSelection
+import pytest
+
 import codenib.wiki.media_artifacts as media_artifacts
+from codenib.repository_source_selection import RepositorySourceSelection
 from codenib.wiki.media_artifacts import discover_media_manifest
 
 
@@ -77,14 +79,14 @@ def test_discover_media_manifest_respects_source_selection(tmp_path):
     ]
 
 
-def test_discover_media_manifest_ignores_external_and_parent_markdown_links(tmp_path):
+def test_discover_media_manifest_ignores_external_and_escaping_markdown_links(tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "local.webp").write_bytes(b"webp")
     (tmp_path / "docs" / "README.md").write_text(
         "\n".join(
             [
                 "![Remote](https://example.com/asset.png)",
-                "![Parent](../secret.png)",
+                "![Escape](../../secret.png)",
                 '<img src="local.webp" alt="Dashboard screenshot">',
             ]
         ),
@@ -98,6 +100,24 @@ def test_discover_media_manifest_ignores_external_and_parent_markdown_links(tmp_
     assert artifact["path"] == "docs/local.webp"
     assert artifact["role_hint"] == "ui_screenshot"
     assert artifact["caption"] == "Dashboard screenshot"
+
+
+def test_discover_media_manifest_resolves_safe_parent_markdown_links(tmp_path):
+    (tmp_path / "docs" / "guide").mkdir(parents=True)
+    (tmp_path / "docs" / "assets").mkdir()
+    (tmp_path / "docs" / "assets" / "architecture.svg").write_text(
+        "<svg/>", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "guide" / "README.md").write_text(
+        "![Architecture](../assets/architecture.svg)",
+        encoding="utf-8",
+    )
+
+    manifest = discover_media_manifest(tmp_path, commit="abc123")
+
+    artifact = manifest["artifacts"][0]
+    assert artifact["caption"] == "Architecture"
+    assert artifact["references"][0]["markdown_path"] == "docs/guide/README.md"
 
 
 def test_discover_media_manifest_skips_symlinks_and_large_media(tmp_path):
@@ -121,3 +141,25 @@ def test_discover_media_manifest_skips_files_that_exceed_hash_limit(
     manifest = discover_media_manifest(tmp_path, commit="abc123")
 
     assert manifest["artifacts"] == []
+
+
+def test_discover_media_manifest_reuses_generator_exclusions_for_both_scans(tmp_path):
+    (tmp_path / "visible").mkdir()
+    (tmp_path / "visible" / "diagram.png").write_bytes(b"visible")
+    (tmp_path / "excluded").mkdir()
+    (tmp_path / "excluded" / "secret.png").write_bytes(b"secret")
+
+    manifest = discover_media_manifest(
+        tmp_path,
+        commit="abc123",
+        exclude_roots=(path for path in [tmp_path / "excluded"]),
+    )
+
+    assert [artifact["path"] for artifact in manifest["artifacts"]] == [
+        "visible/diagram.png"
+    ]
+
+
+def test_discover_media_manifest_rejects_unbounded_artifact_limits(tmp_path):
+    with pytest.raises(ValueError, match="max_artifacts"):
+        discover_media_manifest(tmp_path, max_artifacts=4097)

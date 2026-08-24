@@ -133,6 +133,78 @@ def test_build_visual_facts_manifest_accepts_custom_vlm_extractor():
     ]
 
 
+def test_build_visual_facts_manifest_anchors_untrusted_extractor_provenance():
+    media_manifest = {
+        "manifest_sha256": "media-manifest-hash",
+        "artifacts": [_artifact()],
+    }
+
+    def untrusted_extractor(_artifact_value):
+        return {
+            "artifact_path": "../../outside.png",
+            "artifact_sha256": "forged",
+            "role_hint": "forged",
+            "extractor": "vlm/test",
+        }
+
+    manifest = build_visual_facts_manifest(
+        media_manifest,
+        extractor=untrusted_extractor,
+    )
+
+    fact = manifest["facts"][0]
+    assert fact["artifact_path"] == _artifact()["path"]
+    assert fact["artifact_sha256"] == _artifact()["sha256"]
+    assert fact["role_hint"] == _artifact()["role_hint"]
+
+
+def test_build_visual_facts_manifest_bounds_untrusted_fact_lists():
+    media_manifest = {
+        "manifest_sha256": "media-manifest-hash",
+        "artifacts": [_artifact()],
+    }
+
+    def noisy_extractor(_artifact_value):
+        return {
+            "extractor": "vlm/test",
+            "entities": (
+                {
+                    "name": f"Entity{index}",
+                    "grounding_candidates": (
+                        f"Candidate{candidate}" for candidate in range(100)
+                    ),
+                }
+                for index in range(100)
+            ),
+            "relations": ({"source": "a", "target": "b"} for _ in range(100)),
+            "claims": (
+                {"text": f"claim {index}", "evidence": "test"} for index in range(100)
+            ),
+        }
+
+    manifest = build_visual_facts_manifest(
+        media_manifest,
+        extractor=noisy_extractor,
+    )
+    fact = manifest["facts"][0]
+
+    assert len(fact["entities"]) == 32
+    assert len(fact["entities"][0]["grounding_candidates"]) == 32
+    assert len(fact["relations"]) == 32
+    assert len(fact["claims"]) == 32
+
+
+def test_build_visual_facts_manifest_rejects_non_json_metadata():
+    def invalid_extractor(_artifact_value):
+        return {"extractor": "vlm/test", "metadata": {"value": object()}}
+
+    with pytest.raises(ValueError, match="metadata must contain bounded JSON"):
+        build_visual_facts_manifest(
+            {"artifacts": [_artifact()]},
+            extractor=invalid_extractor,
+        )
+
+
 def test_build_visual_fact_extraction_prompt_bounds_oversized_context():
     artifact = _artifact()
     artifact["surrounding_text"] = "x" * (40 * 1024)
