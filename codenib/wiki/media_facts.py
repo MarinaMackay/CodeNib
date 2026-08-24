@@ -10,6 +10,8 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
+from itertools import islice
+from pathlib import PurePosixPath
 from typing import Any, Callable, Iterable, Mapping
 
 MEDIA_FACTS_SCHEMA = "codenib.media-facts.v1"
@@ -17,7 +19,13 @@ MEDIA_FACTS_VERSION = 1
 
 _MAX_PROMPT_BYTES = 32 * 1024
 _MAX_TEXT_BYTES = 4096
+_MAX_ARTIFACTS = 4096
 _MAX_FACTS_PER_ARTIFACT = 32
+_MAX_FACT_PACK_BYTES = 64 * 1024
+_MAX_GROUNDING_CANDIDATES = 32
+_MAX_METADATA_BYTES = 8 * 1024
+_MAX_METADATA_ITEMS = 32
+_MAX_REFERENCES_PER_ARTIFACT = 64
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
 _STOPWORDS = frozenset(
     {
@@ -213,7 +221,7 @@ def build_visual_fact_extraction_prompt(artifact: Mapping[str, Any]) -> str:
 def deterministic_visual_facts(artifact: Mapping[str, Any]) -> dict[str, Any]:
     """Return a conservative local fact pack from artifact metadata only."""
 
-    path = _safe_text(artifact.get("path"))
+    path = _safe_relative_path(artifact.get("path"))
     sha256 = _safe_text(artifact.get("sha256"))
     role = _safe_text(artifact.get("role_hint") or "repository_image")
     caption = _safe_text(artifact.get("caption"))
@@ -241,11 +249,25 @@ def build_visual_facts_manifest(
     """Extract visual fact packs for every artifact in a media manifest."""
 
     facts = []
-    for artifact in media_manifest.get("artifacts") or ():
-        if not isinstance(artifact, Mapping):
+    for artifact in _mapping_items(
+        media_manifest.get("artifacts"),
+        limit=_MAX_ARTIFACTS,
+    ):
+        artifact_path = _safe_relative_path(artifact.get("path"))
+        if not artifact_path:
             continue
         pack = extractor(artifact)
-        facts.append(_fact_pack_from_mapping(pack))
+        if not isinstance(pack, Mapping):
+            raise ValueError("visual fact extractor must return a mapping")
+        normalized = _fact_pack_from_mapping(
+            pack,
+            artifact_path=artifact_path,
+            artifact_sha256=_safe_text(artifact.get("sha256")),
+            role_hint=_safe_text(artifact.get("role_hint") or "repository_image"),
+        )
+        if _json_size(normalized.to_dict()) > _MAX_FACT_PACK_BYTES:
+            raise ValueError("visual fact pack exceeds the byte limit")
+        facts.append(normalized)
     manifest = VisualFactsManifest(
         schema=MEDIA_FACTS_SCHEMA,
         version=MEDIA_FACTS_VERSION,
@@ -271,8 +293,8 @@ def _artifact_prompt_payload(artifact: Mapping[str, Any]) -> dict[str, Any]:
                 "alt_text": _safe_text(reference.get("alt_text")),
                 "title": _safe_text(reference.get("title")),
             }
-            for reference in _mapping_items(artifact.get("references"))
-        ][:8],
+            for reference in _mapping_items(artifact.get("references"), limit=8)
+        ],
     }
 
 
@@ -339,7 +361,13 @@ def _metadata_claims(
                 confidence=0.4,
             )
         )
-    reference_count = len(list(_mapping_items(references)))
+    reference_count = sum(
+        1
+        for _ in _mapping_items(
+            references,
+            limit=_MAX_REFERENCES_PER_ARTIFACT,
+        )
+    )
     if reference_count:
         claims.append(
             VisualClaim(
@@ -351,11 +379,17 @@ def _metadata_claims(
     return claims
 
 
-def _fact_pack_from_mapping(value: Mapping[str, Any]) -> VisualFactPack:
+def _fact_pack_from_mapping(
+    value: Mapping[str, Any],
+    *,
+    artifact_path: str,
+    artifact_sha256: str,
+    role_hint: str,
+) -> VisualFactPack:
     return VisualFactPack(
-        artifact_path=_safe_text(value.get("artifact_path")),
-        artifact_sha256=_safe_text(value.get("artifact_sha256")),
-        role_hint=_safe_text(value.get("role_hint")),
+        artifact_path=artifact_path,
+        artifact_sha256=artifact_sha256,
+        role_hint=role_hint,
         extractor=_safe_text(value.get("extractor")),
         entities=tuple(
             VisualEntity(
@@ -365,11 +399,17 @@ def _fact_pack_from_mapping(value: Mapping[str, Any]) -> VisualFactPack:
                 confidence=_confidence(entity.get("confidence")),
                 grounding_candidates=tuple(
                     _safe_text(candidate)
-                    for candidate in entity.get("grounding_candidates") or ()
+                    for candidate in islice(
+                        _non_string_iterable(entity.get("grounding_candidates")),
+                        _MAX_GROUNDING_CANDIDATES,
+                    )
                     if _safe_text(candidate)
                 ),
             )
-            for entity in _mapping_items(value.get("entities"))
+            for entity in _mapping_items(
+                value.get("entities"),
+                limit=_MAX_FACTS_PER_ARTIFACT,
+            )
         ),
         relations=tuple(
             VisualRelation(
@@ -379,7 +419,10 @@ def _fact_pack_from_mapping(value: Mapping[str, Any]) -> VisualFactPack:
                 evidence=_safe_text(relation.get("evidence")),
                 confidence=_confidence(relation.get("confidence")),
             )
-            for relation in _mapping_items(value.get("relations"))
+            for relation in _mapping_items(
+                value.get("relations"),
+                limit=_MAX_FACTS_PER_ARTIFACT,
+            )
         ),
         claims=tuple(
             VisualClaim(
@@ -387,11 +430,12 @@ def _fact_pack_from_mapping(value: Mapping[str, Any]) -> VisualFactPack:
                 evidence=_safe_text(claim.get("evidence")),
                 confidence=_confidence(claim.get("confidence")),
             )
-            for claim in _mapping_items(value.get("claims"))
+            for claim in _mapping_items(
+                value.get("claims"),
+                limit=_MAX_FACTS_PER_ARTIFACT,
+            )
         ),
-        metadata=dict(value.get("metadata"))
-        if isinstance(value.get("metadata"), Mapping)
-        else {},
+        metadata=_bounded_metadata(value.get("metadata")),
     )
 
 
@@ -410,12 +454,27 @@ def _entity_names(text: str) -> list[str]:
     return names
 
 
-def _mapping_items(value: Any) -> Iterable[Mapping[str, Any]]:
-    if isinstance(value, (str, bytes, bytearray)):
+def _mapping_items(
+    value: Any,
+    *,
+    limit: int,
+) -> Iterable[Mapping[str, Any]]:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
         return ()
-    if not isinstance(value, Iterable):
+    try:
+        values = iter(value or ())
+    except TypeError:
         return ()
-    return (item for item in value if isinstance(item, Mapping))
+    return (item for item in islice(values, limit) if isinstance(item, Mapping))
+
+
+def _non_string_iterable(value: Any) -> Iterable[Any]:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return ()
+    try:
+        return iter(value or ())
+    except TypeError:
+        return ()
 
 
 def _confidence(value: Any) -> float:
@@ -426,6 +485,35 @@ def _confidence(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
     return min(1.0, max(0.0, confidence))
+
+
+def _bounded_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    metadata = {
+        key: item
+        for raw_key, item in islice(value.items(), _MAX_METADATA_ITEMS)
+        if (key := _safe_text(raw_key, max_bytes=256))
+    }
+    try:
+        size = _json_size(metadata)
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise ValueError("visual fact metadata must contain bounded JSON") from exc
+    if size > _MAX_METADATA_BYTES:
+        raise ValueError("visual fact metadata exceeds the byte limit")
+    return metadata
+
+
+def _json_size(payload: Mapping[str, Any]) -> int:
+    return len(
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
 
 
 def _sha256_json(payload: Mapping[str, Any]) -> str:
@@ -445,6 +533,16 @@ def _safe_text(value: Any, *, max_bytes: int = _MAX_TEXT_BYTES) -> str:
         return text
     encoded = text.encode("utf-8")[: max(0, max_bytes - 1)]
     return encoded.decode("utf-8", errors="ignore").rstrip() + "…"
+
+
+def _safe_relative_path(value: Any) -> str:
+    text = _safe_text(value)
+    if not text or "\\" in text:
+        return ""
+    path = PurePosixPath(text)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return ""
+    return path.as_posix()
 
 
 __all__ = [

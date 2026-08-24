@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from codenib.repository_source_selection import RepositorySourceSelection
 from codenib.wiki.media_grounding import (
     discover_source_symbol_candidates,
@@ -58,6 +60,28 @@ def test_discover_source_symbol_candidates_respects_source_selection(tmp_path):
 
     assert all(not candidate["path"].startswith("hidden/") for candidate in candidates)
     assert any(candidate["symbol"] == "Visible" for candidate in candidates)
+
+
+@pytest.mark.parametrize(
+    ("filename", "source", "symbol"),
+    [
+        ("service.cpp", "class NativeService {};", "NativeService"),
+        ("service.cs", "class ManagedService {}", "ManagedService"),
+        ("service.rb", "class RubyService\nend", "RubyService"),
+        ("service.php", "class PhpService {}", "PhpService"),
+    ],
+)
+def test_source_symbol_inventory_uses_registered_language_extensions(
+    tmp_path,
+    filename,
+    source,
+    symbol,
+):
+    (tmp_path / filename).write_text(source, encoding="utf-8")
+
+    candidates = discover_source_symbol_candidates(tmp_path)
+
+    assert any(candidate["symbol"] == symbol for candidate in candidates)
 
 
 def test_ground_visual_facts_to_sources_binds_entities_to_symbols():
@@ -172,6 +196,41 @@ def test_ground_visual_facts_to_sources_deduplicates_bindings():
     assert len(manifest["bindings"]) == 1
 
 
+def test_grounding_deduplicates_candidates_before_applying_result_limit():
+    visual_facts = {
+        "manifest_sha256": "visual-facts-hash",
+        "facts": [
+            {
+                "artifact_path": "docs/architecture.svg",
+                "entities": [{"name": "WikiService"}],
+            }
+        ],
+    }
+    exact = {
+        "path": "src/wiki.py",
+        "symbol": "WikiService",
+        "kind": "symbol",
+        "line": 3,
+    }
+    partial = {
+        "path": "src/wiki_service.py",
+        "symbol": "WikiServiceAdapter",
+        "kind": "symbol",
+        "line": 7,
+    }
+
+    manifest = ground_visual_facts_to_sources(
+        visual_facts,
+        [exact, exact, partial],
+        max_bindings_per_entity=2,
+    )
+
+    assert [binding["symbol"] for binding in manifest["bindings"]] == [
+        "WikiService",
+        "WikiServiceAdapter",
+    ]
+
+
 def test_ground_visual_facts_to_sources_drops_unsafe_external_paths():
     visual_facts = {
         "manifest_sha256": "visual-facts-hash",
@@ -218,3 +277,10 @@ def test_ground_visual_facts_to_sources_drops_unsafe_external_paths():
     assert manifest["bindings"][0]["artifact_path"] == "docs/architecture.svg"
     assert manifest["bindings"][0]["source_path"] == "src/wiki.py"
     assert manifest["bindings"][0]["entity_name"] == "WikiServicewith control"
+
+
+def test_grounding_rejects_limits_above_contract_maximum(tmp_path):
+    with pytest.raises(ValueError, match="max_candidates"):
+        discover_source_symbol_candidates(tmp_path, max_candidates=8193)
+    with pytest.raises(ValueError, match="max_bindings_per_entity"):
+        ground_visual_facts_to_sources({}, (), max_bindings_per_entity=6)

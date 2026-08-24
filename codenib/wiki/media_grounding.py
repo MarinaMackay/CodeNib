@@ -10,35 +10,28 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
+from itertools import islice
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
+from ..languages import extension_to_language_map
 from ..repository_filters import walk_repository_files
 from ..repository_source_selection import (
     DEFAULT_REPOSITORY_SOURCE_SELECTION,
     RepositorySourceSelection,
 )
+from ._safe_file_reads import read_regular_bytes
 
 MEDIA_GROUNDING_SCHEMA = "codenib.media-grounding.v1"
 MEDIA_GROUNDING_VERSION = 1
 
-_SOURCE_EXTENSIONS = frozenset(
-    {
-        ".go",
-        ".java",
-        ".js",
-        ".jsx",
-        ".kt",
-        ".py",
-        ".rs",
-        ".scala",
-        ".swift",
-        ".ts",
-        ".tsx",
-    }
-)
+_SOURCE_EXTENSIONS = frozenset(extension_to_language_map("chunker"))
 _MAX_SOURCE_BYTES = 1024 * 1024
 _MAX_CANDIDATES = 8192
+_MAX_FACT_PACKS = 4096
+_MAX_ENTITIES_PER_ARTIFACT = 32
+_MAX_TOTAL_ENTITIES = 4096
+_MAX_GROUNDING_HINTS = 32
 _MAX_BINDINGS_PER_ENTITY = 5
 _MAX_TEXT_BYTES = 4096
 _MAX_PATH_BYTES = 4096
@@ -119,6 +112,11 @@ def discover_source_symbol_candidates(
 
     root = Path(repo_path).expanduser().resolve()
     selected = RepositorySourceSelection(selection.exclude_subtrees)
+    candidate_limit = _validated_limit(
+        max_candidates,
+        name="max_candidates",
+        maximum=_MAX_CANDIDATES,
+    )
     candidates: list[SourceSymbolCandidate] = []
     seen: set[tuple[str, str, int]] = set()
     for path in walk_repository_files(
@@ -126,18 +124,21 @@ def discover_source_symbol_candidates(
         exclude_roots=exclude_roots,
         selection=selected,
     ):
-        if len(candidates) >= max(0, max_candidates):
+        if len(candidates) >= candidate_limit:
             break
         if path.is_symlink() or path.suffix.lower() not in _SOURCE_EXTENSIONS:
             continue
+        payload = read_regular_bytes(path, max_bytes=_MAX_SOURCE_BYTES)
+        if payload is None:
+            continue
         try:
-            if path.stat().st_size > _MAX_SOURCE_BYTES:
-                continue
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError:
             continue
         relative = path.relative_to(root).as_posix()
         candidates.append(SourceSymbolCandidate(path=relative))
+        if len(candidates) >= candidate_limit:
+            break
         for symbol, line in _symbols(text):
             key = (relative, symbol, line)
             if key in seen:
@@ -151,9 +152,9 @@ def discover_source_symbol_candidates(
                     line=line,
                 )
             )
-            if len(candidates) >= max(0, max_candidates):
+            if len(candidates) >= candidate_limit:
                 break
-    return [candidate.to_dict() for candidate in candidates[: max(0, max_candidates)]]
+    return [candidate.to_dict() for candidate in candidates[:candidate_limit]]
 
 
 def ground_visual_facts_to_sources(
@@ -164,25 +165,37 @@ def ground_visual_facts_to_sources(
 ) -> dict[str, Any]:
     """Ground visual entities to a source inventory using deterministic scoring."""
 
-    candidates = [
-        candidate
-        for candidate in (
-            _candidate_from_mapping(candidate)
-            for candidate in source_candidates
-            if isinstance(candidate, Mapping)
-        )
-        if candidate.path
-    ]
-    bindings: list[VisualCodeBinding] = []
-    for fact_pack in visual_facts_manifest.get("facts") or ():
-        if not isinstance(fact_pack, Mapping):
+    binding_limit = _validated_limit(
+        max_bindings_per_entity,
+        name="max_bindings_per_entity",
+        maximum=_MAX_BINDINGS_PER_ENTITY,
+    )
+    candidates_by_key: dict[tuple[str, str, str, int], SourceSymbolCandidate] = {}
+    for value in _mapping_items(source_candidates, limit=_MAX_CANDIDATES):
+        candidate = _candidate_from_mapping(value)
+        if not candidate.path:
             continue
+        key = (candidate.path, candidate.symbol, candidate.kind, candidate.line)
+        candidates_by_key.setdefault(key, candidate)
+    candidates = list(candidates_by_key.values())
+    bindings: list[VisualCodeBinding] = []
+    entity_count = 0
+    for fact_pack in _mapping_items(
+        visual_facts_manifest.get("facts"),
+        limit=_MAX_FACT_PACKS,
+    ):
+        if entity_count >= _MAX_TOTAL_ENTITIES:
+            break
         artifact_path = _safe_relative_path(fact_pack.get("artifact_path"))
         if not artifact_path:
             continue
-        for entity in fact_pack.get("entities") or ():
-            if not isinstance(entity, Mapping):
-                continue
+        for entity in _mapping_items(
+            fact_pack.get("entities"),
+            limit=_MAX_ENTITIES_PER_ARTIFACT,
+        ):
+            if entity_count >= _MAX_TOTAL_ENTITIES:
+                break
+            entity_count += 1
             entity_name = _safe_text(entity.get("name"))
             if not entity_name:
                 continue
@@ -190,7 +203,10 @@ def ground_visual_facts_to_sources(
                 entity_name,
                 *[
                     _safe_text(candidate)
-                    for candidate in entity.get("grounding_candidates") or ()
+                    for candidate in islice(
+                        _non_string_iterable(entity.get("grounding_candidates")),
+                        _MAX_GROUNDING_HINTS,
+                    )
                 ],
             ]
             scored = [
@@ -214,7 +230,7 @@ def ground_visual_facts_to_sources(
                     binding.line,
                 )
             )
-            bindings.extend(scored[: max(0, max_bindings_per_entity)])
+            bindings.extend(scored[:binding_limit])
     manifest = VisualGroundingManifest(
         schema=MEDIA_GROUNDING_SCHEMA,
         version=MEDIA_GROUNDING_VERSION,
@@ -330,6 +346,39 @@ def _positive_int(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, number)
+
+
+def _mapping_items(
+    value: Any,
+    *,
+    limit: int,
+) -> Iterable[Mapping[str, Any]]:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return ()
+    try:
+        values = iter(value or ())
+    except TypeError:
+        return ()
+    return (item for item in islice(values, limit) if isinstance(item, Mapping))
+
+
+def _non_string_iterable(value: Any) -> Iterable[Any]:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        return ()
+    try:
+        return iter(value or ())
+    except TypeError:
+        return ()
+
+
+def _validated_limit(value: Any, *, name: str, maximum: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 0 <= value <= maximum
+    ):
+        raise ValueError(f"{name} must be an integer between 0 and {maximum}")
+    return value
 
 
 def _sha256_json(payload: Mapping[str, Any]) -> str:
