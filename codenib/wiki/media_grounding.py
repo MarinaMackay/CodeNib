@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 from ..repository_filters import walk_repository_files
@@ -40,6 +40,8 @@ _SOURCE_EXTENSIONS = frozenset(
 _MAX_SOURCE_BYTES = 1024 * 1024
 _MAX_CANDIDATES = 8192
 _MAX_BINDINGS_PER_ENTITY = 5
+_MAX_TEXT_BYTES = 4096
+_MAX_PATH_BYTES = 4096
 _SYMBOL_RE = re.compile(
     r"\b(?:class|def|function|const|let|var|interface|type|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)"
 )
@@ -163,15 +165,21 @@ def ground_visual_facts_to_sources(
     """Ground visual entities to a source inventory using deterministic scoring."""
 
     candidates = [
-        _candidate_from_mapping(candidate)
-        for candidate in source_candidates
-        if isinstance(candidate, Mapping)
+        candidate
+        for candidate in (
+            _candidate_from_mapping(candidate)
+            for candidate in source_candidates
+            if isinstance(candidate, Mapping)
+        )
+        if candidate.path
     ]
     bindings: list[VisualCodeBinding] = []
     for fact_pack in visual_facts_manifest.get("facts") or ():
         if not isinstance(fact_pack, Mapping):
             continue
-        artifact_path = _safe_text(fact_pack.get("artifact_path"))
+        artifact_path = _safe_relative_path(fact_pack.get("artifact_path"))
+        if not artifact_path:
+            continue
         for entity in fact_pack.get("entities") or ():
             if not isinstance(entity, Mapping):
                 continue
@@ -229,6 +237,15 @@ def ground_visual_facts_to_sources(
     return manifest.to_dict()
 
 
+def _candidate_from_mapping(value: Mapping[str, Any]) -> SourceSymbolCandidate:
+    return SourceSymbolCandidate(
+        path=_safe_relative_path(value.get("path")),
+        symbol=_safe_text(value.get("symbol")),
+        kind=_safe_text(value.get("kind") or "source"),
+        line=_positive_int(value.get("line")),
+    )
+
+
 def _score_candidate(
     *,
     artifact_path: str,
@@ -283,15 +300,6 @@ def _symbols(text: str) -> Iterable[tuple[str, int]]:
                 yield symbol, line_number
 
 
-def _candidate_from_mapping(value: Mapping[str, Any]) -> SourceSymbolCandidate:
-    return SourceSymbolCandidate(
-        path=_safe_text(value.get("path")),
-        symbol=_safe_text(value.get("symbol")),
-        kind=_safe_text(value.get("kind") or "source"),
-        line=_positive_int(value.get("line")),
-    )
-
-
 def _dedupe_bindings(
     bindings: Iterable[VisualCodeBinding],
 ) -> tuple[VisualCodeBinding, ...]:
@@ -335,8 +343,29 @@ def _sha256_json(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _safe_text(value: Any) -> str:
-    return str(value or "").strip()
+def _safe_relative_path(value: Any) -> str:
+    text = _safe_text(value, max_bytes=_MAX_PATH_BYTES)
+    if not text or "\\" in text:
+        return ""
+    path = PurePosixPath(text)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return ""
+    return path.as_posix()
+
+
+def _safe_text(value: Any, *, max_bytes: int = _MAX_TEXT_BYTES) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = "".join(
+        character
+        for character in text
+        if ord(character) >= 0x20 and ord(character) != 0x7F
+    )
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text
+    return raw[:max_bytes].decode("utf-8", errors="ignore").rstrip()
 
 
 __all__ = [

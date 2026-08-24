@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 
 from codenib.repository_source_selection import RepositorySourceSelection
+import codenib.wiki.media_artifacts as media_artifacts
 from codenib.wiki.media_artifacts import discover_media_manifest
 
 
@@ -108,3 +109,15 @@ def test_discover_media_manifest_skips_symlinks_and_large_media(tmp_path):
     manifest = discover_media_manifest(tmp_path, commit="abc123")
 
     assert [artifact["path"] for artifact in manifest["artifacts"]] == ["diagram.png"]
+
+
+def test_discover_media_manifest_skips_files_that_exceed_hash_limit(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(media_artifacts, "_MAX_MEDIA_BYTES", 2)
+    (tmp_path / "diagram.png").write_bytes(b"png")
+
+    manifest = discover_media_manifest(tmp_path, commit="abc123")
+
+    assert manifest["artifacts"] == []

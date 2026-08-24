@@ -151,12 +151,16 @@ def discover_media_manifest(
         relative = path.relative_to(root).as_posix()
         artifact_references = tuple(references.get(relative, ()))
         caption = _caption(artifact_references)
+        try:
+            digest = _sha256_file(path, max_bytes=_MAX_MEDIA_BYTES)
+        except (OSError, ValueError):
+            continue
         artifacts.append(
             MediaArtifact(
                 path=relative,
                 media_type=_media_type(path),
                 mime_type=_mime_type(path),
-                sha256=_sha256_file(path),
+                sha256=digest,
                 size_bytes=size,
                 role_hint=_role_hint(relative, artifact_references),
                 references=artifact_references,
@@ -309,10 +313,14 @@ def _role_hint(path: str, references: tuple[MediaReference, ...]) -> str:
     return "repository_image"
 
 
-def _sha256_file(path: Path) -> str:
+def _sha256_file(path: Path, *, max_bytes: int) -> str:
     digest = hashlib.sha256()
+    consumed = 0
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            consumed += len(chunk)
+            if consumed > max_bytes:
+                raise ValueError("media artifact exceeds the byte limit")
             digest.update(chunk)
     return digest.hexdigest()
 

@@ -170,3 +170,51 @@ def test_ground_visual_facts_to_sources_deduplicates_bindings():
     manifest = ground_visual_facts_to_sources(visual_facts, [source, source])
 
     assert len(manifest["bindings"]) == 1
+
+
+def test_ground_visual_facts_to_sources_drops_unsafe_external_paths():
+    visual_facts = {
+        "manifest_sha256": "visual-facts-hash",
+        "facts": [
+            {
+                "artifact_path": "/tmp/leak.svg",
+                "entities": [{"name": "Unsafe"}],
+            },
+            {
+                "artifact_path": "docs/architecture.svg",
+                "entities": [
+                    {
+                        "name": "WikiService\nwith control",
+                        "grounding_candidates": ["WikiService"],
+                    }
+                ],
+            },
+        ],
+    }
+    source_candidates = [
+        {
+            "path": "/tmp/leak.py",
+            "symbol": "WikiService",
+            "kind": "symbol",
+            "line": 1,
+        },
+        {
+            "path": "../secret.py",
+            "symbol": "WikiService",
+            "kind": "symbol",
+            "line": 2,
+        },
+        {
+            "path": "src/wiki.py",
+            "symbol": "WikiService",
+            "kind": "symbol",
+            "line": 3,
+        },
+    ]
+
+    manifest = ground_visual_facts_to_sources(visual_facts, source_candidates)
+
+    assert manifest["binding_count"] == 1
+    assert manifest["bindings"][0]["artifact_path"] == "docs/architecture.svg"
+    assert manifest["bindings"][0]["source_path"] == "src/wiki.py"
+    assert manifest["bindings"][0]["entity_name"] == "WikiServicewith control"
