@@ -484,16 +484,44 @@ def test_wiki_multimodal_bundle_summarizes_persisted_bundle(tmp_path, monkeypatc
     config = SimpleNamespace(data_dir=str(tmp_path))
     bundle = build_multimodal_knowledge_bundle(
         media_manifest={
-            "artifact_count": 1,
-            "artifacts": [{"path": "docs/architecture.svg"}],
+            "artifact_count": 3,
+            "artifacts": [
+                {
+                    "path": "docs/architecture.svg",
+                    "caption": "Architecture",
+                    "embedded_text": "server-only svg text",
+                    "surrounding_text": "private markdown context",
+                    "secret": "do-not-return",
+                },
+                {"path": "/tmp/leak.svg", "caption": "bad absolute"},
+                {"path": "../leak.svg", "caption": "bad traversal"},
+            ],
             "manifest_sha256": "media-hash",
         },
         visual_facts_manifest={
-            "fact_count": 1,
+            "fact_count": 2,
             "facts": [
                 {
                     "artifact_path": "docs/architecture.svg",
-                    "entities": [{"name": "WikiRenderer"}],
+                    "entities": [
+                        {
+                            "name": "WikiRenderer",
+                            "evidence": "x" * 4096,
+                            "internal": "do-not-return",
+                        }
+                    ],
+                    "claims": [
+                        {
+                            "text": "WikiRenderer explains architecture.",
+                            "evidence": "from visible labels",
+                            "private": "do-not-return",
+                        }
+                    ],
+                    "evidence_pack": {"snippet": "server-only source"},
+                },
+                {
+                    "artifact_path": "/tmp/leak.svg",
+                    "entities": [{"name": "Leak"}],
                 }
             ],
             "manifest_sha256": "facts-hash",
@@ -522,12 +550,58 @@ def test_wiki_multimodal_bundle_summarizes_persisted_bundle(tmp_path, monkeypatc
         },
         visual_graph_manifest={
             "plan_count": 1,
-            "plans": [{"artifact_path": "docs/architecture.svg"}],
+            "plans": [
+                {
+                    "artifact_path": "docs/architecture.svg",
+                    "nodes": [
+                        {
+                            "id": "renderer",
+                            "label": "WikiRenderer",
+                            "source_path": "src/wiki.py",
+                        },
+                        {
+                            "id": "bad",
+                            "label": "BadPath",
+                            "source_path": "/tmp/leak.py",
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "source": "renderer",
+                            "target": "bad",
+                            "relation": "references",
+                            "private": "do-not-return",
+                        }
+                    ],
+                    "private": "do-not-return",
+                }
+            ],
             "manifest_sha256": "graph-hash",
         },
         visual_storyboard_manifest={
             "storyboard_count": 1,
-            "storyboards": [{"artifact_path": "docs/architecture.svg"}],
+            "storyboards": [
+                {
+                    "artifact_path": "docs/architecture.svg",
+                    "title": "Architecture storyboard",
+                    "frames": [
+                        {
+                            "id": "orient",
+                            "title": "Orient",
+                            "narration": "n" * 4096,
+                            "visual_prompt": "p" * 4096,
+                            "duration_ms": 3500,
+                            "source_citations": [
+                                "src/wiki.py",
+                                "/tmp/leak.py",
+                                "../secret.py",
+                            ],
+                            "private": "do-not-return",
+                        }
+                    ],
+                    "private": "do-not-return",
+                }
+            ],
             "manifest_sha256": "storyboard-hash",
         },
     )
@@ -546,15 +620,37 @@ def test_wiki_multimodal_bundle_summarizes_persisted_bundle(tmp_path, monkeypatc
     summary = asyncio.run(web_app.wiki_multimodal_bundle(repo_id))
 
     assert summary["bundle_sha256"] == bundle["bundle_sha256"]
-    assert summary["media_manifest"]["artifact_count"] == 1
+    assert summary["media_manifest"]["artifact_count"] == 3
+    assert summary["media_manifest"]["artifacts"] == [
+        {"path": "docs/architecture.svg", "caption": "Architecture"}
+    ]
     assert summary["visual_facts_manifest"]["facts"][0]["entities"][0]["name"] == (
         "WikiRenderer"
     )
+    assert "internal" not in summary["visual_facts_manifest"]["facts"][0]["entities"][0]
+    assert "evidence_pack" not in summary["visual_facts_manifest"]["facts"][0]
+    assert len(
+        summary["visual_facts_manifest"]["facts"][0]["entities"][0]["evidence"]
+    ) <= 512
     assert summary["grounding_manifest"]["bindings"][0]["source_path"] == (
         "src/wiki.py"
     )
     assert summary["visual_graph_manifest"]["plan_count"] == 1
+    assert summary["visual_graph_manifest"]["plans"][0]["nodes"] == [
+        {
+            "id": "renderer",
+            "label": "WikiRenderer",
+            "source_path": "src/wiki.py",
+        },
+        {"id": "bad", "label": "BadPath"},
+    ]
     assert summary["visual_storyboard_manifest"]["storyboard_count"] == 1
+    assert summary["visual_storyboard_manifest"]["storyboards"][0]["frames"][0][
+        "source_citations"
+    ] == ["src/wiki.py"]
+    assert "server-only source" not in str(summary)
+    assert "do-not-return" not in str(summary)
+    assert "private markdown context" not in str(summary)
 
 
 def test_wiki_multimodal_bundle_returns_404_when_missing(tmp_path, monkeypatch):
