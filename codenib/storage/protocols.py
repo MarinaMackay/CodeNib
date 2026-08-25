@@ -24,6 +24,7 @@ from .cas import BlobInfo
 from .models import (
     IndexJobCompletion,
     IndexJobRecord,
+    IndexJobViewOutput,
     IndexJobViewRecord,
     RefJobLease,
     StorageIntegrityError,
@@ -172,6 +173,12 @@ class ReceiptRetainingObjectStore(ReceiptVerifyingObjectStore, Protocol):
         starts, and its canonical storage key remains resolvable until the
         callback returns or raises.  This callback-shaped lease prevents a
         caller from accidentally escaping a backend-specific pin token.
+
+        Implementations must invoke ``callback`` synchronously and exactly
+        once, and must not return while that invocation is still running.  The
+        method returns the exact object returned by ``callback`` or propagates
+        the exact exception it raises; retention cleanup must not replace a
+        callback failure.
         """
 
         ...
@@ -451,9 +458,34 @@ class JobCatalog(Protocol):
     ) -> IndexJobRecord: ...
 
 
+@runtime_checkable
+class JobPublicationCatalog(JobCatalog, Protocol):
+    """Job catalog supporting one atomic object-to-ref publication."""
+
+    def publish_job_outputs(
+        self,
+        job_id: str,
+        *,
+        owner_id: str,
+        fencing_token: int,
+        outputs: tuple[IndexJobViewOutput, ...],
+    ) -> IndexJobRecord:
+        """Publish one exact receipt-retained output closure.
+
+        Object registration, compound generation membership, snapshot/ref CAS,
+        the immutable publication receipt, job success, and lease release must
+        commit or roll back together. A committed-response-loss retry with the
+        same authority and closure returns the existing success without moving
+        the ref; a different authority or closure conflicts without mutation.
+        """
+
+        ...
+
+
 __all__ = [
     "IndexCatalog",
     "JobCatalog",
+    "JobPublicationCatalog",
     "ObjectStore",
     "ReceiptRetainingObjectStore",
     "ReceiptVerifyingObjectStore",
