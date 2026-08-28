@@ -23,6 +23,7 @@ from .models import (
     StorageValidationError,
     canonical_json,
     content_id,
+    is_index_job_supporting_view,
 )
 from .protocols import (
     RETAINED_IMPORT_RESPONSE_MAX_TEXT_CHARS,
@@ -31,7 +32,7 @@ from .protocols import (
     snapshot_retained_import_response,
 )
 
-_MAX_JOB_OUTPUTS = 64
+_MAX_JOB_OUTPUTS = 128
 _CATALOG_INT64_MAX = 9_223_372_036_854_775_807
 
 
@@ -234,6 +235,47 @@ def _preflight_job_artifacts(
         receipt_by_digest[digest][0] for digest in sorted(receipt_by_digest)
     )
     return artifacts, frozen_outputs, retained_receipts
+
+
+def _index_job_output_snapshot_id(
+    job: IndexJobRecord,
+    outputs: Sequence[IndexJobViewOutput],
+) -> str:
+    return content_id(
+        "snapshot",
+        {
+            "repository_id": job.repository_id,
+            "source_revision_id": job.source_revision_id,
+            "views": [
+                [
+                    output.view_type,
+                    content_id(
+                        "view",
+                        {
+                            "repository_id": job.repository_id,
+                            "source_revision_id": job.source_revision_id,
+                            "profile_id": output.profile_id,
+                            "view_type": output.view_type,
+                            "object_digest": output.object_record.digest,
+                            "schema_version": output.schema_version,
+                            "metadata": output.generation_metadata,
+                        },
+                    ),
+                ]
+                for output in outputs
+            ],
+        },
+    )
+
+
+def _index_job_artifact_snapshot_id(
+    job: IndexJobRecord,
+    artifacts: Sequence[IndexJobViewArtifact],
+) -> str:
+    """Return the exact snapshot identity implied by detached artifacts."""
+
+    _artifacts, outputs, _receipts = _preflight_job_artifacts(artifacts)
+    return _index_job_output_snapshot_id(job, outputs)
 
 
 def publish_job_artifacts(
@@ -484,7 +526,10 @@ def _attest_completed_publication(
     if not isinstance(request_views, dict):
         raise StorageIntegrityError("catalog returned an invalid job request closure")
     offered = {output.view_type: output for output in outputs}
-    if any(view_type not in request_views for view_type in offered):
+    if any(
+        view_type not in request_views and not is_index_job_supporting_view(view_type)
+        for view_type in offered
+    ):
         raise StorageIntegrityError("catalog accepted an unrequested output view")
     if any(
         request.get("required") is True and view_type not in offered
@@ -493,35 +538,14 @@ def _attest_completed_publication(
     ):
         raise StorageIntegrityError("catalog omitted a required output view")
 
-    snapshot_members: list[list[str]] = []
     for output in outputs:
         request = request_views.get(output.view_type)
-        if (
+        if request is not None and (
             not isinstance(request, dict)
             or request.get("profile_id") != output.profile_id
         ):
             raise StorageIntegrityError("catalog accepted an output profile mismatch")
-        generation_id = content_id(
-            "view",
-            {
-                "repository_id": completed.repository_id,
-                "source_revision_id": completed.source_revision_id,
-                "profile_id": output.profile_id,
-                "view_type": output.view_type,
-                "object_digest": output.object_record.digest,
-                "schema_version": output.schema_version,
-                "metadata": output.generation_metadata,
-            },
-        )
-        snapshot_members.append([output.view_type, generation_id])
-    expected_snapshot_id = content_id(
-        "snapshot",
-        {
-            "repository_id": completed.repository_id,
-            "source_revision_id": completed.source_revision_id,
-            "views": snapshot_members,
-        },
-    )
+    expected_snapshot_id = _index_job_output_snapshot_id(completed, outputs)
     if completed.result_snapshot_id != expected_snapshot_id:
         raise StorageIntegrityError("catalog returned a different publication snapshot")
 

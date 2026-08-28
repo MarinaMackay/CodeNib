@@ -38,6 +38,7 @@ from .models import (
     DEFAULT_NAMESPACE_NAME,
     INDEX_JOB_EVENT_PAYLOAD_MAX_TEXT_CHARS,
     INDEX_JOB_PUBLICATION_CONTRACT,
+    INDEX_JOB_SUPPORTING_VIEW_PREFIX,
     MAX_INDEX_JOB_EVENTS_PER_ATTEMPT,
     MAX_VIEW_GENERATION_MEMBERS,
     VIEW_GENERATION_MEMBERS_METADATA_KEY,
@@ -71,8 +72,10 @@ from .models import (
     canonical_json,
     canonical_utc_timestamp,
     content_id,
+    is_index_job_supporting_view,
     normalize_digest,
     normalize_view_generation_metadata,
+    repo_manifest_projection_profile,
     snapshot_index_job_event_payload,
     view_generation_member_digests,
 )
@@ -82,7 +85,7 @@ from .protocols import (
     snapshot_retained_import_response,
 )
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 8
 
 CatalogError = StorageError
 CatalogConflictError = PublishConflict
@@ -190,7 +193,7 @@ UNION ALL
 SELECT completed_at_ms FROM index_job_publications
 """
 _SQLITE_INT64_MAX = 9_223_372_036_854_775_807
-_MAX_JOB_PUBLICATION_OUTPUTS = 64
+_MAX_JOB_PUBLICATION_OUTPUTS = 128
 _MAX_RUNNABLE_JOB_SCAN_LIMIT = 256
 _MAX_JOB_EVENT_PAGE_LIMIT = 256
 _SQLITE_LEGACY_AUTOCOMMIT = getattr(
@@ -3601,6 +3604,44 @@ _SCHEMA_V7 = (
     """,
 )
 
+
+def _supporting_view_publication_trigger_sql() -> str:
+    """Derive the v8 trigger while preserving every historical schema."""
+
+    historical = _V6_INDEX_JOB_PUBLICATIONS_VALIDATE_INSERT
+    old_bound = "json_array_length(NEW.closure_json, '$.outputs') BETWEEN 1 AND 64"
+    old_request_gate = """                OR requested.job_id IS NULL
+                OR requested.profile_id != json_extract(
+                    output.value, '$.profile_id'
+                )"""
+    new_request_gate = f"""                OR (
+                    requested.job_id IS NULL
+                    AND substr(
+                        json_extract(output.value, '$.view_type'),
+                        1,
+                        length({INDEX_JOB_SUPPORTING_VIEW_PREFIX!r})
+                    ) != {INDEX_JOB_SUPPORTING_VIEW_PREFIX!r}
+                )
+                OR (
+                    requested.job_id IS NOT NULL
+                    AND requested.profile_id != json_extract(
+                        output.value, '$.profile_id'
+                    )
+                )"""
+    if historical.count(old_bound) != 1 or historical.count(old_request_gate) != 1:
+        raise AssertionError("historical job publication trigger shape changed")
+    return historical.replace(old_bound, old_bound.replace("64", "128"), 1).replace(
+        old_request_gate,
+        new_request_gate,
+        1,
+    )
+
+
+_SCHEMA_V8 = (
+    "DROP TRIGGER index_job_publications_validate_insert",
+    _supporting_view_publication_trigger_sql(),
+)
+
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
     1: _SCHEMA_V1,
     2: _SCHEMA_V2,
@@ -3609,6 +3650,7 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
     5: _SCHEMA_V5,
     6: _SCHEMA_V6,
     7: _SCHEMA_V7,
+    8: _SCHEMA_V8,
 }
 
 _CatalogSchemaObject = tuple[str, str, str, str | None]
@@ -4522,6 +4564,51 @@ class SQLiteCatalog:
         if owner.primary_error is not None:
             raise owner.primary_error
 
+    def _ensure_repo_manifest_projection_profile(self) -> None:
+        """Backfill the support profile required by upgraded queued jobs."""
+
+        profile = repo_manifest_projection_profile()
+        digest = profile.profile_id.removeprefix("profile_")
+        expected = (
+            profile.profile_id,
+            profile.view_type,
+            profile.name,
+            profile.config_json,
+            digest,
+        )
+        rows = self._connection.execute(
+            """
+            SELECT profile_id, view_type, name, config_json, profile_digest
+            FROM view_profiles
+            WHERE profile_id = ? OR profile_digest = ?
+            ORDER BY profile_id
+            """,
+            (profile.profile_id, digest),
+        ).fetchall()
+        if not rows:
+            self._connection.execute(
+                """
+                INSERT INTO view_profiles(
+                    profile_id, view_type, name, config_json,
+                    profile_digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (*expected, _now()),
+            )
+            rows = self._connection.execute(
+                """
+                SELECT profile_id, view_type, name, config_json, profile_digest
+                FROM view_profiles
+                WHERE profile_id = ? OR profile_digest = ?
+                ORDER BY profile_id
+                """,
+                (profile.profile_id, digest),
+            ).fetchall()
+        if len(rows) != 1 or tuple(rows[0]) != expected:
+            raise CatalogError(
+                "repository manifest projection profile identity conflicts"
+            )
+
     @_coordinated_catalog_method
     def _migrate(self) -> None:
         with self._transaction():
@@ -4574,6 +4661,8 @@ class SQLiteCatalog:
                     (version, _now()),
                 )
                 self._connection.execute(f"PRAGMA user_version = {version:d}")
+            if self.schema_version >= 8:
+                self._ensure_repo_manifest_projection_profile()
             if self.schema_version >= 5:
                 self._validate_publication_aggregates()
             if self.schema_version >= 6:
@@ -5356,7 +5445,11 @@ class SQLiteCatalog:
     ) -> tuple[dict[str, Any], ...]:
         requested = {view.view_type: view for view in requested_views}
         offered = {output.view_type: output for output in outputs}
-        extras = sorted(set(offered) - set(requested))
+        extras = sorted(
+            view_type
+            for view_type in set(offered) - set(requested)
+            if not is_index_job_supporting_view(view_type)
+        )
         missing = sorted(
             view_type
             for view_type, view in requested.items()

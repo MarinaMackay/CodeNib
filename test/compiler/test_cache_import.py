@@ -25,6 +25,7 @@ import codenib.artifacts.strict_vector as strict_vector_module
 import codenib.compiler as compiler_module
 import codenib.compiler.cache_import as cache_import_module
 import codenib.compiler.job_resources as job_resources_module
+import codenib.compiler.manifest_materialization as manifest_materialization_module
 import codenib.index.embedding.vector_store as vector_store_module
 import codenib.source_fingerprint as source_fingerprint_module
 import codenib.storage.view_bundle as view_bundle_module
@@ -80,13 +81,19 @@ from codenib.compiler.manifest import IndexEntry, RepoManifest
 from codenib.compiler.manifest_import import RepoManifestImportResult
 from codenib.compiler.manifest_materialization import (
     materialize_retained_repo_manifest_ref,
+    materialize_retained_repo_manifest_snapshot,
 )
 from codenib.compiler.manifest_storage import (
     VECTOR_PROFILE_AXES,
     RepoManifestImportPlan,
     plan_repo_manifest_import_bytes,
 )
-from codenib.compiler.retained_manifest_contract import REPO_MANIFEST_PROJECTION_VIEW
+from codenib.compiler.retained_manifest_contract import (
+    REPO_MANIFEST_PROJECTION_MEDIA_TYPE,
+    REPO_MANIFEST_PROJECTION_SNAPSHOT_REACHABILITY,
+    REPO_MANIFEST_PROJECTION_VIEW,
+    repo_manifest_projection_profile,
+)
 from codenib.index.embedding.vector_store import CodeVectorStore
 from codenib.mcp.context import ServerContext
 from codenib.repository_source_selection import RepositorySourceSelection
@@ -116,6 +123,7 @@ from codenib.storage import (
     SQLiteCatalog,
     StorageIntegrityError,
     StorageValidationError,
+    publish_job_artifacts,
 )
 
 _Result = TypeVar("_Result")
@@ -1046,6 +1054,18 @@ def test_compiler_cache_import_is_a_lazy_public_export() -> None:
         "native_index_authorization",
     } & set(preparation_signature.parameters)
     assert "stop_token" in preparation_signature.parameters
+    assert (
+        preparation_signature.parameters["max_projection_bytes"].default
+        == cache_import_module.DEFAULT_MAX_PROJECTION_BYTES
+    )
+    assert all(
+        inspect.signature(adapter).parameters["max_projection_bytes"].default
+        == cache_import_module.DEFAULT_MAX_PROJECTION_BYTES
+        for adapter in (
+            publish_compiler_cache_bm25_job,
+            publish_compiler_cache_vector_job,
+        )
+    )
     executor_signature = inspect.signature(CompilerCacheJobExecutor)
     assert not {
         "catalog",
@@ -1054,6 +1074,10 @@ def test_compiler_cache_import_is_a_lazy_public_export() -> None:
         "ref_name",
         "expected_generation",
     } & set(executor_signature.parameters)
+    assert (
+        executor_signature.parameters["max_projection_bytes"].default
+        == cache_import_module.DEFAULT_MAX_PROJECTION_BYTES
+    )
     compile_signature = inspect.signature(compile_and_import_repo)
     assert list(compile_signature.parameters)[:4] == [
         "compiler",
@@ -1107,6 +1131,15 @@ def _register_bm25_job_subject(
         name=intent.profile.name,
     )
     assert profile_id == intent.profile_id
+    supporting_profile = repo_manifest_projection_profile()
+    assert (
+        catalog.create_view_profile(
+            supporting_profile.view_type,
+            supporting_profile.config,
+            name=supporting_profile.name,
+        )
+        == supporting_profile.profile_id
+    )
     return repository_id, source_revision_id, profile_id
 
 
@@ -1152,7 +1185,13 @@ def _publish_bm25_job(
     context_owner: PublishedWorkspaceReceiptOwner | None = None,
     bm25_destination: Path | None = None,
     context_destination: Path | None = None,
+    max_projection_bytes: int | None = None,
 ) -> CompilerCacheJobPublicationResult:
+    limits = (
+        {}
+        if max_projection_bytes is None
+        else {"max_projection_bytes": max_projection_bytes}
+    )
     return publish_compiler_cache_bm25_job(
         fixture.cache,
         job_id=job_id,
@@ -1168,6 +1207,7 @@ def _publish_bm25_job(
         catalog=catalog,
         object_store=cas,
         environ={},
+        **limits,
     )
 
 
@@ -1178,7 +1218,13 @@ def _prepare_bm25_job(
     views,
     cas: LocalCAS,
     stop_token: _TestStopToken | None = None,
+    max_projection_bytes: int | None = None,
 ) -> CompilerCacheJobPreparationResult:
+    limits = (
+        {}
+        if max_projection_bytes is None
+        else {"max_projection_bytes": max_projection_bytes}
+    )
     return prepare_compiler_cache_job_view(
         fixture.cache,
         view_type="bm25",
@@ -1194,6 +1240,7 @@ def _prepare_bm25_job(
         object_store=cas,
         stop_token=stop_token,
         environ={},
+        **limits,
     )
 
 
@@ -1241,11 +1288,59 @@ def test_prepare_compiler_cache_job_view_leaves_catalog_running(
             assert result.artifact.profile_id == profile_id
             assert result.artifact.schema_version == VIEW_BUNDLE_SCHEMA
             assert len(result.artifact.member_artifacts) == 2
+            assert tuple(
+                artifact.view_type for artifact in result.supporting_artifacts
+            ) == (REPO_MANIFEST_PROJECTION_VIEW,)
             assert catalog.get_job(queued.job_id) == running
             assert catalog.get_job(queued.job_id).status is IndexJobStatus.RUNNING
-            assert len(cas.put_chunk_receipts) == 3
+            assert len(cas.put_chunk_receipts) == 4
             assert cas.retained_receipt_sets == []
             assert fixture.provider.run_count == 2
+    finally:
+        fixture.close()
+
+
+def test_prepare_compiler_cache_job_view_honors_projection_limit(
+    tmp_path: Path,
+) -> None:
+    fixture = _cache_fixture(tmp_path)
+    plan = _expected_bm25_job_plan(fixture)
+    try:
+        with (
+            _JobTrackingCAS(tmp_path / "cas") as cas,
+            SQLiteCatalog(tmp_path / "catalog.sqlite") as catalog,
+        ):
+            repository_id, source_revision_id, profile_id = _register_bm25_job_subject(
+                catalog,
+                fixture,
+                plan,
+            )
+            queued = _create_bm25_job(
+                catalog,
+                repository_id=repository_id,
+                source_revision_id=source_revision_id,
+                profile_id=profile_id,
+            )
+            catalog.acquire_job_lease(
+                queued.job_id,
+                owner_id="projection-limit-worker",
+                lease_duration_ms=60_000,
+            )
+            running = catalog.get_job(queued.job_id)
+
+            with pytest.raises(
+                StorageValidationError,
+                match="repository manifest projection exceeds 1 bytes",
+            ):
+                _prepare_bm25_job(
+                    fixture,
+                    job=running,
+                    views=catalog.get_job_views(queued.job_id),
+                    cas=cas,
+                    max_projection_bytes=1,
+                )
+
+            assert catalog.get_job(queued.job_id) == running
     finally:
         fixture.close()
 
@@ -1563,7 +1658,7 @@ def test_prepare_compiler_cache_job_attests_artifact_before_final_stop(
     def forged_artifact(*args, **kwargs):
         nonlocal forged_returned
         forged_returned = True
-        return (object(),)
+        return object()
 
     def stop_before_final_source_scan(binding, *args, **kwargs):
         nonlocal final_scan_attempted
@@ -1578,7 +1673,7 @@ def test_prepare_compiler_cache_job_attests_artifact_before_final_stop(
 
     monkeypatch.setattr(
         cache_import_module,
-        "_prepare_job_view_artifacts_inside_authority",
+        "_prepare_job_snapshot_artifacts_inside_authority",
         forged_artifact,
     )
     monkeypatch.setattr(
@@ -1610,7 +1705,7 @@ def test_prepare_compiler_cache_job_attests_artifact_before_final_stop(
 
             with pytest.raises(
                 StorageIntegrityError,
-                match="ingestion returned a different requested view",
+                match="ingestion returned invalid job artifacts",
             ):
                 _prepare_bm25_job(
                     fixture,
@@ -2218,14 +2313,17 @@ def test_compiler_cache_executor_delegates_only_final_publish_to_worker(
             assert fixture.bm25_owner.closed
             assert fixture.context_owner.closed
             assert publication_calls == [queued.job_id]
-            assert len(cas.put_chunk_receipts) == 3
+            assert len(cas.put_chunk_receipts) == 4
             assert len(cas.retained_receipt_sets) == 1
             with SQLiteCatalog(catalog_path, create=False) as catalog:
                 completed = catalog.get_job(queued.job_id)
                 assert completed.status is IndexJobStatus.SUCCEEDED
                 assert completed.result_snapshot_id is not None
                 summary = catalog.get_manifest_summary(completed.result_snapshot_id)
-                assert tuple(summary["views"]) == ("bm25",)
+                assert tuple(summary["views"]) == (
+                    "bm25",
+                    REPO_MANIFEST_PROJECTION_VIEW,
+                )
                 assert summary["views"]["bm25"]["profile"]["profile_id"] == (profile_id)
     finally:
         fixture.close()
@@ -2466,7 +2564,7 @@ def test_local_compiler_cache_job_factory_runs_and_isolates_attempt_workspaces(
             assert outcome.disposition is IndexJobWorkerDisposition.SUCCEEDED
             assert outcome.job_id == queued.job_id
             assert publication_calls == [queued.job_id]
-            assert len(cas.put_chunk_receipts) == 3
+            assert len(cas.put_chunk_receipts) == 4
             assert len(cas.retained_receipt_sets) == 1
             assert not tuple(fixture.workspace.glob(".codenib-cache-job-*"))
             orphans = tuple(fixture.workspace.glob(".*.discarded-*"))
@@ -3195,8 +3293,10 @@ def _seed_bm25_snapshot(
 
 def test_compiler_cache_bm25_job_publishes_only_exact_bundle_and_replays(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixture = _cache_fixture(tmp_path)
+    materialized_owner = PublishedWorkspaceReceiptOwner()
     retry_bm25_owner = PublishedWorkspaceReceiptOwner()
     retry_context_owner = PublishedWorkspaceReceiptOwner()
     plan = _expected_bm25_job_plan(fixture)
@@ -3244,17 +3344,24 @@ def test_compiler_cache_bm25_job_publishes_only_exact_bundle_and_replays(
             assert result.recapture.canonical_manifest_bytes == (
                 cache_import_module._pretty_manifest_bytes(result.import_plan.manifest)
             )
-            assert len(cas.put_chunk_receipts) == 3
-            assert len({receipt.digest for receipt in cas.put_chunk_receipts}) == 3
+            assert len(cas.put_chunk_receipts) == 4
+            assert len({receipt.digest for receipt in cas.put_chunk_receipts}) == 4
             expected_receipts = tuple(
                 sorted(cas.put_chunk_receipts, key=lambda receipt: receipt.digest)
             )
             assert cas.retained_receipt_sets == [expected_receipts]
             assert catalog.job_publication_calls == 1
             summary = catalog.get_manifest_summary(result.job.result_snapshot_id)
-            assert tuple(summary["views"]) == ("bm25",)
-            assert REPO_MANIFEST_PROJECTION_VIEW not in summary["views"]
+            assert tuple(summary["views"]) == (
+                "bm25",
+                REPO_MANIFEST_PROJECTION_VIEW,
+            )
             bm25 = summary["views"]["bm25"]
+            projection = summary["views"][REPO_MANIFEST_PROJECTION_VIEW]
+            assert projection["metadata"]["reachability"] == (
+                REPO_MANIFEST_PROJECTION_SNAPSHOT_REACHABILITY
+            )
+            assert projection["member_objects"] == []
             assert bm25["profile"]["profile_id"] == profile_id
             assert bm25["schema_version"] == VIEW_BUNDLE_SCHEMA
             assert bm25["object"]["media_type"] == VIEW_BUNDLE_MEDIA_TYPE
@@ -3267,6 +3374,44 @@ def test_compiler_cache_bm25_job_publishes_only_exact_bundle_and_replays(
                 receipt = cas.verify(persisted["digest"])
                 assert receipt.byte_size == persisted["byte_size"]
                 assert receipt.storage_key == persisted["storage_key"]
+            projection_dependency_sets = []
+            retained_generation = manifest_materialization_module._retained_generation
+
+            def reject_legacy_projection(*args, **kwargs):
+                if kwargs["media_type"] == REPO_MANIFEST_PROJECTION_MEDIA_TYPE:
+                    dependencies = kwargs["member_digests"]
+                    projection_dependency_sets.append(dependencies)
+                    if dependencies:
+                        raise AssertionError(
+                            "snapshot-scoped loading reconstructed legacy closure"
+                        )
+                return retained_generation(*args, **kwargs)
+
+            monkeypatch.setattr(
+                manifest_materialization_module,
+                "_retained_generation",
+                reject_legacy_projection,
+            )
+            materialized = materialize_retained_repo_manifest_snapshot(
+                _REPOSITORY_KEY,
+                result.job.result_snapshot_id,
+                fixture.workspace / "materialized-job-context",
+                catalog=catalog,
+                object_store=cas,
+                workspace_provider=fixture.provider,
+                output_receipt_owner=materialized_owner,
+                environ={},
+            )
+            assert materialized.export_receipt.snapshot_id == (
+                result.job.result_snapshot_id
+            )
+            assert materialized.artifact.views == ("bm25",)
+            assert materialized_owner.active
+            assert projection_dependency_sets == [()]
+            assert cas.retained_receipt_sets == [
+                expected_receipts,
+                expected_receipts,
+            ]
             first_ref = catalog.resolve_ref(repository_id)
             _seed_bm25_snapshot(
                 catalog,
@@ -3297,10 +3442,11 @@ def test_compiler_cache_bm25_job_publishes_only_exact_bundle_and_replays(
             assert retry.import_plan.plan_digest == result.import_plan.plan_digest
             assert retry.job.result_snapshot_id == first_ref["snapshot_id"]
             assert catalog.resolve_ref(repository_id) == advanced_ref
-            assert tuple(cas.put_chunk_receipts[:3]) == tuple(
-                cas.put_chunk_receipts[3:]
+            assert tuple(cas.put_chunk_receipts[:4]) == tuple(
+                cas.put_chunk_receipts[4:]
             )
             assert cas.retained_receipt_sets == [
+                expected_receipts,
                 expected_receipts,
                 expected_receipts,
             ]
@@ -3309,6 +3455,98 @@ def test_compiler_cache_bm25_job_publishes_only_exact_bundle_and_replays(
             assert fixture.context_owner.active
             assert retry_bm25_owner.active
             assert retry_context_owner.active
+    finally:
+        retry_context_owner.close()
+        retry_bm25_owner.close()
+        materialized_owner.close()
+        fixture.close()
+
+
+def test_compiler_cache_bm25_job_replays_legacy_requested_only_snapshot(
+    tmp_path: Path,
+) -> None:
+    fixture = _cache_fixture(tmp_path)
+    retry_bm25_owner = PublishedWorkspaceReceiptOwner()
+    retry_context_owner = PublishedWorkspaceReceiptOwner()
+    plan = _expected_bm25_job_plan(fixture)
+    try:
+        with (
+            _JobTrackingCAS(tmp_path / "cas") as cas,
+            _RetentionAwareJobCatalog(
+                tmp_path / "catalog.sqlite",
+                cas,
+            ) as catalog,
+        ):
+            repository_id, source_revision_id, profile_id = _register_bm25_job_subject(
+                catalog,
+                fixture,
+                plan,
+            )
+            queued = _create_bm25_job(
+                catalog,
+                repository_id=repository_id,
+                source_revision_id=source_revision_id,
+                profile_id=profile_id,
+            )
+            lease = catalog.acquire_job_lease(
+                queued.job_id,
+                owner_id="legacy-worker",
+                lease_duration_ms=60_000,
+            )
+            running = catalog.get_job(queued.job_id)
+            prepared = _prepare_bm25_job(
+                fixture,
+                job=running,
+                views=catalog.get_job_views(queued.job_id),
+                cas=cas,
+            )
+            legacy = publish_job_artifacts(
+                queued.job_id,
+                catalog=catalog,
+                object_store=cas,
+                owner_id=lease.owner_id,
+                fencing_token=lease.fencing_token,
+                outputs=(prepared.artifact,),
+            )
+            legacy_summary = catalog.get_manifest_summary(legacy.result_snapshot_id)
+            assert tuple(legacy_summary["views"]) == ("bm25",)
+            requested_receipts = tuple(
+                sorted(
+                    (
+                        prepared.artifact.object_artifact.receipt,
+                        *(
+                            member.receipt
+                            for member in prepared.artifact.member_artifacts
+                        ),
+                    ),
+                    key=lambda receipt: receipt.digest,
+                )
+            )
+
+            replay = _publish_bm25_job(
+                fixture,
+                job_id=queued.job_id,
+                owner_id=lease.owner_id,
+                fencing_token=lease.fencing_token,
+                catalog=catalog,
+                cas=cas,
+                bm25_owner=retry_bm25_owner,
+                context_owner=retry_context_owner,
+                bm25_destination=fixture.workspace / "legacy-retry-bm25",
+                context_destination=fixture.workspace / "legacy-retry-context",
+                max_projection_bytes=1,
+            )
+
+            assert replay.job == legacy
+            assert replay.job.result_snapshot_id == legacy.result_snapshot_id
+            assert tuple(
+                catalog.get_manifest_summary(replay.job.result_snapshot_id)["views"]
+            ) == ("bm25",)
+            assert cas.retained_receipt_sets == [
+                requested_receipts,
+                requested_receipts,
+            ]
+            assert catalog.job_publication_calls == 2
     finally:
         retry_context_owner.close()
         retry_bm25_owner.close()
@@ -3602,7 +3840,7 @@ def test_compiler_cache_bm25_job_rejects_post_ingest_drift_or_substitution(
                     cas=cas,
                 )
 
-            expected_put_count = 1 if case == "receipt_substitution" else 3
+            expected_put_count = 1 if case == "receipt_substitution" else 4
             assert len(cas.put_chunk_receipts) == expected_put_count
             assert catalog.resolve_ref(repository_id) == preserved_ref
             assert cas.read_bytes(preserved_digest) == (
@@ -4960,6 +5198,15 @@ def _register_vector_job_subject(
         name=intent.profile.name,
     )
     assert profile_id == intent.profile_id
+    supporting_profile = repo_manifest_projection_profile()
+    assert (
+        catalog.create_view_profile(
+            supporting_profile.view_type,
+            supporting_profile.config,
+            name=supporting_profile.name,
+        )
+        == supporting_profile.profile_id
+    )
     return repository_id, source_revision_id, profile_id
 
 
@@ -5120,7 +5367,7 @@ def test_prepare_compiler_cache_vector_job_uses_only_portable_schema8(
             assert result.import_plan.views[0].profile.config["builder_schema"] == 8
             assert result.artifact.schema_version == VIEW_BUNDLE_SCHEMA
             assert len(result.artifact.member_artifacts) == 4
-            assert len(cas.put_chunk_receipts) == 5
+            assert len(cas.put_chunk_receipts) == 6
             assert cas.retained_receipt_sets == []
             assert catalog.get_job(queued.job_id) == running
             assert fixture.provider.run_count == 2
@@ -5515,16 +5762,18 @@ def test_compiler_cache_vector_job_publishes_schema8_closure_and_replays(
                 or "incremental_state" in record.path
                 for record in result.recapture.output_records
             )
-            assert len(cas.put_chunk_receipts) == len(expected_paths) + 1
-            assert len({receipt.digest for receipt in cas.put_chunk_receipts}) == 5
+            assert len(cas.put_chunk_receipts) == len(expected_paths) + 2
+            assert len({receipt.digest for receipt in cas.put_chunk_receipts}) == 6
             expected_receipts = tuple(
                 sorted(cas.put_chunk_receipts, key=lambda receipt: receipt.digest)
             )
             assert cas.retained_receipt_sets == [expected_receipts]
             assert catalog.job_publication_calls == 1
             summary = catalog.get_manifest_summary(result.job.result_snapshot_id)
-            assert tuple(summary["views"]) == ("vector",)
-            assert REPO_MANIFEST_PROJECTION_VIEW not in summary["views"]
+            assert tuple(summary["views"]) == (
+                REPO_MANIFEST_PROJECTION_VIEW,
+                "vector",
+            )
             vector = summary["views"]["vector"]
             assert vector["profile"]["profile_id"] == profile_id
             assert vector["schema_version"] == VIEW_BUNDLE_SCHEMA
@@ -5565,8 +5814,8 @@ def test_compiler_cache_vector_job_publishes_schema8_closure_and_replays(
             assert retry.import_plan.plan_digest == result.import_plan.plan_digest
             assert retry.job.result_snapshot_id == first_ref["snapshot_id"]
             assert catalog.resolve_ref(repository_id) == advanced_ref
-            assert tuple(cas.put_chunk_receipts[:5]) == tuple(
-                cas.put_chunk_receipts[5:]
+            assert tuple(cas.put_chunk_receipts[:6]) == tuple(
+                cas.put_chunk_receipts[6:]
             )
             assert cas.retained_receipt_sets == [
                 expected_receipts,
@@ -5997,7 +6246,7 @@ def test_compiler_cache_vector_job_rejects_post_ingest_drift_or_substitution(
                     cas=cas,
                 )
 
-            expected_put_count = 1 if case == "receipt_substitution" else 5
+            expected_put_count = 1 if case == "receipt_substitution" else 6
             assert len(cas.put_chunk_receipts) == expected_put_count
             assert catalog.resolve_ref(repository_id) == preserved_ref
             assert cas.read_bytes(preserved_digest) == (

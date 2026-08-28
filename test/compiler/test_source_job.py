@@ -54,6 +54,7 @@ from codenib.compiler.job_resources import (
 )
 from codenib.compiler.manifest import RepoManifest
 from codenib.compiler.manifest_storage import BM25_PROFILE_AXES
+from codenib.compiler.retained_manifest_contract import repo_manifest_projection_profile
 from codenib.compiler.source_job import BM25SourceJobExecutor, bm25_source_job_profile
 from codenib.repository_source_selection import RepositorySourceSelection
 from codenib.source_fingerprint import (
@@ -81,6 +82,18 @@ from codenib.storage.models import NamespaceIdentity, RepositoryIdentity
 
 _COMMIT = "a" * 40
 _REPOSITORY_KEY = "owner/repo"
+
+
+def _register_projection_profile(catalog: SQLiteCatalog) -> None:
+    profile = repo_manifest_projection_profile()
+    assert (
+        catalog.create_view_profile(
+            profile.view_type,
+            profile.config,
+            name=profile.name,
+        )
+        == profile.profile_id
+    )
 
 
 class _StopToken:
@@ -289,6 +302,7 @@ def _execution_context(
         profile.config,
         name=profile.name,
     )
+    _register_projection_profile(catalog)
     views: dict[str, dict[str, object]] = {
         "bm25": {
             "profile_id": profile_id,
@@ -345,7 +359,13 @@ def _executor(
     context_destination: Path | None = None,
     forbidden_paths=(),
     environ=None,
+    max_projection_bytes: int | None = None,
 ) -> BM25SourceJobExecutor:
+    limits = (
+        {}
+        if max_projection_bytes is None
+        else {"max_projection_bytes": max_projection_bytes}
+    )
     return BM25SourceJobExecutor(
         attempt_generation=attempt_generation,
         display_commit=_COMMIT,
@@ -374,6 +394,7 @@ def _executor(
         object_store=cas,
         forbidden_paths=forbidden_paths,
         environ=environ,
+        **limits,
     )
 
 
@@ -463,6 +484,7 @@ def test_bm25_source_executor_prepares_exact_artifact_without_lexical_reads(
                 context_owner=context_owner,
                 forbidden_paths=(path for path in (forbidden,)),
                 environ=environment,
+                max_projection_bytes=32 * 1024 * 1024,
             )
             assert executor.forbidden_paths == (forbidden,)
             assert executor.environ == environment
@@ -490,6 +512,7 @@ def test_bm25_source_executor_prepares_exact_artifact_without_lexical_reads(
                 assert kwargs["expected_manifest"].to_dict() == manifest.to_dict()
                 assert kwargs["forbidden_paths"] == (forbidden,)
                 assert kwargs["environ"]["CODENIB_SOURCE_JOB_TEST"] == "before"
+                assert kwargs["max_projection_bytes"] == 32 * 1024 * 1024
                 return real_prepare(cache_generation, **kwargs)
 
             with monkeypatch.context() as guard:
@@ -1351,6 +1374,10 @@ def test_bm25_source_executor_api_has_no_publication_authority() -> None:
         "expected_generation",
         "generation_id",
     } & set(parameters)
+    assert (
+        parameters["max_projection_bytes"].default
+        == source_job_module.DEFAULT_MAX_PROJECTION_BYTES
+    )
 
 
 def test_bm25_source_executor_repr_does_not_expose_environment(
@@ -1634,6 +1661,7 @@ def test_local_bm25_source_job_factory_runs_worker_and_cleans_attempt(
                 profile.config,
                 name=profile.name,
             )
+            _register_projection_profile(catalog)
             assert profile_id == target.profile_id
             queued = catalog.create_job(
                 repository_id,
@@ -1950,6 +1978,7 @@ def test_jobs_run_once_source_bm25_executes_matching_catalog_job(
                 profile.config,
                 name=profile.name,
             )
+            _register_projection_profile(catalog)
             assert profile_id == profile.profile_id
             queued = catalog.create_job(
                 repository_id,
@@ -2066,6 +2095,7 @@ def test_local_bm25_source_worker_preserves_current_ref_after_source_changes(
                 )
                 == profile.profile_id
             )
+            _register_projection_profile(catalog)
             first = catalog.create_job(
                 repository_id,
                 source_revision_id,

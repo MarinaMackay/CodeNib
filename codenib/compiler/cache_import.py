@@ -90,7 +90,11 @@ from ..storage.protocols import (
     RetainedImportCatalog,
     RetainedImportObjectStore,
 )
-from ..storage.publication import IndexJobViewArtifact, publish_job_artifacts
+from ..storage.publication import (
+    IndexJobViewArtifact,
+    _index_job_artifact_snapshot_id,
+    publish_job_artifacts,
+)
 from ..storage.view_bundle import (
     DEFAULT_MAX_BUNDLE_BYTES,
     DEFAULT_MAX_BUNDLE_FILES,
@@ -112,7 +116,8 @@ from .manifest_import import (
     _expected_generation,
     _expected_namespace_id,
     _positive_limit,
-    _prepare_job_view_artifacts_inside_authority,
+    _prepare_job_snapshot_artifacts_inside_authority,
+    _PreparedJobSnapshotArtifacts,
     _require_static_methods,
     _snapshot_environment,
     _snapshot_forbidden_paths,
@@ -126,6 +131,11 @@ from .manifest_storage import (
     _preflight_json_bytes,
     _strict_json_loads,
     plan_repo_manifest_import_bytes,
+)
+from .retained_manifest_contract import (
+    REPO_MANIFEST_PROJECTION_SCHEMA,
+    REPO_MANIFEST_PROJECTION_VIEW,
+    repo_manifest_projection_profile,
 )
 from .snapshot_store import normalize_repo
 
@@ -460,6 +470,7 @@ class CompilerCacheJobPreparationResult:
     recapture: CompilerCacheViewRecaptureResult
     context_artifact: ContextArtifactResult
     artifact: IndexJobViewArtifact
+    supporting_artifacts: tuple[IndexJobViewArtifact, ...]
 
     def __post_init__(self) -> None:
         if type(self) is not CompilerCacheJobPreparationResult:
@@ -480,6 +491,15 @@ class CompilerCacheJobPreparationResult:
             raise TypeError("compiler cache prepared context artifact is invalid")
         if type(self.artifact) is not IndexJobViewArtifact:
             raise TypeError("compiler cache prepared view artifact is invalid")
+        if (
+            type(self.supporting_artifacts) is not tuple
+            or len(self.supporting_artifacts) != 1
+            or any(
+                type(artifact) is not IndexJobViewArtifact
+                for artifact in self.supporting_artifacts
+            )
+        ):
+            raise TypeError("compiler cache prepared supporting artifacts are invalid")
         try:
             job = _detach_index_job_record(self.job)
             view = _detach_index_job_views((self.view,))[0]
@@ -516,6 +536,11 @@ class CompilerCacheJobPreparationResult:
             or self.artifact.view_type != view.view_type
             or self.artifact.profile_id != view.profile_id
             or self.artifact.schema_version != VIEW_BUNDLE_SCHEMA
+            or self.supporting_artifacts[0].view_type != REPO_MANIFEST_PROJECTION_VIEW
+            or self.supporting_artifacts[0].profile_id
+            != repo_manifest_projection_profile().profile_id
+            or self.supporting_artifacts[0].schema_version
+            != REPO_MANIFEST_PROJECTION_SCHEMA
         ):
             raise StorageIntegrityError(
                 "compiler cache job preparation identities are inconsistent"
@@ -523,6 +548,11 @@ class CompilerCacheJobPreparationResult:
         object.__setattr__(self, "job", job)
         object.__setattr__(self, "view", view)
         object.__setattr__(self, "manifest", manifest)
+        object.__setattr__(
+            self,
+            "supporting_artifacts",
+            tuple(self.supporting_artifacts),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1141,6 +1171,7 @@ def _preflight_cache_job_operation(
     max_bundle_files: int,
     max_bundle_bytes: int,
     max_bundle_metadata_bytes: int,
+    max_projection_bytes: int,
     forbidden_paths: Iterable[Path],
     environ: Mapping[str, str] | None,
 ) -> tuple[_ImportOperation, _CompilerCacheJobBinding, str, str, int]:
@@ -1178,6 +1209,10 @@ def _preflight_cache_job_operation(
     bundle_metadata_bytes = _positive_limit(
         max_bundle_metadata_bytes,
         "bundle metadata byte limit",
+    )
+    projection_bytes = _positive_limit(
+        max_projection_bytes,
+        "projection byte limit",
     )
     environment = _snapshot_environment(environ)
     forbidden = _snapshot_forbidden_paths(forbidden_paths)
@@ -1217,7 +1252,7 @@ def _preflight_cache_job_operation(
         max_bundle_files=bundle_files,
         max_bundle_bytes=bundle_bytes,
         max_bundle_metadata_bytes=bundle_metadata_bytes,
-        max_projection_bytes=DEFAULT_MAX_PROJECTION_BYTES,
+        max_projection_bytes=projection_bytes,
         forbidden_paths=forbidden,
         environment=environment,
     )
@@ -1272,6 +1307,7 @@ def _preflight_cache_job_preparation_operation(
     max_bundle_files: int,
     max_bundle_bytes: int,
     max_bundle_metadata_bytes: int,
+    max_projection_bytes: int,
     forbidden_paths: Iterable[Path],
     environ: Mapping[str, str] | None,
     check_cancelled: Callable[[], None] | None = None,
@@ -1329,6 +1365,10 @@ def _preflight_cache_job_preparation_operation(
         max_bundle_metadata_bytes,
         "bundle metadata byte limit",
     )
+    projection_bytes = _positive_limit(
+        max_projection_bytes,
+        "projection byte limit",
+    )
     environment = _snapshot_environment(environ)
     forbidden = _snapshot_forbidden_paths(forbidden_paths)
     if not isinstance(object_store, RetainedImportObjectStore):
@@ -1362,7 +1402,7 @@ def _preflight_cache_job_preparation_operation(
         max_bundle_files=bundle_files,
         max_bundle_bytes=bundle_bytes,
         max_bundle_metadata_bytes=bundle_metadata_bytes,
-        max_projection_bytes=DEFAULT_MAX_PROJECTION_BYTES,
+        max_projection_bytes=projection_bytes,
         forbidden_paths=forbidden,
         environment=environment,
     )
@@ -2193,8 +2233,9 @@ def _ingest_prepared_compiler_cache_job(
     context_output_owner: PublishedWorkspaceReceiptOwner,
     object_store: RetainedImportObjectStore,
     check_cancelled: Callable[[], None] | None = None,
-) -> IndexJobViewArtifact:
-    """Ingest one prepared cache view without granting catalog authority."""
+    replay_job: IndexJobRecord | None = None,
+) -> _PreparedJobSnapshotArtifacts:
+    """Ingest one loadable cache snapshot without catalog authority."""
 
     if type(preparation) is not _PreparedCompilerCacheImport:
         raise TypeError("compiler cache job preparation is invalid")
@@ -2202,6 +2243,12 @@ def _ingest_prepared_compiler_cache_job(
         raise TypeError("compiler cache job operation is invalid")
     if type(binding) is not _CompilerCacheJobBinding:
         raise TypeError("compiler cache job binding is invalid")
+    if replay_job is not None and (
+        type(replay_job) is not IndexJobRecord
+        or replay_job.status is not IndexJobStatus.SUCCEEDED
+        or replay_job.result_snapshot_id is None
+    ):
+        raise TypeError("compiler cache replay job is invalid")
     _require_compiler_cache_job_profile(
         binding,
         preparation.import_plan,
@@ -2209,8 +2256,21 @@ def _ingest_prepared_compiler_cache_job(
     )
     if check_cancelled is not None:
         check_cancelled()
+    projection_decider: Callable[[tuple[IndexJobViewArtifact, ...]], bool] | None = None
+    if replay_job is not None:
+
+        def require_projection(
+            artifacts: tuple[IndexJobViewArtifact, ...],
+        ) -> bool:
+            return replay_job.result_snapshot_id != _index_job_artifact_snapshot_id(
+                replay_job,
+                artifacts,
+            )
+
+        projection_decider = require_projection
+
     artifacts = context_output_owner.consume(
-        lambda receipt, publication: _prepare_job_view_artifacts_inside_authority(
+        lambda receipt, publication: _prepare_job_snapshot_artifacts_inside_authority(
             receipt,
             publication,
             plan=preparation.import_plan,
@@ -2225,15 +2285,34 @@ def _ingest_prepared_compiler_cache_job(
             max_bundle_files=operation.inputs.max_bundle_files,
             max_bundle_bytes=operation.inputs.max_bundle_bytes,
             max_bundle_metadata_bytes=operation.inputs.max_bundle_metadata_bytes,
+            max_projection_bytes=operation.inputs.max_projection_bytes,
+            projection_required=projection_decider,
             check_cancelled=check_cancelled,
         ),
         check_cancelled=check_cancelled,
     )
-    if type(artifacts) is not tuple or len(artifacts) != 1:
+    if (
+        type(artifacts) is not _PreparedJobSnapshotArtifacts
+        or len(artifacts.artifacts) != 1
+        or len(artifacts.supporting_artifacts) > 1
+    ):
         raise StorageIntegrityError(
             f"compiler cache {view_type} ingestion returned invalid job artifacts"
         )
-    artifact = artifacts[0]
+    expected_supporting_artifacts = 1
+    if replay_job is not None:
+        requested_snapshot_id = _index_job_artifact_snapshot_id(
+            replay_job,
+            artifacts.artifacts,
+        )
+        expected_supporting_artifacts = int(
+            replay_job.result_snapshot_id != requested_snapshot_id
+        )
+    if len(artifacts.supporting_artifacts) != expected_supporting_artifacts:
+        raise StorageIntegrityError(
+            f"compiler cache {view_type} ingestion returned invalid job artifacts"
+        )
+    artifact = artifacts.artifacts[0]
     if (
         type(artifact) is not IndexJobViewArtifact
         or artifact.view_type != binding.view.view_type
@@ -2255,7 +2334,7 @@ def _ingest_prepared_compiler_cache_job(
         )
     if check_cancelled is not None:
         check_cancelled()
-    return artifact
+    return artifacts
 
 
 def import_compiler_cache(
@@ -2587,6 +2666,7 @@ def prepare_compiler_cache_job_view_from_generation(
     max_bundle_files: int = DEFAULT_MAX_BUNDLE_FILES,
     max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
     max_bundle_metadata_bytes: int = DEFAULT_MAX_BUNDLE_METADATA_BYTES,
+    max_projection_bytes: int = DEFAULT_MAX_PROJECTION_BYTES,
     forbidden_paths: Iterable[Path] = (),
     environ: Mapping[str, str] | None = None,
 ) -> CompilerCacheJobPreparationResult:
@@ -2625,6 +2705,7 @@ def prepare_compiler_cache_job_view_from_generation(
         max_bundle_files=max_bundle_files,
         max_bundle_bytes=max_bundle_bytes,
         max_bundle_metadata_bytes=max_bundle_metadata_bytes,
+        max_projection_bytes=max_projection_bytes,
         forbidden_paths=forbidden_paths,
         environ=environ,
         check_cancelled=check_cancelled,
@@ -2652,7 +2733,7 @@ def prepare_compiler_cache_job_view_from_generation(
     )
     if check_cancelled is not None:
         check_cancelled()
-    artifact = _ingest_prepared_compiler_cache_job(
+    snapshot_artifacts = _ingest_prepared_compiler_cache_job(
         preparation,
         operation,
         binding,
@@ -2669,7 +2750,8 @@ def prepare_compiler_cache_job_view_from_generation(
         import_plan=preparation.import_plan,
         recapture=preparation.recaptures[0],
         context_artifact=preparation.context_artifact,
-        artifact=artifact,
+        artifact=snapshot_artifacts.artifacts[0],
+        supporting_artifacts=snapshot_artifacts.supporting_artifacts,
     )
     if check_cancelled is not None:
         check_cancelled()
@@ -2698,6 +2780,7 @@ def prepare_compiler_cache_job_view(
     max_bundle_files: int = DEFAULT_MAX_BUNDLE_FILES,
     max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
     max_bundle_metadata_bytes: int = DEFAULT_MAX_BUNDLE_METADATA_BYTES,
+    max_projection_bytes: int = DEFAULT_MAX_PROJECTION_BYTES,
     forbidden_paths: Iterable[Path] = (),
     environ: Mapping[str, str] | None = None,
 ) -> CompilerCacheJobPreparationResult:
@@ -2735,6 +2818,7 @@ def prepare_compiler_cache_job_view(
         max_bundle_files=max_bundle_files,
         max_bundle_bytes=max_bundle_bytes,
         max_bundle_metadata_bytes=max_bundle_metadata_bytes,
+        max_projection_bytes=max_projection_bytes,
         forbidden_paths=forbidden_paths,
         environ=environ,
         check_cancelled=check_cancelled,
@@ -2757,7 +2841,7 @@ def prepare_compiler_cache_job_view(
         )
     if check_cancelled is not None:
         check_cancelled()
-    artifact = _ingest_prepared_compiler_cache_job(
+    snapshot_artifacts = _ingest_prepared_compiler_cache_job(
         preparation,
         operation,
         binding,
@@ -2778,7 +2862,8 @@ def prepare_compiler_cache_job_view(
         import_plan=preparation.import_plan,
         recapture=preparation.recaptures[0],
         context_artifact=preparation.context_artifact,
-        artifact=artifact,
+        artifact=snapshot_artifacts.artifacts[0],
+        supporting_artifacts=snapshot_artifacts.supporting_artifacts,
     )
     if check_cancelled is not None:
         check_cancelled()
@@ -2812,6 +2897,7 @@ class CompilerCacheJobExecutor:
     max_bundle_files: int = DEFAULT_MAX_BUNDLE_FILES
     max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES
     max_bundle_metadata_bytes: int = DEFAULT_MAX_BUNDLE_METADATA_BYTES
+    max_projection_bytes: int = DEFAULT_MAX_PROJECTION_BYTES
     forbidden_paths: Iterable[Path] = ()
     environ: Mapping[str, str] | None = None
 
@@ -2844,6 +2930,7 @@ class CompilerCacheJobExecutor:
             max_bundle_files=self.max_bundle_files,
             max_bundle_bytes=self.max_bundle_bytes,
             max_bundle_metadata_bytes=self.max_bundle_metadata_bytes,
+            max_projection_bytes=self.max_projection_bytes,
             forbidden_paths=self.forbidden_paths,
             environ=self.environ,
         )
@@ -2858,6 +2945,7 @@ class CompilerCacheJobExecutor:
                 ),
             ),
             retryable=False,
+            supporting_artifacts=prepared.supporting_artifacts,
         )
 
 
@@ -2884,6 +2972,7 @@ def _publish_compiler_cache_job(
     max_bundle_files: int,
     max_bundle_bytes: int,
     max_bundle_metadata_bytes: int,
+    max_projection_bytes: int,
     forbidden_paths: Iterable[Path],
     environ: Mapping[str, str] | None,
 ) -> tuple[_PreparedCompilerCacheImport, IndexJobRecord]:
@@ -2917,6 +3006,7 @@ def _publish_compiler_cache_job(
         max_bundle_files=max_bundle_files,
         max_bundle_bytes=max_bundle_bytes,
         max_bundle_metadata_bytes=max_bundle_metadata_bytes,
+        max_projection_bytes=max_projection_bytes,
         forbidden_paths=forbidden_paths,
         environ=environ,
     )
@@ -2955,7 +3045,10 @@ def _publish_compiler_cache_job(
             "compiler cache job or repository source changed before CAS ingestion"
         )
 
-    artifact = _ingest_prepared_compiler_cache_job(
+    # A schema-v7 success has no support projection. Decide from the requested
+    # artifacts before any projection measurement or write, while retaining a
+    # single ingestion pass for current loadable snapshots.
+    snapshot_artifacts = _ingest_prepared_compiler_cache_job(
         preparation,
         operation,
         binding,
@@ -2963,6 +3056,9 @@ def _publish_compiler_cache_job(
         repository_source=repository_source,
         context_output_owner=context_output_owner,
         object_store=object_store,
+        replay_job=(
+            current.job if current.job.status is IndexJobStatus.SUCCEEDED else None
+        ),
     )
     current = _read_compiler_cache_job_binding(
         normalized_job_id,
@@ -2985,13 +3081,33 @@ def _publish_compiler_cache_job(
         raise StorageIntegrityError(
             "compiler cache job or repository source changed before publication"
         )
+    publication_artifacts = (
+        *snapshot_artifacts.artifacts,
+        *snapshot_artifacts.supporting_artifacts,
+    )
+    if current.job.status is IndexJobStatus.SUCCEEDED:
+        historical_snapshot_id = current.job.result_snapshot_id
+        requested_snapshot_id = _index_job_artifact_snapshot_id(
+            current.job,
+            snapshot_artifacts.artifacts,
+        )
+        complete_snapshot_id = _index_job_artifact_snapshot_id(
+            current.job,
+            publication_artifacts,
+        )
+        if historical_snapshot_id == requested_snapshot_id:
+            publication_artifacts = snapshot_artifacts.artifacts
+        elif historical_snapshot_id != complete_snapshot_id:
+            raise StorageIntegrityError(
+                "successful compiler cache job has an unknown publication snapshot"
+            )
     completed = publish_job_artifacts(
         normalized_job_id,
         catalog=catalog,
         object_store=object_store,
         owner_id=normalized_owner_id,
         fencing_token=token,
-        outputs=(artifact,),
+        outputs=publication_artifacts,
     )
     return preparation, completed
 
@@ -3018,6 +3134,7 @@ def publish_compiler_cache_bm25_job(
     max_bundle_files: int = DEFAULT_MAX_BUNDLE_FILES,
     max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
     max_bundle_metadata_bytes: int = DEFAULT_MAX_BUNDLE_METADATA_BYTES,
+    max_projection_bytes: int = DEFAULT_MAX_PROJECTION_BYTES,
     forbidden_paths: Iterable[Path] = (),
     environ: Mapping[str, str] | None = None,
 ) -> CompilerCacheJobPublicationResult:
@@ -3054,6 +3171,7 @@ def publish_compiler_cache_bm25_job(
         max_bundle_files=max_bundle_files,
         max_bundle_bytes=max_bundle_bytes,
         max_bundle_metadata_bytes=max_bundle_metadata_bytes,
+        max_projection_bytes=max_projection_bytes,
         forbidden_paths=forbidden_paths,
         environ=environ,
     )
@@ -3096,6 +3214,7 @@ def publish_compiler_cache_vector_job(
     max_bundle_files: int = DEFAULT_MAX_BUNDLE_FILES,
     max_bundle_bytes: int = DEFAULT_MAX_BUNDLE_BYTES,
     max_bundle_metadata_bytes: int = DEFAULT_MAX_BUNDLE_METADATA_BYTES,
+    max_projection_bytes: int = DEFAULT_MAX_PROJECTION_BYTES,
     forbidden_paths: Iterable[Path] = (),
     environ: Mapping[str, str] | None = None,
 ) -> CompilerCacheVectorJobPublicationResult:
@@ -3130,6 +3249,7 @@ def publish_compiler_cache_vector_job(
         max_bundle_files=max_bundle_files,
         max_bundle_bytes=max_bundle_bytes,
         max_bundle_metadata_bytes=max_bundle_metadata_bytes,
+        max_projection_bytes=max_projection_bytes,
         forbidden_paths=forbidden_paths,
         environ=environ,
     )

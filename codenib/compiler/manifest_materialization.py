@@ -115,6 +115,7 @@ from .manifest_storage import (
 from .retained_manifest_contract import (
     REPO_MANIFEST_PROJECTION_MEDIA_TYPE,
     REPO_MANIFEST_PROJECTION_SCHEMA,
+    REPO_MANIFEST_PROJECTION_SNAPSHOT_REACHABILITY,
     repo_manifest_generation_metadata,
     repo_manifest_projection_profile,
 )
@@ -1132,31 +1133,54 @@ def _authenticate_projection(
         "plan_digest": plan.plan_digest,
         "projected_views": list(selected),
     }
-    projection_generation = _retained_generation(
-        source,
-        receipt=projection_receipt,
-        media_type=REPO_MANIFEST_PROJECTION_MEDIA_TYPE,
-        profile=repo_manifest_projection_profile(),
-        schema_version=REPO_MANIFEST_PROJECTION_SCHEMA,
-        metadata=projection_metadata,
-        member_digests=tuple(sorted(dependency_digests)),
-    )
-    try:
-        snapshot = PublishedSnapshot(
-            repository_id=receipt.repository_id,
-            source_revision_id=receipt.source_revision_id,
-            views=tuple(
-                SnapshotView(generation)
-                for generation in (*view_generations, projection_generation)
-            ),
+
+    def projection_candidate(
+        candidate_metadata: Mapping[str, Any],
+        candidate_dependencies: tuple[str, ...],
+    ) -> tuple[ViewGeneration, str]:
+        candidate = _retained_generation(
+            source,
+            receipt=projection_receipt,
+            media_type=REPO_MANIFEST_PROJECTION_MEDIA_TYPE,
+            profile=repo_manifest_projection_profile(),
+            schema_version=REPO_MANIFEST_PROJECTION_SCHEMA,
+            metadata=candidate_metadata,
+            member_digests=candidate_dependencies,
         )
-    except StorageValidationError as exc:
-        raise StorageIntegrityError(
-            "retained projection snapshot identity is invalid"
-        ) from exc
+        try:
+            snapshot = PublishedSnapshot(
+                repository_id=receipt.repository_id,
+                source_revision_id=receipt.source_revision_id,
+                views=tuple(
+                    SnapshotView(generation)
+                    for generation in (*view_generations, candidate)
+                ),
+            )
+        except StorageValidationError as exc:
+            raise StorageIntegrityError(
+                "retained projection snapshot identity is invalid"
+            ) from exc
+        return candidate, snapshot.snapshot_id
+
+    # The generation ID selects the contract-sanctioned reachability mode before
+    # its closure is reconstructed. A valid sibling-reachable projection may
+    # contain the full member capacity even though the corresponding legacy
+    # dependency closure would add one bundle primary beyond that capacity.
+    projection_generation, snapshot_id = projection_candidate(
+        {
+            **projection_metadata,
+            "reachability": REPO_MANIFEST_PROJECTION_SNAPSHOT_REACHABILITY,
+        },
+        (),
+    )
+    if projection_generation.view_generation_id != receipt.projection_generation_id:
+        projection_generation, snapshot_id = projection_candidate(
+            projection_metadata,
+            tuple(sorted(dependency_digests)),
+        )
     if (
         projection_generation.view_generation_id != receipt.projection_generation_id
-        or snapshot.snapshot_id != receipt.snapshot_id
+        or snapshot_id != receipt.snapshot_id
     ):
         raise StorageIntegrityError(
             "retained projection generation or snapshot identity conflicts"
