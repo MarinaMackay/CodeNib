@@ -6,6 +6,7 @@ import Markdown from "@/components/Markdown";
 import AskBar from "@/components/AskBar";
 import { AppLink } from "@/lib/router";
 import { isStaticRuntime, mediaAssetUrl } from "@/lib/runtime";
+import { wikiGraphPresentation } from "@/lib/wikiGraphPresentation";
 import {
   fetchCommits,
   fetchRepos,
@@ -728,6 +729,7 @@ export default function WikiPageView({
 
   const hasGraph = !!repo?.capabilities?.codemap;
   const hasPageGraph = hasGraph || !!repo?.capabilities?.wiki_graph;
+  const graphPresentation = wikiGraphPresentation(activeId, hasPageGraph);
   const generationMode = page?.generation?.mode ?? "offline";
   // "Source checked" is the strict claim: source identifiers resolve and the
   // complete page passes its planned coverage checks. Generation mode is an
@@ -741,6 +743,10 @@ export default function WikiPageView({
     setGraphSeed(seed);
     setGraphOpen(true);
   };
+
+  useEffect(() => {
+    if (graphPresentation.defaultOpen) setPageGraphOpen(true);
+  }, [graphPresentation.defaultOpen]);
 
   return (
     <div className="wiki wiki-reading">
@@ -893,14 +899,23 @@ export default function WikiPageView({
               )}
               {hasPageGraph && (
                 <details
-                  className="subsystem-map"
+                  className={`subsystem-map ${
+                    activeId === "overview" ? "overview-architecture-map" : ""
+                  }`}
                   open={pageGraphOpen}
                   onToggle={(event) =>
                     setPageGraphOpen(event.currentTarget.open)
                   }
                 >
                   <summary className="subsystem-summary">
-                    <span className="subsystem-title">Subsystem map</span>
+                    <span className="subsystem-title">
+                      {graphPresentation.title}
+                    </span>
+                    {graphPresentation.description && (
+                      <span className="subsystem-description">
+                        {graphPresentation.description}
+                      </span>
+                    )}
                     <span className="subsystem-count">
                       {pageGraph?.available && pageGraph.nodes.length > 0
                         ? `${pageGraph.nodes.length} symbols`
