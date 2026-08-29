@@ -124,6 +124,33 @@ surface as an MCP-compatible tool router with stable tool schemas and bounded
 input validation. This keeps the query surface testable before wiring it into a
 server-specific MCP registration path.
 
+### Visual semantic vector sidecar
+
+`codenib.wiki.media_vector` maps the existing source-grounded knowledge entries
+into a separate semantic vector view. The image/VLM extraction path and the
+embedding path remain independent: a VLM produces structured visual facts,
+while an embedding backend can map the artifact itself and text queries into a
+shared space. Its bounded document contract includes the repository-relative
+artifact path, verified content hash, MIME type, and the source-grounded text
+assembled from captions, claims, entities, and bindings. Text-only backends can
+use the assembled text; multimodal backends can resolve and verify the artifact
+before encoding it. This separation lets either model change without changing
+the multimodal knowledge contract.
+
+The sidecar records the embedding provider, model, optional immutable model
+revision, dimensions, input contract, document/query modalities, per-entry
+input digest, normalized vector digest, and outer index digest.
+Unchanged entries can reuse their previous vectors only when both the input
+digest and complete embedding policy match. A model or dimension change forces
+re-embedding. The default deterministic feature-hash embedder keeps local and
+CI workflows functional without a model server; callers can supply a real
+embedding function through the same contract.
+
+When a vector index is attached to
+`MultimodalKnowledgeToolRouter`, the router additionally exposes
+`search_visual_semantic_context`. Routers without an index do not advertise the
+tool, so consumers never receive an unavailable capability.
+
 ### Multimodal knowledge bundle
 
 `codenib.wiki.media_storage` wraps the pipeline output as a versioned bundle:
@@ -345,6 +372,25 @@ validation. Repositories without a bundle show the normal Wiki with no empty
 placeholder panel. Matches below `0.8` are labelled as candidates; stronger
 matches retain a high-confidence label and their underlying evidence instead
 of being presented as independently verified citations.
+
+The incremental updater can materialize a visual vector sidecar from the same
+newly validated knowledge view:
+
+```text
+python scripts/update_multimodal_knowledge.py /path/to/repository \
+  --previous /tmp/multimodal-knowledge.json \
+  --visual-vector-output /tmp/visual-vector-index.json
+```
+
+On the next run, unchanged visual entries can reuse their vectors:
+
+```text
+python scripts/update_multimodal_knowledge.py /path/to/repository \
+  --previous /tmp/multimodal-knowledge.json \
+  --output /tmp/multimodal-knowledge-next.json \
+  --visual-vector-output /tmp/visual-vector-index-next.json \
+  --previous-visual-vector-index /tmp/visual-vector-index.json
+```
 
 To use an OpenAI-compatible VLM for visual fact extraction:
 

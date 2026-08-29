@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Incrementally update a persisted multimodal repository knowledge bundle."""
+"""Incrementally update multimodal knowledge and an optional vector sidecar."""
 
 from __future__ import annotations
 
@@ -27,14 +27,18 @@ from codenib.wiki import (
     build_index_backed_visual_grounding_scorer,
     build_multimodal_knowledge_bundle,
     build_multimodal_knowledge_view,
+    build_multimodal_repository_knowledge,
     build_visual_facts_manifest,
+    build_visual_vector_index,
     discover_media_manifest,
     discover_source_symbol_candidates,
     ground_visual_facts_to_sources,
     load_multimodal_knowledge_bundle,
+    load_visual_vector_index,
     merge_incremental_visual_facts,
     plan_incremental_visual_fact_update,
     save_multimodal_knowledge_bundle,
+    save_visual_vector_index,
 )
 
 _LOCAL_EXTRACTOR_ID = "local/metadata"
@@ -44,16 +48,44 @@ _MAX_EXTRACTOR_ID_BYTES = 128
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repo", help="Repository root to scan")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
         "--previous",
-        required=True,
         help="Validated bundle to update; overwritten atomically unless --output is set",
+    )
+    mode.add_argument(
+        "--bundle-output",
+        help="Destination for an initial bundle when no previous bundle exists",
     )
     parser.add_argument(
         "--output",
         "-o",
         default=None,
         help="Optional destination for the updated bundle (default: --previous)",
+    )
+    parser.add_argument(
+        "--visual-vector-output",
+        help="Optional path to write the visual semantic vector sidecar JSON",
+    )
+    parser.add_argument(
+        "--previous-visual-vector-index",
+        help="Optional previous visual vector sidecar to reuse unchanged records",
+    )
+    parser.add_argument(
+        "--visual-vector-provider",
+        default="local",
+        help="Embedding provider label for the visual vector sidecar",
+    )
+    parser.add_argument(
+        "--visual-vector-model",
+        default="local/hash-visual-embedding-v1",
+        help="Embedding model label for the visual vector sidecar",
+    )
+    parser.add_argument(
+        "--visual-vector-dimensions",
+        type=int,
+        default=64,
+        help="Visual vector sidecar dimensions",
     )
     parser.add_argument(
         "--commit",
@@ -138,88 +170,129 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     repo = Path(args.repo).expanduser()
-    previous_path = Path(args.previous).expanduser()
-    output_path = Path(args.output).expanduser() if args.output else previous_path
+    previous_path = Path(args.previous).expanduser() if args.previous else None
+    output_path = (
+        Path(args.output).expanduser()
+        if args.output
+        else previous_path or Path(args.bundle_output).expanduser()
+    )
     if not repo.exists():
         parser.error(f"repository root does not exist: {repo}")
     if not repo.is_dir():
         parser.error(f"repository root is not a directory: {repo}")
     repo = repo.resolve()
     try:
-        previous = load_multimodal_knowledge_bundle(previous_path)
-        current_media = discover_media_manifest(
-            repo,
-            commit=args.commit,
-            exclude_roots=tuple(args.exclude_root),
-            selection=DEFAULT_REPOSITORY_SOURCE_SELECTION,
-            max_artifacts=args.max_artifacts,
-        )
         extractor, extractor_id = _extractor(args, repo)
-        expected_id = f"force/{extractor_id}" if args.force_reextract else extractor_id
-        plan = plan_incremental_visual_fact_update(
-            previous["media_manifest"],
-            current_media,
-            previous["visual_facts_manifest"],
-            expected_extractor=expected_id,
-        )
-        if args.dry_run:
-            print(json.dumps(_plan_summary(plan, extractor_id), sort_keys=True))
-            return 0
-        extract_media = _media_manifest_subset(
-            current_media, set(plan["extract_artifact_paths"])
-        )
-        facts_kwargs = {"extractor": extractor} if extractor is not None else {}
-        extracted_facts = build_visual_facts_manifest(extract_media, **facts_kwargs)
-        visual_facts = merge_incremental_visual_facts(
-            current_media,
-            reusable_fact_packs=plan["reusable_fact_packs"],
-            new_fact_packs=extracted_facts["facts"],
-        )
         scorer = _build_visual_grounding_scorer(args, repo_path=repo)
-        source_candidates = discover_source_symbol_candidates(
-            repo,
-            exclude_roots=tuple(args.exclude_root),
-            selection=DEFAULT_REPOSITORY_SOURCE_SELECTION,
-            max_candidates=args.max_source_candidates,
-        )
-        augment_candidates = getattr(scorer, "augment_source_candidates", None)
-        if callable(augment_candidates):
-            source_candidates = augment_candidates(
-                visual_facts,
-                source_candidates,
+        if previous_path is None:
+            if args.output:
+                raise ValueError("--output requires --previous")
+            if args.dry_run or args.force_reextract:
+                raise ValueError("--dry-run and --force-reextract require --previous")
+            updated = build_multimodal_repository_knowledge(
+                repo,
+                commit=args.commit,
+                exclude_roots=tuple(args.exclude_root),
+                extractor=extractor,
+                scorer=scorer,
+                max_artifacts=args.max_artifacts,
+                max_source_candidates=args.max_source_candidates,
+            )
+            plan = None
+            extracted_facts = None
+        else:
+            previous = load_multimodal_knowledge_bundle(previous_path)
+            current_media = discover_media_manifest(
+                repo,
+                commit=args.commit,
+                exclude_roots=tuple(args.exclude_root),
+                selection=DEFAULT_REPOSITORY_SOURCE_SELECTION,
+                max_artifacts=args.max_artifacts,
+            )
+            expected_id = (
+                f"force/{extractor_id}" if args.force_reextract else extractor_id
+            )
+            plan = plan_incremental_visual_fact_update(
+                previous["media_manifest"],
+                current_media,
+                previous["visual_facts_manifest"],
+                expected_extractor=expected_id,
+            )
+            if args.dry_run:
+                print(json.dumps(_plan_summary(plan, extractor_id), sort_keys=True))
+                return 0
+            extract_media = _media_manifest_subset(
+                current_media, set(plan["extract_artifact_paths"])
+            )
+            facts_kwargs = {"extractor": extractor} if extractor is not None else {}
+            extracted_facts = build_visual_facts_manifest(extract_media, **facts_kwargs)
+            visual_facts = merge_incremental_visual_facts(
+                current_media,
+                reusable_fact_packs=plan["reusable_fact_packs"],
+                new_fact_packs=extracted_facts["facts"],
+            )
+            source_candidates = discover_source_symbol_candidates(
+                repo,
+                exclude_roots=tuple(args.exclude_root),
+                selection=DEFAULT_REPOSITORY_SOURCE_SELECTION,
                 max_candidates=args.max_source_candidates,
             )
-        grounding = ground_visual_facts_to_sources(
-            visual_facts,
-            source_candidates,
-            scorer=scorer,
-        )
-        knowledge_view = build_multimodal_knowledge_view(
-            current_media, visual_facts, grounding
-        )
-        updated = build_multimodal_knowledge_bundle(
-            media_manifest=current_media,
-            visual_facts_manifest=visual_facts,
-            source_candidate_count=len(source_candidates),
-            grounding_manifest=grounding,
-            knowledge_view=knowledge_view,
-        )
+            augment_candidates = getattr(scorer, "augment_source_candidates", None)
+            if callable(augment_candidates):
+                source_candidates = augment_candidates(
+                    visual_facts,
+                    source_candidates,
+                    max_candidates=args.max_source_candidates,
+                )
+            grounding = ground_visual_facts_to_sources(
+                visual_facts,
+                source_candidates,
+                scorer=scorer,
+            )
+            knowledge_view = build_multimodal_knowledge_view(
+                current_media, visual_facts, grounding
+            )
+            updated = build_multimodal_knowledge_bundle(
+                media_manifest=current_media,
+                visual_facts_manifest=visual_facts,
+                source_candidate_count=len(source_candidates),
+                grounding_manifest=grounding,
+                knowledge_view=knowledge_view,
+            )
+        vector_index = _build_visual_vector_sidecar(args, updated)
         save_multimodal_knowledge_bundle(updated, output_path)
+        if vector_index is not None:
+            save_visual_vector_index(vector_index, args.visual_vector_output)
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
-    print(
-        json.dumps(
-            _update_summary(
-                updated,
-                plan,
-                extracted_facts,
-                extractor_id=extractor_id,
-                grounding_backend=args.grounding_indexes,
-                output_path=output_path,
-            ),
-            sort_keys=True,
+    summary = (
+        _update_summary(
+            updated,
+            plan,
+            extracted_facts,
+            extractor_id=extractor_id,
+            grounding_backend=args.grounding_indexes,
+            output_path=output_path,
+        )
+        if plan is not None and extracted_facts is not None
+        else _initial_summary(
+            updated,
+            extractor_id=extractor_id,
+            grounding_backend=args.grounding_indexes,
+            output_path=output_path,
         )
     )
+    if vector_index is not None:
+        summary.update(
+            {
+                "visual_vector_records": vector_index["entry_count"],
+                "visual_vector_reused_records": vector_index["reused_record_count"],
+                "visual_vector_embedded_records": vector_index[
+                    "embedded_record_count"
+                ],
+            }
+        )
+    print(json.dumps(summary, sort_keys=True))
     return 0
 
 
@@ -262,6 +335,27 @@ def _build_visual_grounding_scorer(
         mode=mode,
         languages=tuple(args.grounding_language or ("python",)),
         cache_dir=args.grounding_cache_dir,
+    )
+
+
+def _build_visual_vector_sidecar(args: argparse.Namespace, bundle: dict) -> dict | None:
+    if args.previous_visual_vector_index and not args.visual_vector_output:
+        raise ValueError(
+            "--previous-visual-vector-index requires --visual-vector-output"
+        )
+    if not args.visual_vector_output:
+        return None
+    previous = (
+        load_visual_vector_index(args.previous_visual_vector_index)
+        if args.previous_visual_vector_index
+        else None
+    )
+    return build_visual_vector_index(
+        bundle["knowledge_view"],
+        previous_index=previous,
+        provider=args.visual_vector_provider,
+        model=args.visual_vector_model,
+        dimensions=args.visual_vector_dimensions,
     )
 
 
@@ -320,6 +414,26 @@ def _update_summary(
         "grounding_backend": grounding_backend,
         "reused_visual_fact_packs": len(plan["reusable_fact_packs"]),
         "regenerated_visual_fact_packs": extracted_facts["fact_count"],
+        "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
+        "visual_code_bindings": bundle["grounding_manifest"]["binding_count"],
+        "knowledge_entries": bundle["knowledge_view"]["entry_count"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "output": os.fspath(output_path),
+    }
+
+
+def _initial_summary(
+    bundle: dict,
+    *,
+    extractor_id: str,
+    grounding_backend: str,
+    output_path: Path,
+) -> dict:
+    return {
+        "dry_run": False,
+        "extractor": extractor_id,
+        "grounding_backend": grounding_backend,
+        "media_artifacts": bundle["media_manifest"]["artifact_count"],
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
         "visual_code_bindings": bundle["grounding_manifest"]["binding_count"],
         "knowledge_entries": bundle["knowledge_view"]["entry_count"],
