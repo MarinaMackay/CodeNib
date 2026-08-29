@@ -151,6 +151,24 @@ When a vector index is attached to
 `search_visual_semantic_context`. Routers without an index do not advertise the
 tool, so consumers never receive an unavailable capability.
 
+#### WeMM-Embedding backend
+
+`WeMMVisualEmbeddingBackend` implements the image-document/text-query split
+with Tencent's
+[WeMM-Embedding](https://github.com/Tencent/WeMM-Embedding) family through its
+official SentenceTransformers interface. Raster artifacts are re-read as
+stable regular files, checked against the manifest SHA-256, copied into private
+short-lived staging files, and encoded as images. SVG artifacts use the
+source-grounded text fallback because the upstream image loader does not define
+an SVG input contract. Query strings are encoded as text in the same shared
+space.
+
+The backend supports WeMM's Matryoshka dimensions and checks the selected
+dimension against model metadata when available. Model loading is lazy and
+explicit. Remote code is disabled by default; enabling it for a Hugging Face
+model requires a full immutable 40-character commit revision under CodeNib's
+existing embedding load policy.
+
 ### Multimodal knowledge bundle
 
 `codenib.wiki.media_storage` wraps the pipeline output as a versioned bundle:
@@ -321,6 +339,47 @@ The default embedding remains the deterministic local text fallback. A
 non-local multimodal embedding policy must supply both a document embedder when
 building the sidecar and a query embedder when creating the FAISS store. This
 keeps image/document generation and embedding as separate, auditable stages.
+
+To build the sidecar with WeMM-Embedding instead of the deterministic local
+fallback, install the runtime versions required by the upstream model, then use
+either a local model directory or a revision-pinned Hugging Face model:
+
+```text
+pip install "sentence-transformers>=5.7.0" "transformers>=5.2.0" \
+  "qwen-vl-utils[decord]>=0.0.14" "accelerate>=1.1.0"
+```
+
+```text
+python scripts/update_multimodal_knowledge.py /path/to/repository \
+  --bundle-output /tmp/multimodal-knowledge.json \
+  --visual-vector-output /tmp/visual-vector-index.json \
+  --visual-vector-store-output /tmp/visual-vector-faiss \
+  --visual-vector-backend wemm \
+  --visual-vector-model /path/to/WeMM-Embedding-2B \
+  --visual-vector-trust-remote-code \
+  --visual-vector-dimensions 256 \
+  --visual-vector-device cuda
+```
+
+For a remote model that requires custom code, opt in and pin the exact audited
+revision:
+
+```text
+python scripts/update_multimodal_knowledge.py /path/to/repository \
+  --bundle-output /tmp/multimodal-knowledge.json \
+  --visual-vector-output /tmp/visual-vector-index.json \
+  --visual-vector-store-output /tmp/visual-vector-faiss \
+  --visual-vector-backend wemm \
+  --visual-vector-model tencent/WeMM-Embedding-2B \
+  --visual-vector-revision <40-character-commit-sha> \
+  --visual-vector-trust-remote-code \
+  --visual-vector-dimensions 256
+```
+
+The same WeMM backend instance produces document/image vectors for the sidecar
+and text-query vectors for the FAISS store, so retrieval stays in one declared
+semantic space. The generation/VLM stage remains separate from this embedding
+stage.
 
 To use an OpenAI-compatible VLM for visual fact extraction:
 

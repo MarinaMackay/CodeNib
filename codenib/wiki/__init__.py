@@ -70,10 +70,12 @@ from .media_vlm import (
     OpenAICompatibleVisualFactExtractor,
     visual_fact_extractor_from_config,
 )
+from .media_wemm import DEFAULT_WEMM_MODEL, WeMMVisualEmbeddingBackend
 
 __all__ = [
     "MULTIMODAL_KNOWLEDGE_BUNDLE_SCHEMA",
     "MULTIMODAL_KNOWLEDGE_BUNDLE_VERSION",
+    "DEFAULT_WEMM_MODEL",
     "MultimodalKnowledgeToolRouter",
     "WikiBuilder",
     "OpenAICompatibleVisualFactExtractor",
@@ -84,6 +86,7 @@ __all__ = [
     "VisualQueryEmbedding",
     "VisualVectorDocument",
     "VISUAL_VECTOR_STORE_SCHEMA",
+    "WeMMVisualEmbeddingBackend",
     "build_media_evidence_pack",
     "build_multimodal_knowledge_view",
     "build_multimodal_knowledge_bundle",
