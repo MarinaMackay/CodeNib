@@ -17,6 +17,7 @@ from codenib.wiki import (
     search_visual_vector_index,
     validate_visual_vector_index,
 )
+from scripts.update_multimodal_knowledge import _visual_vector_options, build_parser
 from scripts.update_multimodal_knowledge import main as update_multimodal_knowledge
 
 
@@ -320,3 +321,31 @@ def test_update_multimodal_knowledge_writes_bundle_and_vector_sidecar(
     assert result == 0
     counts = json.loads(capsys.readouterr().out)
     assert counts["visual_vector_reused_records"] == 1
+
+
+def test_update_cli_builds_wemm_vector_options(tmp_path):
+    args = build_parser().parse_args(
+        [
+            str(tmp_path),
+            "--bundle-output",
+            str(tmp_path / "bundle.json"),
+            "--visual-vector-output",
+            str(tmp_path / "vectors.json"),
+            "--visual-vector-backend",
+            "wemm",
+            "--visual-vector-revision",
+            "a" * 40,
+            "--visual-vector-trust-remote-code",
+            "--visual-vector-dimensions",
+            "256",
+        ]
+    )
+
+    options, query_embedder = _visual_vector_options(args, repo_path=tmp_path)
+
+    assert options["provider"] == "wemm/sentence-transformers"
+    assert options["model"] == "tencent/WeMM-Embedding-2B"
+    assert options["model_revision"] == "a" * 40
+    assert options["document_modalities"] == ("image", "text")
+    assert callable(options["document_embedder"])
+    assert callable(query_embedder)
