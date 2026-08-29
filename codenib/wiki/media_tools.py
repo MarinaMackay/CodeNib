@@ -16,6 +16,7 @@ from .media_knowledge import (
     get_visual_evidence,
     search_visual_context,
 )
+from .media_vector import VisualTextEmbedder, search_visual_vector_index
 
 _MAX_QUERY_BYTES = 4096
 _MAX_PATH_BYTES = 4096
@@ -104,6 +105,31 @@ _MULTIMODAL_TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     },
 )
 
+_VISUAL_SEMANTIC_SEARCH_TOOL_SCHEMA: dict[str, Any] = {
+    "name": "search_visual_semantic_context",
+    "description": (
+        "Search repository visual artifacts through a configured semantic vector view."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": _MAX_QUERY_BYTES,
+                "pattern": _NONEMPTY_TEXT_PATTERN,
+                "description": (
+                    "Nonempty semantic query without control characters; the UTF-8 "
+                    f"payload is limited to {_MAX_QUERY_BYTES} bytes."
+                ),
+            },
+            "limit": {"type": "integer", "minimum": 1, "maximum": _MAX_LIMIT},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    },
+}
+
 
 def multimodal_tool_schemas() -> list[dict[str, Any]]:
     """Return independent mutable copies of the stable tool schemas."""
@@ -116,9 +142,14 @@ class MultimodalKnowledgeToolRouter:
     """Small tool router that mirrors the future MCP surface."""
 
     view: Mapping[str, Any]
+    visual_vector_index: Mapping[str, Any] | None = None
+    visual_query_embedder: VisualTextEmbedder | None = None
 
     def tool_schemas(self) -> list[dict[str, Any]]:
-        return multimodal_tool_schemas()
+        schemas = multimodal_tool_schemas()
+        if self.visual_vector_index is not None:
+            schemas.append(copy.deepcopy(_VISUAL_SEMANTIC_SEARCH_TOOL_SCHEMA))
+        return schemas
 
     def call_tool(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if type(name) is not str:
@@ -129,6 +160,20 @@ class MultimodalKnowledgeToolRouter:
             limit = _limit(arguments.get("limit", 5))
             return {
                 "results": search_visual_context(self.view, query, limit=limit),
+            }
+        if name == "search_visual_semantic_context":
+            if self.visual_vector_index is None:
+                raise ValueError("visual vector index is required for semantic search")
+            arguments = _arguments(arguments, allowed={"query", "limit"})
+            query = _bounded_text(arguments.get("query"), label="query")
+            limit = _limit(arguments.get("limit", 5))
+            return {
+                "results": search_visual_vector_index(
+                    self.visual_vector_index,
+                    query,
+                    limit=limit,
+                    embedder=self.visual_query_embedder,
+                )
             }
         if name == "get_visual_evidence":
             arguments = _arguments(arguments, allowed={"artifact_path"})

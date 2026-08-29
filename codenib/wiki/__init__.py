@@ -12,12 +12,12 @@ to a real symbol span pulled from the indexes (no fabricated lines).
 
 from .builder import WikiBuilder
 from .media_artifacts import discover_media_manifest
-from .media_evidence import build_media_evidence_pack
 from .media_eval import (
     evaluate_mmwiki_predictions,
     evaluate_visual_code_grounding,
     evaluate_visual_fact_extraction,
 )
+from .media_evidence import build_media_evidence_pack
 from .media_facts import build_visual_facts_manifest, deterministic_visual_facts
 from .media_grounding import (
     VisualGroundingScorer,
@@ -45,6 +45,17 @@ from .media_storage import (
     validate_multimodal_knowledge_bundle,
 )
 from .media_tools import MultimodalKnowledgeToolRouter, multimodal_tool_schemas
+from .media_vector import (
+    VisualDocumentEmbedder,
+    VisualEmbeddingDocument,
+    VisualTextEmbedder,
+    build_visual_vector_index,
+    deterministic_visual_text_embeddings,
+    load_visual_vector_index,
+    save_visual_vector_index,
+    search_visual_vector_index,
+    validate_visual_vector_index,
+)
 from .media_vlm import (
     OpenAICompatibleVisualFactExtractor,
     visual_fact_extractor_from_config,
@@ -56,12 +67,17 @@ __all__ = [
     "MultimodalKnowledgeToolRouter",
     "WikiBuilder",
     "OpenAICompatibleVisualFactExtractor",
+    "VisualDocumentEmbedder",
+    "VisualEmbeddingDocument",
     "VisualGroundingScorer",
+    "VisualTextEmbedder",
     "build_media_evidence_pack",
     "build_multimodal_knowledge_view",
     "build_multimodal_knowledge_bundle",
     "build_multimodal_repository_knowledge",
+    "build_visual_vector_index",
     "build_visual_facts_manifest",
+    "deterministic_visual_text_embeddings",
     "deterministic_visual_facts",
     "diff_media_manifests",
     "discover_media_manifest",
@@ -76,8 +92,12 @@ __all__ = [
     "multimodal_tool_schemas",
     "plan_incremental_visual_fact_update",
     "load_multimodal_knowledge_bundle",
+    "load_visual_vector_index",
     "save_multimodal_knowledge_bundle",
+    "save_visual_vector_index",
     "search_visual_context",
+    "search_visual_vector_index",
     "validate_multimodal_knowledge_bundle",
+    "validate_visual_vector_index",
     "visual_fact_extractor_from_config",
 ]

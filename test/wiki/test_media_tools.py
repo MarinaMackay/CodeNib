@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 
 import pytest
@@ -12,10 +14,14 @@ from codenib.wiki.media_tools import (
     MultimodalKnowledgeToolRouter,
     multimodal_tool_schemas,
 )
+from codenib.wiki.media_vector import build_visual_vector_index
 
 
 def _view():
-    return {
+    view = {
+        "schema": "codenib.multimodal-knowledge-view.v1",
+        "version": 1,
+        "entry_count": 1,
         "entries": [
             {
                 "artifact": {
@@ -44,8 +50,18 @@ def _view():
                     "codenib/compiler/index_compiler.py"
                 ),
             }
-        ]
+        ],
     }
+    view["view_sha256"] = hashlib.sha256(
+        json.dumps(
+            view,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return view
 
 
 def test_multimodal_tool_schemas_are_exposed():
@@ -88,6 +104,48 @@ def test_tool_schema_copies_do_not_mutate_the_public_contract():
 
     fresh = multimodal_tool_schemas()
     assert fresh[0]["input_schema"]["properties"]["query"]["type"] == "string"
+
+
+def test_router_exposes_semantic_search_only_with_a_vector_index():
+    view = _view()
+    vector_index = build_visual_vector_index(view, dimensions=16)
+
+    plain_names = {
+        schema["name"] for schema in MultimodalKnowledgeToolRouter(view).tool_schemas()
+    }
+    semantic_router = MultimodalKnowledgeToolRouter(
+        view,
+        visual_vector_index=vector_index,
+    )
+    semantic_names = {schema["name"] for schema in semantic_router.tool_schemas()}
+
+    assert "search_visual_semantic_context" not in plain_names
+    assert "search_visual_semantic_context" in semantic_names
+
+
+def test_tool_router_searches_visual_semantic_context():
+    view = _view()
+    router = MultimodalKnowledgeToolRouter(
+        view,
+        visual_vector_index=build_visual_vector_index(view, dimensions=16),
+    )
+
+    result = router.call_tool(
+        "search_visual_semantic_context",
+        {"query": "IndexCompiler architecture", "limit": 1},
+    )
+
+    assert result["results"][0]["artifact_path"] == "docs/architecture.svg"
+
+
+def test_semantic_tool_requires_a_visual_vector_index():
+    router = MultimodalKnowledgeToolRouter(_view())
+
+    with pytest.raises(ValueError, match="vector index"):
+        router.call_tool(
+            "search_visual_semantic_context",
+            {"query": "IndexCompiler"},
+        )
 
 
 def test_tool_router_searches_visual_context():
