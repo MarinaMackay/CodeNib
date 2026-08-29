@@ -3080,6 +3080,18 @@ a.evidence-row:hover {
   font-weight: 650;
   color: var(--text);
 }
+.subsystem-description {
+  flex-basis: 100%;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.overview-architecture-map {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+.overview-architecture-map > summary {
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface));
+}
 .subsystem-count,
 .subsystem-index {
   display: inline-flex;
