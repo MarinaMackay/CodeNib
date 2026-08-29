@@ -22,8 +22,10 @@ from codenib.repository_source_selection import (  # noqa: E402
     DEFAULT_REPOSITORY_SOURCE_SELECTION,
 )
 from codenib.wiki import IndexBackedVisualGroundingScorer  # noqa: E402
-from codenib.wiki import (
+from codenib.wiki import (  # noqa: E402
+    DEFAULT_WEMM_MODEL,
     OpenAICompatibleVisualFactExtractor,
+    WeMMVisualEmbeddingBackend,
     build_index_backed_visual_grounding_scorer,
     build_multimodal_knowledge_bundle,
     build_multimodal_knowledge_view,
@@ -94,14 +96,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum changed-entry ratio for an in-place flat-index update",
     )
     parser.add_argument(
+        "--visual-vector-backend",
+        choices=("local", "wemm"),
+        default="local",
+        help="Embedding backend for the visual vector sidecar",
+    )
+    parser.add_argument(
         "--visual-vector-provider",
         default="local",
         help="Embedding provider label for the visual vector sidecar",
     )
     parser.add_argument(
         "--visual-vector-model",
-        default="local/hash-visual-embedding-v1",
-        help="Embedding model label for the visual vector sidecar",
+        default=None,
+        help="Embedding model; defaults according to --visual-vector-backend",
+    )
+    parser.add_argument(
+        "--visual-vector-revision",
+        default=None,
+        help="Optional immutable model revision for the visual vector sidecar",
+    )
+    parser.add_argument(
+        "--visual-vector-trust-remote-code",
+        action="store_true",
+        help=(
+            "Allow remote model code. Remote models require a full 40-character "
+            "commit SHA through --visual-vector-revision."
+        ),
+    )
+    parser.add_argument(
+        "--visual-vector-device",
+        default=None,
+        help="Optional SentenceTransformers device for the WeMM backend",
+    )
+    parser.add_argument(
+        "--visual-vector-batch-size",
+        type=int,
+        default=1,
+        help="Batch size for the WeMM backend",
     )
     parser.add_argument(
         "--visual-vector-dimensions",
@@ -281,7 +313,11 @@ def main(argv: list[str] | None = None) -> int:
                 grounding_manifest=grounding,
                 knowledge_view=knowledge_view,
             )
-        vector_index = _build_visual_vector_sidecar(args, updated)
+        (
+            vector_index,
+            query_embedder,
+            previous_vector_index,
+        ) = _build_visual_vector_sidecar(args, updated, repo_path=repo)
         save_multimodal_knowledge_bundle(updated, output_path)
         if vector_index is not None:
             save_visual_vector_index(vector_index, args.visual_vector_output)
@@ -289,7 +325,8 @@ def main(argv: list[str] | None = None) -> int:
                 store_stats = _materialize_visual_vector_store(
                     args,
                     vector_index=vector_index,
-                    previous_vector_index=_load_previous_vector_index(args),
+                    previous_vector_index=previous_vector_index,
+                    query_embedder=query_embedder,
                 )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
@@ -374,26 +411,28 @@ def _build_visual_grounding_scorer(
     )
 
 
-def _build_visual_vector_sidecar(args: argparse.Namespace, bundle: dict) -> dict | None:
+def _build_visual_vector_sidecar(
+    args: argparse.Namespace,
+    bundle: dict,
+    *,
+    repo_path: Path,
+) -> tuple[dict | None, object | None, dict | None]:
     _validate_visual_vector_store_options(args)
     if args.previous_visual_vector_index and not args.visual_vector_output:
         raise ValueError(
             "--previous-visual-vector-index requires --visual-vector-output"
         )
     if not args.visual_vector_output:
-        return None
-    previous = (
-        load_visual_vector_index(args.previous_visual_vector_index)
-        if args.previous_visual_vector_index
-        else None
+        return None, None, None
+    previous = _load_previous_vector_index(args)
+    vector_options, query_embedder = _visual_vector_options(
+        args,
+        repo_path=repo_path,
     )
-    return build_visual_vector_index(
-        bundle["knowledge_view"],
-        previous_index=previous,
-        provider=args.visual_vector_provider,
-        model=args.visual_vector_model,
-        dimensions=args.visual_vector_dimensions,
+    vector_index = build_visual_vector_index(
+        bundle["knowledge_view"], previous_index=previous, **vector_options
     )
+    return vector_index, query_embedder, previous
 
 
 def _validate_visual_vector_store_options(args: argparse.Namespace) -> None:
@@ -448,6 +487,7 @@ def _materialize_visual_vector_store(
     *,
     vector_index: dict,
     previous_vector_index: dict | None,
+    query_embedder=None,
 ) -> dict:
     output = Path(args.visual_vector_store_output).expanduser().resolve()
     previous = (
@@ -478,6 +518,7 @@ def _materialize_visual_vector_store(
 
     store = create_visual_vector_store(
         vector_index,
+        query_embedder=query_embedder,
         store_path=output,
         index_type=args.visual_vector_store_index_type,
     )
@@ -515,6 +556,49 @@ def _load_trusted_local_visual_store(store, path: Path) -> None:
             ),
         )
     store.load(path, native_index_authorization=authorization)
+
+
+def _visual_vector_options(
+    args: argparse.Namespace,
+    *,
+    repo_path: Path,
+) -> tuple[dict, object | None]:
+    if args.visual_vector_backend == "local":
+        if args.visual_vector_trust_remote_code:
+            raise ValueError(
+                "--visual-vector-trust-remote-code requires "
+                "--visual-vector-backend wemm"
+            )
+        return (
+            {
+                "provider": args.visual_vector_provider,
+                "model": args.visual_vector_model or "local/hash-visual-embedding-v1",
+                "model_revision": str(args.visual_vector_revision or ""),
+                "dimensions": args.visual_vector_dimensions,
+            },
+            None,
+        )
+    backend = WeMMVisualEmbeddingBackend(
+        repo_path=repo_path,
+        model=args.visual_vector_model or DEFAULT_WEMM_MODEL,
+        dimensions=args.visual_vector_dimensions,
+        revision=args.visual_vector_revision,
+        trust_remote_code=args.visual_vector_trust_remote_code,
+        device=args.visual_vector_device,
+        batch_size=args.visual_vector_batch_size,
+    )
+    return (
+        {
+            "document_embedder": backend.embed_documents,
+            "provider": backend.provider,
+            "model": backend.model_name,
+            "model_revision": backend.model_revision,
+            "dimensions": backend.dimensions,
+            "document_modalities": backend.document_modalities,
+            "query_modality": backend.query_modality,
+        },
+        backend.embed_queries,
+    )
 
 
 def _plan_summary(plan: dict, extractor_id: str) -> dict:
