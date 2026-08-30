@@ -21,9 +21,11 @@ from codenib.wiki import OpenAICompatibleVisualFactExtractor  # noqa: E402
 from codenib.wiki import (
     build_multimodal_repository_knowledge,
     build_visual_vector_index,
+    create_visual_vector_store,
     load_visual_vector_index,
     save_multimodal_knowledge_bundle,
     save_visual_vector_index,
+    update_visual_vector_store,
 )
 
 
@@ -43,6 +45,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--previous-visual-vector-index",
         help="Optional previous visual vector sidecar to reuse unchanged records",
+    )
+    parser.add_argument(
+        "--visual-vector-store-output",
+        help="Optional directory to materialize a searchable FAISS visual store",
+    )
+    parser.add_argument(
+        "--previous-visual-vector-store",
+        help="Optional previous FAISS visual store to update incrementally",
+    )
+    parser.add_argument(
+        "--visual-vector-store-index-type",
+        choices=("flat", "ivf"),
+        default="flat",
+        help="FAISS index type for the visual vector store",
+    )
+    parser.add_argument(
+        "--visual-vector-delta-threshold",
+        type=float,
+        default=0.1,
+        help="Maximum changed-entry ratio for an in-place flat-index update",
     )
     parser.add_argument(
         "--visual-vector-provider",
@@ -154,6 +176,21 @@ def main(argv: list[str] | None = None) -> int:
                     ],
                 }
             )
+            if args.visual_vector_store_output:
+                store_stats = _materialize_visual_vector_store(
+                    args,
+                    vector_index=vector_index,
+                    previous_vector_index=previous_vector_index,
+                )
+                counts.update(
+                    {
+                        "visual_vector_store_records": store_stats["entry_count"],
+                        "visual_vector_store_changed_records": store_stats[
+                            "changed_entry_count"
+                        ],
+                        "visual_vector_store_update_mode": store_stats["mode"],
+                    }
+                )
     except ValueError as exc:
         parser.error(str(exc))
     print(json.dumps(counts, sort_keys=True))
@@ -180,6 +217,16 @@ def _build_visual_fact_extractor(
 
 
 def _load_previous_vector_index(args: argparse.Namespace) -> dict | None:
+    if args.visual_vector_store_output and not args.visual_vector_output:
+        raise ValueError("--visual-vector-store-output requires --visual-vector-output")
+    if args.previous_visual_vector_store and not args.visual_vector_store_output:
+        raise ValueError(
+            "--previous-visual-vector-store requires " "--visual-vector-store-output"
+        )
+    if args.previous_visual_vector_store and not args.previous_visual_vector_index:
+        raise ValueError(
+            "--previous-visual-vector-store requires " "--previous-visual-vector-index"
+        )
     if not args.previous_visual_vector_index:
         return None
     if not args.visual_vector_output:
@@ -189,7 +236,81 @@ def _load_previous_vector_index(args: argparse.Namespace) -> dict | None:
     return load_visual_vector_index(args.previous_visual_vector_index)
 
 
-def _bundle_counts(bundle: dict) -> dict[str, int]:
+def _materialize_visual_vector_store(
+    args: argparse.Namespace,
+    *,
+    vector_index: dict,
+    previous_vector_index: dict | None,
+) -> dict:
+    output = Path(args.visual_vector_store_output).expanduser().resolve()
+    previous = (
+        Path(args.previous_visual_vector_store).expanduser().resolve()
+        if args.previous_visual_vector_store
+        else None
+    )
+    if previous is not None:
+        if not previous.is_dir():
+            raise ValueError(
+                f"previous visual vector store is not a directory: {previous}"
+            )
+        if (
+            previous_vector_index is None
+            or previous_vector_index["embedding_policy_sha256"]
+            != vector_index["embedding_policy_sha256"]
+        ):
+            raise ValueError(
+                "previous visual vector store embedding policy does not match"
+            )
+    same_store = previous is not None and output == previous
+    if output.exists() and not output.is_dir():
+        raise ValueError(f"visual vector store output is not a directory: {output}")
+    if output.is_dir() and any(output.iterdir()) and not same_store:
+        raise ValueError(
+            "visual vector store output must be empty unless it is the previous store"
+        )
+
+    store = create_visual_vector_store(
+        vector_index,
+        store_path=output,
+        index_type=args.visual_vector_store_index_type,
+    )
+    try:
+        if previous is not None:
+            _load_trusted_local_visual_store(store, previous)
+        stats = update_visual_vector_store(
+            store,
+            vector_index,
+            previous_index=previous_vector_index if previous is not None else None,
+            threshold=args.visual_vector_delta_threshold,
+        )
+        store.save(output)
+        return stats
+    finally:
+        store.close()
+
+
+def _load_trusted_local_visual_store(store, path: Path) -> None:
+    from codenib.index.embedding.artifact_integrity import (
+        capture_authenticated_vector_view,
+    )
+    from codenib.native_index_authorization import (
+        _mint_trusted_local_admin_authorization,
+    )
+
+    with capture_authenticated_vector_view(path) as view:
+        authorization = _mint_trusted_local_admin_authorization(
+            view.ownership,
+            view_type="vector",
+            semantic_contract=store.artifact_metadata,
+            evidence=(
+                "update-multimodal-knowledge-local-cli",
+                "explicit-previous-visual-vector-store",
+            ),
+        )
+    store.load(path, native_index_authorization=authorization)
+
+
+def _bundle_counts(bundle: dict) -> dict:
     return {
         "media_artifacts": bundle["media_manifest"]["artifact_count"],
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],

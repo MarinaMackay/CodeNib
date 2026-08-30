@@ -289,8 +289,15 @@ one command:
 ```text
 python scripts/update_multimodal_knowledge.py /path/to/repository \
   --bundle-output /tmp/multimodal-knowledge.json \
-  --visual-vector-output /tmp/visual-vector-index.json
+  --visual-vector-output /tmp/visual-vector-index.json \
+  --visual-vector-store-output /tmp/visual-vector-faiss
 ```
+
+The JSON sidecar is the portable provenance contract. The optional FAISS
+directory is a real CodeNib `CodeVectorStore` materialization for low-latency
+semantic search. Its schema-8 row mapping is stored as inert canonical JSON;
+search hits are joined back to the validated sidecar to restore source paths,
+symbols, captions, MIME types, and entry hashes.
 
 On the next run, unchanged visual entries can reuse their vectors:
 
@@ -298,8 +305,22 @@ On the next run, unchanged visual entries can reuse their vectors:
 python scripts/update_multimodal_knowledge.py /path/to/repository \
   --bundle-output /tmp/multimodal-knowledge-next.json \
   --visual-vector-output /tmp/visual-vector-index-next.json \
-  --previous-visual-vector-index /tmp/visual-vector-index.json
+  --previous-visual-vector-index /tmp/visual-vector-index.json \
+  --visual-vector-store-output /tmp/visual-vector-faiss-next \
+  --previous-visual-vector-store /tmp/visual-vector-faiss
 ```
+
+For a flat FAISS store, a small change set uses CodeNib's native
+`CodeVectorStore.delta_update()` path. Larger updates, policy changes, IVF
+stores, and first-time builds use a full rebuild. The output directory must be
+empty unless it is the same directory as the explicitly supplied previous
+store; this prevents unrelated or differently configured native artifacts from
+being overwritten.
+
+The default embedding remains the deterministic local text fallback. A
+non-local multimodal embedding policy must supply both a document embedder when
+building the sidecar and a query embedder when creating the FAISS store. This
+keeps image/document generation and embedding as separate, auditable stages.
 
 To use an OpenAI-compatible VLM for visual fact extraction:
 
