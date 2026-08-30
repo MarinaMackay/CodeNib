@@ -193,6 +193,74 @@ export interface WikiMediaAsset {
   metadata?: Record<string, unknown>;
 }
 
+export interface WikiMultimodalSummary {
+  schema: string;
+  schema_version: number;
+  bundle_sha256: string;
+  source_candidate_count: number;
+  media_manifest: {
+    artifact_count: number;
+    artifacts: WikiMultimodalArtifact[];
+  };
+  visual_facts_manifest: {
+    fact_count: number;
+    facts: WikiVisualFactPack[];
+  };
+  grounding_manifest: {
+    binding_count: number;
+    bindings: WikiVisualCodeBinding[];
+  };
+  knowledge_view: { entry_count: number };
+}
+
+export interface WikiMultimodalArtifact {
+  path: string;
+  media_type: string;
+  role_hint: string;
+}
+
+export interface WikiVisualFactPack {
+  artifact_path: string;
+  extractor: string;
+  entities: Array<{
+    name: string;
+    type: string;
+    confidence: number;
+  }>;
+  claims: Array<{
+    text: string;
+    confidence: number;
+  }>;
+  relations: Array<{
+    source: string;
+    target: string;
+    relation: string;
+  }>;
+}
+
+export interface WikiVisualCodeBinding {
+  artifact_path: string;
+  entity_name: string;
+  source_path: string;
+  symbol: string;
+  kind: string;
+  line: number;
+  score: number;
+  evidence: string;
+}
+
+export function isHighConfidenceVisualBinding(
+  binding: WikiVisualCodeBinding,
+): boolean {
+  return Number.isFinite(binding.score) && binding.score >= 0.8;
+}
+
+export function wikiMediaCitationCount(slot: WikiMediaSlot): number {
+  return new Set(
+    (slot.asset?.source_citations ?? slot.source_citations ?? []).filter(Boolean),
+  ).size;
+}
+
 /**
  * Planned media slots are internal generation metadata, not reader content.
  * Only expose slots that actually have a materialized asset in the Wiki UI.
@@ -307,6 +375,22 @@ export async function fetchWikiPage(
     }
     throw error;
   }
+}
+
+export async function fetchWikiMultimodalSummary(
+  repoId: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<WikiMultimodalSummary | null> {
+  if (isStaticRuntime()) return null;
+  const response = await fetch(
+    `${API_BASE}/api/repos/${encodeURIComponent(repoId)}/wiki-multimodal`,
+    { signal: opts.signal },
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw await responseError(response, "Failed to load multimodal Wiki data");
+  }
+  return response.json();
 }
 
 export async function fetchSource(
