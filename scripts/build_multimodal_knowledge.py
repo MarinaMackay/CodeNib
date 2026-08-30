@@ -8,9 +8,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -20,7 +24,10 @@ if _PROJECT_ROOT not in sys.path:
 from codenib.wiki import (  # noqa: E402
     OpenAICompatibleVisualFactExtractor,
     build_multimodal_repository_knowledge,
+    build_visual_graph_manifest,
+    compile_visual_graph_plan_to_mermaid,
     save_multimodal_knowledge_bundle,
+    save_visual_graph_manifest,
 )
 
 
@@ -85,6 +92,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=120.0,
         help="Timeout in seconds for each visual-fact VLM request",
     )
+    parser.add_argument(
+        "--visual-graph-output",
+        default=None,
+        help="Optional path to write a validated visual graph manifest JSON",
+    )
+    parser.add_argument(
+        "--visual-graph-mermaid-dir",
+        default=None,
+        help="Optional directory to write one compiled Mermaid file per plan",
+    )
     return parser
 
 
@@ -109,6 +126,13 @@ def main(argv: list[str] | None = None) -> int:
         max_source_candidates=args.max_source_candidates,
     )
     save_multimodal_knowledge_bundle(bundle, args.output)
+    visual_graph_manifest = None
+    if args.visual_graph_output or args.visual_graph_mermaid_dir:
+        visual_graph_manifest = build_visual_graph_manifest(bundle["knowledge_view"])
+    if args.visual_graph_output:
+        save_visual_graph_manifest(visual_graph_manifest, args.visual_graph_output)
+    if args.visual_graph_mermaid_dir:
+        _write_mermaid_plans(visual_graph_manifest, args.visual_graph_mermaid_dir)
     counts = {
         "media_artifacts": bundle["media_manifest"]["artifact_count"],
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
@@ -116,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
         "visual_code_bindings": bundle["grounding_manifest"]["binding_count"],
         "knowledge_entries": bundle["knowledge_view"]["entry_count"],
     }
+    if visual_graph_manifest is not None:
+        counts["visual_graph_plans"] = visual_graph_manifest["plan_count"]
     print(json.dumps(counts, sort_keys=True))
     return 0
 
@@ -138,6 +164,50 @@ def _build_visual_fact_extractor(
         repo_path=repo_path,
     )
     return extractor
+
+
+def _write_mermaid_plans(manifest: dict, output_dir: str | Path) -> None:
+    destination = Path(output_dir).expanduser()
+    destination.mkdir(parents=True, exist_ok=True)
+    for index, plan in enumerate(manifest["plans"], start=1):
+        target = destination / _mermaid_filename(plan["artifact_path"], index)
+        _atomic_write_text(target, compile_visual_graph_plan_to_mermaid(plan))
+
+
+def _mermaid_filename(artifact_path: str, index: int) -> str:
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", artifact_path).strip(".-")
+    stem = stem[:80].rstrip(".-") or "artifact"
+    digest = hashlib.sha256(artifact_path.encode("utf-8")).hexdigest()[:12]
+    return f"{index:04d}-{stem}-{digest}.mmd"
+
+
+def _atomic_write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = value.encode("utf-8")
+    try:
+        existing = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        existing_mode = None
+    else:
+        existing_mode = (
+            stat.S_IMODE(existing.st_mode) if stat.S_ISREG(existing.st_mode) else None
+        )
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            if existing_mode is not None:
+                os.fchmod(stream.fileno(), existing_mode)
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
 
 
 if __name__ == "__main__":
