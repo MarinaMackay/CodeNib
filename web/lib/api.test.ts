@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchEdgeLabel,
+  fetchWikiMultimodalSummary,
   fetchWikiTree,
   fetchWikiPage,
   isSourceCheckedWikiPage,
+  isHighConfidenceVisualBinding,
   materializedWikiMediaSlots,
   shouldWithholdWikiPage,
   type WikiMediaSlot,
+  type WikiVisualCodeBinding,
+  wikiMediaCitationCount,
 } from "./api";
 
 afterEach(() => {
@@ -181,6 +185,75 @@ describe("fetchWikiTree", () => {
         /\/api\/repos\/owner%2Frepo\/wiki\?cached_only=true$/,
       ),
     );
+  });
+});
+
+describe("fetchWikiMultimodalSummary", () => {
+  it("returns null when a repository has no persisted multimodal bundle", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 404, ok: false });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchWikiMultimodalSummary("owner/repo")).resolves.toBeNull();
+    expect(fetchMock.mock.calls[0][0]).toMatch(
+      /\/api\/repos\/owner%2Frepo\/wiki-multimodal$/,
+    );
+  });
+
+  it("surfaces validation failures without breaking the Wiki page request", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 500,
+      ok: false,
+      text: async () => JSON.stringify({ detail: "Persisted bundle is invalid" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchWikiMultimodalSummary("owner/repo")).rejects.toThrow(
+      "Failed to load multimodal Wiki data (500): Persisted bundle is invalid",
+    );
+  });
+});
+
+describe("multimodal grounding labels", () => {
+  const binding = (score: number): WikiVisualCodeBinding => ({
+    artifact_path: "docs/architecture.svg",
+    entity_name: "WikiBuilder",
+    source_path: "codenib/wiki/builder.py",
+    symbol: "WikiBuilder",
+    kind: "symbol",
+    line: 10,
+    score,
+    evidence: "test",
+  });
+
+  it("does not promote partial lexical matches to grounded citations", () => {
+    expect(isHighConfidenceVisualBinding(binding(0.75))).toBe(false);
+    expect(isHighConfidenceVisualBinding(binding(0.8))).toBe(true);
+    expect(isHighConfidenceVisualBinding(binding(Number.NaN))).toBe(false);
+  });
+
+  it("reports provenance citations from the materialized asset", () => {
+    const slot = {
+      id: "overview",
+      kind: "image",
+      placement: "lead",
+      title: "Overview",
+      purpose: "Explain the architecture",
+      source_citations: ["fallback.py"],
+      prompt: "Draw it",
+      human_prior: { editable: true, notes: [] },
+      asset: {
+        slot_id: "overview",
+        kind: "image",
+        uri: "/asset.svg",
+        mime_type: "image/svg+xml",
+        model: "local/svg",
+        provider: "local",
+        prompt: "Draw it",
+        source_citations: ["src/a.py", "src/a.py", "src/b.py"],
+      },
+    } satisfies WikiMediaSlot;
+
+    expect(wikiMediaCitationCount(slot)).toBe(2);
   });
 });
 

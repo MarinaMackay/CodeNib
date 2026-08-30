@@ -48,6 +48,7 @@ from ..wiki.media_generation import (
     read_generated_media_asset,
     redact_media_evidence_packs,
 )
+from ..wiki.media_storage import load_multimodal_knowledge_bundle
 from ..wiki.narrator import Narrator
 from ..wiki.sqlite_store import SQLiteWikiStore
 from .config import load_config
@@ -645,6 +646,129 @@ def _wiki_media_dir(config, repo_id: str, page_id: str) -> Path:
     return root / repo_key / page_key
 
 
+def _wiki_multimodal_bundle_paths(config, repo_id: str, bundle) -> tuple[Path, ...]:
+    """Return deterministic local locations for one repository bundle."""
+
+    data_root = Path(os.path.abspath(config.data_dir)) / "multimodal_knowledge"
+    repo_key = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
+    candidates = [data_root / f"{repo_key}.json"]
+    repo_dir = str(getattr(getattr(bundle, "entry", None), "repo_dir", "") or "")
+    if repo_dir:
+        candidates.append(
+            Path(os.path.abspath(repo_dir)) / ".codenib" / "multimodal-knowledge.json"
+        )
+    return tuple(candidates)
+
+
+def _load_wiki_multimodal_bundle(config, repo_id: str, bundle) -> dict | None:
+    """Load the first configured, validated multimodal bundle when present."""
+
+    for path in _wiki_multimodal_bundle_paths(config, repo_id, bundle):
+        if not os.path.lexists(path):
+            continue
+        try:
+            return load_multimodal_knowledge_bundle(path)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "Invalid Wiki multimodal bundle for %s at %s: %s",
+                repo_id,
+                path,
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="The persisted multimodal Wiki bundle is invalid",
+            ) from exc
+    return None
+
+
+def _summarize_wiki_multimodal_bundle(bundle: Mapping) -> dict:
+    """Return a bounded, reader-facing projection of a validated bundle."""
+
+    media = bundle["media_manifest"]
+    facts = bundle["visual_facts_manifest"]
+    grounding = bundle["grounding_manifest"]
+    knowledge = bundle["knowledge_view"]
+    visible_facts = facts["facts"][:12]
+    visible_artifact_paths = {fact["artifact_path"] for fact in visible_facts}
+    visible_bindings = []
+    binding_counts: dict[str, int] = {}
+    for binding in grounding["bindings"]:
+        artifact_path = binding["artifact_path"]
+        count = binding_counts.get(artifact_path, 0)
+        if artifact_path not in visible_artifact_paths or count >= 5:
+            continue
+        binding_counts[artifact_path] = count + 1
+        visible_bindings.append(binding)
+    return {
+        "schema": bundle["schema"],
+        "schema_version": bundle["schema_version"],
+        "bundle_sha256": bundle["bundle_sha256"],
+        "source_candidate_count": bundle["source_candidate_count"],
+        "media_manifest": {
+            "artifact_count": media["artifact_count"],
+            "artifacts": [
+                {
+                    "path": artifact["path"],
+                    "media_type": artifact["media_type"],
+                    "role_hint": artifact["role_hint"],
+                }
+                for artifact in media["artifacts"][:12]
+            ],
+        },
+        "visual_facts_manifest": {
+            "fact_count": facts["fact_count"],
+            "facts": [
+                {
+                    "artifact_path": fact["artifact_path"],
+                    "extractor": fact["extractor"],
+                    "entities": [
+                        {
+                            "name": entity["name"],
+                            "type": entity["type"],
+                            "confidence": entity["confidence"],
+                        }
+                        for entity in fact["entities"][:12]
+                    ],
+                    "claims": [
+                        {
+                            "text": claim["text"],
+                            "confidence": claim["confidence"],
+                        }
+                        for claim in fact["claims"][:4]
+                    ],
+                    "relations": [
+                        {
+                            "source": relation["source"],
+                            "target": relation["target"],
+                            "relation": relation["relation"],
+                        }
+                        for relation in fact["relations"][:8]
+                    ],
+                }
+                for fact in visible_facts
+            ],
+        },
+        "grounding_manifest": {
+            "binding_count": grounding["binding_count"],
+            "bindings": [
+                {
+                    "artifact_path": binding["artifact_path"],
+                    "entity_name": binding["entity_name"],
+                    "source_path": binding["source_path"],
+                    "symbol": binding["symbol"],
+                    "kind": binding["kind"],
+                    "line": binding["line"],
+                    "score": binding["score"],
+                    "evidence": binding["evidence"],
+                }
+                for binding in visible_bindings
+            ],
+        },
+        "knowledge_view": {"entry_count": knowledge["entry_count"]},
+    }
+
+
 def _wiki_media_source_snippet(source_reader, citation: Mapping) -> str | None:
     source = bound_source_slice(
         source_reader,
@@ -1082,6 +1206,25 @@ async def wiki_media_asset(repo_id: str, page_id: str, filename: str):
             media_type=_WIKI_MEDIA_TYPES[suffix],
             headers=headers,
         )
+
+
+@app.get("/api/repos/{repo_id}/wiki-multimodal")
+async def wiki_multimodal_bundle(repo_id: str) -> dict:
+    """Serve a bounded summary of persisted visual facts and grounding."""
+
+    with _pinned_bundle(repo_id) as bundle:
+        persisted = await _run_pinned_thread(
+            _load_wiki_multimodal_bundle,
+            load_config(),
+            repo_id,
+            bundle,
+        )
+        if persisted is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No multimodal Wiki bundle is available for this repository",
+            )
+        return _summarize_wiki_multimodal_bundle(persisted)
 
 
 @app.get("/api/repos/{repo_id}/wiki/{page_id}/graph")
