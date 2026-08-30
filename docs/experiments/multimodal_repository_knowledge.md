@@ -267,7 +267,8 @@ python scripts/build_multimodal_knowledge.py /path/to/repository \
 ```
 
 Each plan is bound to the knowledge-view hash and one repository artifact. Its
-nodes retain source paths, symbols, lines, and evidence when grounding exists;
+nodes retain source paths, symbols, lines, grounding scores, and grounding
+evidence when a binding exists;
 its edges come only from explicit visual fact relations. CodeNib does not infer
 call edges from captions. Node ids, edge endpoints, repository-relative paths,
 counts, fields, and content hashes are validated before a plan can compile to

@@ -46,7 +46,18 @@ _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _PLAN_FIELDS = frozenset(
     {"schema", "version", "artifact_path", "nodes", "edges", "plan_sha256"}
 )
-_NODE_FIELDS = frozenset({"id", "label", "source_path", "symbol", "line", "evidence"})
+_NODE_FIELDS = frozenset(
+    {
+        "id",
+        "label",
+        "source_path",
+        "symbol",
+        "line",
+        "evidence",
+        "grounding_score",
+        "grounding_evidence",
+    }
+)
 _EDGE_FIELDS = frozenset({"source", "target", "relation", "evidence"})
 _MANIFEST_FIELDS = frozenset(
     {
@@ -371,6 +382,11 @@ def _build_nodes(
                     or (binding.get("evidence") if binding else ""),
                     label="node evidence",
                 ),
+                "grounding_score": _score(binding.get("score") if binding else 0),
+                "grounding_evidence": _text(
+                    binding.get("evidence") if binding else "",
+                    label="grounding evidence",
+                ),
             }
         )
     return nodes, node_ids
@@ -443,6 +459,10 @@ def _validated_node(value: Any) -> dict[str, Any]:
         "symbol": _optional_single_line(node["symbol"], label="node symbol"),
         "line": _line(node["line"]),
         "evidence": _text(node["evidence"], label="node evidence"),
+        "grounding_score": _validated_score(node["grounding_score"]),
+        "grounding_evidence": _text(
+            node["grounding_evidence"], label="grounding evidence"
+        ),
     }
 
 
@@ -577,6 +597,15 @@ def _score(value: Any) -> float:
         return 0.0
     if not math.isfinite(score) or not 0 <= score <= _MAX_SCORE:
         return 0.0
+    return score
+
+
+def _validated_score(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("visual graph grounding_score is invalid")
+    score = float(value)
+    if not math.isfinite(score) or not 0 <= score <= _MAX_SCORE:
+        raise ValueError("visual graph grounding_score is invalid")
     return score
 
 

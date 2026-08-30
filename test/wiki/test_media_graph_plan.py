@@ -122,6 +122,8 @@ def test_build_visual_graph_plan_uses_explicit_facts_and_best_grounding():
     nodes = {node["label"]: node for node in plan["nodes"]}
     assert nodes["WikiRenderer"]["source_path"] == "src/runtime.py"
     assert nodes["WikiRenderer"]["line"] == 4
+    assert nodes["WikiRenderer"]["grounding_score"] == 1.0
+    assert nodes["WikiRenderer"]["grounding_evidence"] == "exact symbol match"
     assert {
         (edge["source"], edge["target"], edge["relation"]) for edge in plan["edges"]
     } == {
@@ -219,6 +221,11 @@ def test_visual_graph_plan_rejects_tampering_extra_fields_and_bad_paths():
     entry["bindings"][0]["source_path"] = "../secret.py"
     with pytest.raises(ValueError, match="repository-relative"):
         build_visual_graph_plan(entry)
+
+    plan = build_visual_graph_plan(_entry())
+    plan["nodes"][0]["grounding_score"] = float("nan")
+    with pytest.raises(ValueError, match="grounding_score is invalid"):
+        validate_visual_graph_plan(plan)
 
 
 def test_visual_graph_plan_rejects_dangling_and_duplicate_edges():
