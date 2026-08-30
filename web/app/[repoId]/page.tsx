@@ -9,10 +9,12 @@ import { isStaticRuntime, mediaAssetUrl } from "@/lib/runtime";
 import {
   fetchCommits,
   fetchRepos,
+  fetchWikiMultimodalSummary,
   fetchWikiGraph,
   fetchWikiPage,
   fetchWikiTree,
   isSourceCheckedWikiPage,
+  isHighConfidenceVisualBinding,
   materializedWikiMediaSlots,
   repoRelative,
   shouldWithholdWikiPage,
@@ -21,8 +23,10 @@ import {
   type CommitRef,
   type RepoInfo,
   type WikiMediaSlot,
+  type WikiMultimodalSummary,
   type WikiPage,
   type WikiPageRef,
+  wikiMediaCitationCount,
 } from "@/lib/api";
 
 const CodePanel = lazy(() => import("@/components/CodePanel"));
@@ -193,10 +197,15 @@ function MediaPreview({ slot }: { slot: WikiMediaSlot }) {
   );
 }
 
-function MediaStatus() {
+function MediaStatus({ slot }: { slot: WikiMediaSlot }) {
+  const citationCount = wikiMediaCitationCount(slot);
   return (
     <div className="wiki-media-status">
-      <span className="ready">Generated from cited source</span>
+      <span className={citationCount > 0 ? "ready" : "pending"}>
+        {citationCount > 0
+          ? `${citationCount} source citation${citationCount === 1 ? "" : "s"}`
+          : "Source grounding unavailable"}
+      </span>
     </div>
   );
 }
@@ -242,7 +251,7 @@ function MultimodalMedia({
             </div>
             <h3>{primary.title}</h3>
             <p>{primary.purpose}</p>
-            <MediaStatus />
+            <MediaStatus slot={primary} />
             {primaryAssetUrl && (
               <a
                 className="wiki-media-open"
@@ -268,7 +277,7 @@ function MultimodalMedia({
               </div>
               <h3>{slot.title}</h3>
               <p>{slot.purpose}</p>
-              <MediaStatus />
+              <MediaStatus slot={slot} />
               {(slot.source_citations ?? []).length > 0 && (
                 <div className="wiki-media-citations">
                   {(slot.source_citations ?? []).slice(0, 4).map((file) => {
@@ -301,6 +310,185 @@ function MultimodalMedia({
           </article>
         ))}
       </div>
+    </section>
+  );
+}
+
+function groundingScore(score: number): string {
+  return Number.isFinite(score) ? score.toFixed(2) : "—";
+}
+
+function MultimodalKnowledgePanel({
+  summary,
+  repo,
+}: {
+  summary: WikiMultimodalSummary;
+  repo: RepoInfo | null;
+}) {
+  const facts = summary.visual_facts_manifest.facts;
+  const [selectedPath, setSelectedPath] = useState(facts[0]?.artifact_path ?? "");
+  const selectedFact =
+    facts.find((fact) => fact.artifact_path === selectedPath) ?? facts[0];
+  const bindings = summary.grounding_manifest.bindings
+    .filter((binding) => binding.artifact_path === selectedFact?.artifact_path)
+    .sort((left, right) => right.score - left.score);
+  const highConfidenceCount = bindings.filter(
+    isHighConfidenceVisualBinding,
+  ).length;
+
+  return (
+    <section
+      className="wiki-multimodal-knowledge"
+      aria-labelledby="wiki-multimodal-title"
+    >
+      <div className="wiki-multimodal-head">
+        <div>
+          <span className="wiki-multimodal-kicker">Persisted evidence layer</span>
+          <h2 id="wiki-multimodal-title">Visual repository knowledge</h2>
+          <p>
+            Facts extracted from repository images and their candidate links back to
+            source code. Scores and evidence stay visible so weak lexical matches are
+            never presented as verified citations.
+          </p>
+        </div>
+        <span className="wiki-multimodal-hash mono" title="Validated bundle hash">
+          {summary.bundle_sha256.slice(0, 10)}
+        </span>
+      </div>
+
+      <div className="wiki-multimodal-stats" aria-label="Multimodal bundle counts">
+        <span><strong>{summary.media_manifest.artifact_count}</strong> visual assets</span>
+        <span><strong>{summary.visual_facts_manifest.fact_count}</strong> fact packs</span>
+        <span><strong>{summary.grounding_manifest.binding_count}</strong> candidates</span>
+        <span><strong>{summary.knowledge_view.entry_count}</strong> searchable entries</span>
+      </div>
+
+      {facts.length > 0 ? (
+        <>
+          <div className="wiki-multimodal-tabs" role="group" aria-label="Visual assets">
+            {facts.slice(0, 12).map((fact) => (
+              <button
+                key={fact.artifact_path}
+                type="button"
+                aria-pressed={fact.artifact_path === selectedFact?.artifact_path}
+                className={fact.artifact_path === selectedFact?.artifact_path ? "active" : ""}
+                onClick={() => setSelectedPath(fact.artifact_path)}
+                title={fact.artifact_path}
+              >
+                {repoRelative(fact.artifact_path).split("/").pop()}
+              </button>
+            ))}
+          </div>
+
+          {selectedFact && (
+            <div className="wiki-multimodal-grid">
+              <article className="wiki-multimodal-card">
+                <div className="wiki-multimodal-card-head">
+                  <div>
+                    <span>Visual facts</span>
+                    <code>{selectedFact.extractor}</code>
+                  </div>
+                  <span>{selectedFact.entities.length} entities</span>
+                </div>
+                <div className="wiki-multimodal-path mono">
+                  {selectedFact.artifact_path}
+                </div>
+                <div className="wiki-multimodal-entities">
+                  {selectedFact.entities.length > 0 ? (
+                    selectedFact.entities.map((entity, index) => (
+                      <div key={`${selectedFact.artifact_path}:${entity.name}:${index}`}>
+                        <strong>{entity.name}</strong>
+                        <span>{entity.type}</span>
+                        <small>{Math.round(entity.confidence * 100)}% extraction confidence</small>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="wiki-multimodal-empty">No entities extracted.</p>
+                  )}
+                </div>
+                {selectedFact.relations.length > 0 && (
+                  <div className="wiki-multimodal-relations">
+                    {selectedFact.relations.map((relation, index) => (
+                      <div key={`${relation.source}:${relation.target}:${index}`}>
+                        <span>{relation.source}</span>
+                        <em>{relation.relation}</em>
+                        <span>{relation.target}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {selectedFact.claims.map((claim, index) => (
+                  <p className="wiki-multimodal-claim" key={`${claim.text}:${index}`}>
+                    {claim.text}
+                  </p>
+                ))}
+              </article>
+
+              <article className="wiki-multimodal-card">
+                <div className="wiki-multimodal-card-head">
+                  <div><span>Source grounding</span></div>
+                  <span>{highConfidenceCount} high confidence</span>
+                </div>
+                {bindings.length > 0 ? (
+                  <div className="wiki-multimodal-bindings">
+                    {bindings.map((binding, index) => {
+                      const sourceUrl = ghFileUrl(
+                        repo?.repo,
+                        repo?.source_url,
+                        repo?.base_commit,
+                        binding.source_path,
+                        binding.line || undefined,
+                        binding.line || undefined,
+                      );
+                      const confident = isHighConfidenceVisualBinding(binding);
+                      const content = (
+                        <>
+                          <div>
+                            <strong>{binding.entity_name}</strong>
+                            <span className={confident ? "grounded" : "candidate"}>
+                              {confident ? "high confidence" : "candidate"}
+                            </span>
+                          </div>
+                          <code>
+                            {binding.source_path}
+                            {binding.line ? `:${binding.line}` : ""}
+                            {binding.symbol ? ` · ${binding.symbol}` : ""}
+                          </code>
+                          <small>
+                            score {groundingScore(binding.score)} · {binding.evidence}
+                          </small>
+                        </>
+                      );
+                      const key = `${binding.entity_name}:${binding.source_path}:${binding.symbol}:${index}`;
+                      return sourceUrl ? (
+                        <a
+                          className="wiki-multimodal-binding"
+                          href={sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          key={key}
+                        >
+                          {content}
+                        </a>
+                      ) : (
+                        <div className="wiki-multimodal-binding" key={key}>
+                          {content}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="wiki-multimodal-empty">
+                    No source candidates were found for this visual.
+                  </p>
+                )}
+              </article>
+            </div>
+          )}
+        </>
+      ) : (
+        <p className="wiki-multimodal-empty">No visual facts have been extracted.</p>
+      )}
     </section>
   );
 }
@@ -339,6 +527,9 @@ export default function WikiPageView({
   // case the rail keeps its static "Last indexed" label.
   const [commits, setCommits] = useState<CommitRef[]>([]);
   const [selectedCommit, setSelectedCommit] = useState<string | undefined>(undefined);
+  const [multimodalSummary, setMultimodalSummary] =
+    useState<WikiMultimodalSummary | null>(null);
+  const [multimodalError, setMultimodalError] = useState<string | null>(null);
   const commitCost = commitEvidence(commits, selectedCommit);
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -346,6 +537,9 @@ export default function WikiPageView({
     let cancelled = false;
     setCommits([]);
     setSelectedCommit(undefined);
+    setMultimodalSummary(null);
+    setMultimodalError(null);
+    const controller = new AbortController();
 
     fetchRepos()
       .then((rs) => {
@@ -361,6 +555,15 @@ export default function WikiPageView({
         setSelectedCommit(w.selected ?? undefined);
       })
       .catch(() => {});
+    fetchWikiMultimodalSummary(repoId, { signal: controller.signal })
+      .then((summary) => {
+        if (!cancelled) setMultimodalSummary(summary);
+      })
+      .catch((cause) => {
+        if (!cancelled && cause instanceof Error && cause.name !== "AbortError") {
+          setMultimodalError(cause.message);
+        }
+      });
     setTocLoading(true);
     setError(null);
     fetchWikiTree(repoId)
@@ -375,6 +578,7 @@ export default function WikiPageView({
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [repoId]);
 
@@ -834,6 +1038,14 @@ export default function WikiPageView({
               ) : null}
               {page?.media_slots && page.media_slots.length > 0 && (
                 <MultimodalMedia slots={page.media_slots} repo={repo} />
+              )}
+              {activeId === "overview" && multimodalSummary && (
+                <MultimodalKnowledgePanel summary={multimodalSummary} repo={repo} />
+              )}
+              {activeId === "overview" && multimodalError && (
+                <div className="wiki-multimodal-error" role="status">
+                  Multimodal evidence is unavailable: {multimodalError}
+                </div>
               )}
               {page ? (
                 withheldByQualityGuard ? (

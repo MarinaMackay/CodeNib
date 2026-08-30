@@ -256,6 +256,23 @@ python scripts/build_multimodal_knowledge.py /path/to/repository \
   --exclude-root /path/to/repository/generated
 ```
 
+To expose a validated bundle in the local Wiki overview, write it to the
+repository-local discovery path and then serve the Wiki normally:
+
+```text
+python scripts/build_multimodal_knowledge.py /path/to/repository \
+  --output /path/to/repository/.codenib/multimodal-knowledge.json
+codenib wiki /path/to/repository
+```
+
+The overview requests a bounded projection from
+`/api/repos/{repo_id}/wiki-multimodal`. It displays only persisted visual facts
+and source-binding candidates from a bundle that passes the normal storage
+validation. Repositories without a bundle show the normal Wiki with no empty
+placeholder panel. Matches below `0.8` are labelled as candidates; stronger
+matches retain a high-confidence label and their underlying evidence instead
+of being presented as independently verified citations.
+
 To use an OpenAI-compatible VLM for visual fact extraction:
 
 ```text

@@ -21,6 +21,10 @@ import codenib.wiki.media_generation as media_generation
 from codenib.repository_source_selection import RepositorySourceSelection
 from codenib.source_fingerprint import capture_repository_source
 from codenib.web.schemas import ChatRequest, ChatResponse
+from codenib.wiki import (
+    build_multimodal_repository_knowledge,
+    save_multimodal_knowledge_bundle,
+)
 
 
 def test_request_timing_header_and_slow_log_exclude_query(monkeypatch, caplog):
@@ -1335,6 +1339,91 @@ def test_wiki_page_can_skip_media_materialization_for_preload(monkeypatch):
     assert "asset" not in page["media_slots"][0]
     assert "server-only preload evidence" not in str(page)
     assert slot["evidence_pack"]["snippet"] == "server-only preload evidence"
+
+
+def test_wiki_multimodal_bundle_serves_validated_repository_data(tmp_path, monkeypatch):
+    repo_id = "owner/repo"
+    repo_dir = tmp_path / "repo"
+    docs = repo_dir / "docs"
+    source = repo_dir / "src"
+    docs.mkdir(parents=True)
+    source.mkdir()
+    (docs / "architecture.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><text>WikiBuilder</text></svg>',
+        encoding="utf-8",
+    )
+    (source / "wiki.py").write_text("class WikiBuilder:\n    pass\n", encoding="utf-8")
+    bundle = build_multimodal_repository_knowledge(repo_dir)
+    output = repo_dir / ".codenib" / "multimodal-knowledge.json"
+    save_multimodal_knowledge_bundle(bundle, output)
+    served = SimpleNamespace(entry=SimpleNamespace(repo_dir=str(repo_dir)))
+
+    class Registry:
+        @contextmanager
+        def pin(self, observed_repo_id):
+            assert observed_repo_id == repo_id
+            yield served
+
+    monkeypatch.setattr(web_app.app.state, "registry", Registry(), raising=False)
+    monkeypatch.setattr(
+        web_app,
+        "load_config",
+        lambda: SimpleNamespace(data_dir=str(tmp_path / "data")),
+    )
+
+    summary = asyncio.run(web_app.wiki_multimodal_bundle(repo_id))
+
+    assert summary["bundle_sha256"] == bundle["bundle_sha256"]
+    assert summary["media_manifest"]["artifact_count"] == 1
+    assert summary["visual_facts_manifest"]["fact_count"] == 1
+    assert summary["knowledge_view"]["entry_count"] == 1
+    assert summary["visual_facts_manifest"]["facts"][0]["artifact_path"] == (
+        "docs/architecture.svg"
+    )
+    assert "embedded_text" not in summary["media_manifest"]["artifacts"][0]
+
+
+def test_wiki_multimodal_bundle_returns_404_when_absent(tmp_path, monkeypatch):
+    served = SimpleNamespace(entry=SimpleNamespace(repo_dir=str(tmp_path / "repo")))
+
+    class Registry:
+        @contextmanager
+        def pin(self, _repo_id):
+            yield served
+
+    monkeypatch.setattr(web_app.app.state, "registry", Registry(), raising=False)
+    monkeypatch.setattr(
+        web_app, "load_config", lambda: SimpleNamespace(data_dir=str(tmp_path))
+    )
+
+    with pytest.raises(web_app.HTTPException) as error:
+        asyncio.run(web_app.wiki_multimodal_bundle("owner/repo"))
+
+    assert error.value.status_code == 404
+
+
+def test_wiki_multimodal_bundle_rejects_invalid_persisted_data(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    output = repo_dir / ".codenib" / "multimodal-knowledge.json"
+    output.parent.mkdir(parents=True)
+    output.write_text('{"schema":"not-a-CodeNib-bundle"}', encoding="utf-8")
+    served = SimpleNamespace(entry=SimpleNamespace(repo_dir=str(repo_dir)))
+
+    class Registry:
+        @contextmanager
+        def pin(self, _repo_id):
+            yield served
+
+    monkeypatch.setattr(web_app.app.state, "registry", Registry(), raising=False)
+    monkeypatch.setattr(
+        web_app, "load_config", lambda: SimpleNamespace(data_dir=str(tmp_path))
+    )
+
+    with pytest.raises(web_app.HTTPException) as error:
+        asyncio.run(web_app.wiki_multimodal_bundle("owner/repo"))
+
+    assert error.value.status_code == 500
+    assert "invalid" in str(error.value.detail).lower()
 
 
 def test_wiki_media_storage_keys_cannot_traverse_data_root(tmp_path):
