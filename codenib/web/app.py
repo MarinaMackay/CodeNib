@@ -91,6 +91,8 @@ from .schemas import (
 )
 
 _WIKI_MEDIA_TYPES = {
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
     ".png": "image/png",
     ".svg": "image/svg+xml",
 }
