@@ -256,6 +256,29 @@ python scripts/build_multimodal_knowledge.py /path/to/repository \
   --exclude-root /path/to/repository/generated
 ```
 
+To derive validated diagram plans at the same time, request the graph sidecar
+and optional Mermaid sources:
+
+```text
+python scripts/build_multimodal_knowledge.py /path/to/repository \
+  --output /tmp/multimodal-knowledge.json \
+  --visual-graph-output /tmp/visual-graphs.json \
+  --visual-graph-mermaid-dir /tmp/visual-graphs
+```
+
+Each plan is bound to the knowledge-view hash and one repository artifact. Its
+nodes retain source paths, symbols, lines, and evidence when grounding exists;
+its edges come only from explicit visual fact relations. CodeNib does not infer
+call edges from captions. Node ids, edge endpoints, repository-relative paths,
+counts, fields, and content hashes are validated before a plan can compile to
+Mermaid. The generated `.mmd` files are an inspectable renderer input; the JSON
+manifest remains the provider-neutral contract for later Wiki UI or storyboard
+renderers.
+
+The local metadata extractor may produce node-only plans because it does not
+invent visual relations. A configured VLM can populate `facts.relations`; only
+those validated relations become graph edges.
+
 To use an OpenAI-compatible VLM for visual fact extraction:
 
 ```text

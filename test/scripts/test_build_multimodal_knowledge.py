@@ -32,6 +32,8 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
     generated.mkdir()
     (generated / "ignored.png").write_bytes(b"png")
     output = tmp_path / "bundle.json"
+    graph_output = tmp_path / "visual-graphs.json"
+    mermaid_dir = tmp_path / "mermaid"
 
     completed = subprocess.run(
         [
@@ -45,6 +47,10 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
             "abc123",
             "--exclude-root",
             str(generated),
+            "--visual-graph-output",
+            str(graph_output),
+            "--visual-graph-mermaid-dir",
+            str(mermaid_dir),
         ],
         check=True,
         stdout=subprocess.PIPE,
@@ -55,10 +61,22 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
     bundle = json.loads(output.read_text(encoding="utf-8"))
     assert counts["media_artifacts"] == 1
     assert counts["knowledge_entries"] == 1
+    assert counts["visual_graph_plans"] == 1
     assert bundle["schema"] == "codenib.multimodal-knowledge-bundle.v1"
     assert len(bundle["bundle_sha256"]) == 64
     assert bundle["media_manifest"]["commit"] == "abc123"
     assert bundle["knowledge_view"]["entry_count"] == 1
+    graph_manifest = json.loads(graph_output.read_text(encoding="utf-8"))
+    assert graph_manifest["schema"] == "codenib.visual-graph-manifest.v1"
+    assert (
+        graph_manifest["knowledge_view_sha256"]
+        == bundle["knowledge_view"]["view_sha256"]
+    )
+    mermaid_files = list(mermaid_dir.glob("*.mmd"))
+    assert len(mermaid_files) == 1
+    mermaid = mermaid_files[0]
+    assert "architecture.svg" in mermaid.name
+    assert mermaid.read_text(encoding="utf-8").startswith("flowchart LR\n")
 
 
 def test_build_multimodal_knowledge_script_rejects_missing_repository(tmp_path):
@@ -102,6 +120,10 @@ def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):
             "qwen",
             "--visual-facts-timeout",
             "15",
+            "--visual-graph-output",
+            str(tmp_path / "graphs.json"),
+            "--visual-graph-mermaid-dir",
+            str(tmp_path / "mermaid"),
         ]
     )
 
@@ -110,6 +132,8 @@ def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):
     assert args.visual_facts_api_key_env == "TEST_VLM_KEY"
     assert args.visual_facts_provider == "qwen"
     assert args.visual_facts_timeout == 15
+    assert args.visual_graph_output == str(tmp_path / "graphs.json")
+    assert args.visual_graph_mermaid_dir == str(tmp_path / "mermaid")
 
 
 def test_build_multimodal_knowledge_script_rejects_partial_vlm_config(tmp_path):
