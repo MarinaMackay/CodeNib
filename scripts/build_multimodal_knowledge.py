@@ -25,9 +25,12 @@ from codenib.wiki import (  # noqa: E402
     OpenAICompatibleVisualFactExtractor,
     build_multimodal_repository_knowledge,
     build_visual_graph_manifest,
+    build_visual_storyboard_manifest,
     compile_visual_graph_plan_to_mermaid,
+    compile_visual_storyboard_to_markdown,
     save_multimodal_knowledge_bundle,
     save_visual_graph_manifest,
+    save_visual_storyboard_manifest,
 )
 
 
@@ -102,6 +105,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional directory to write one compiled Mermaid file per plan",
     )
+    parser.add_argument(
+        "--visual-storyboard-output",
+        default=None,
+        help="Optional path to write a validated video-ready storyboard manifest",
+    )
+    parser.add_argument(
+        "--visual-storyboard-markdown-dir",
+        default=None,
+        help="Optional directory to write one inspectable Markdown shot list per asset",
+    )
     return parser
 
 
@@ -127,12 +140,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     save_multimodal_knowledge_bundle(bundle, args.output)
     visual_graph_manifest = None
-    if args.visual_graph_output or args.visual_graph_mermaid_dir:
+    if (
+        args.visual_graph_output
+        or args.visual_graph_mermaid_dir
+        or args.visual_storyboard_output
+        or args.visual_storyboard_markdown_dir
+    ):
         visual_graph_manifest = build_visual_graph_manifest(bundle["knowledge_view"])
     if args.visual_graph_output:
         save_visual_graph_manifest(visual_graph_manifest, args.visual_graph_output)
     if args.visual_graph_mermaid_dir:
         _write_mermaid_plans(visual_graph_manifest, args.visual_graph_mermaid_dir)
+    visual_storyboard_manifest = None
+    if args.visual_storyboard_output or args.visual_storyboard_markdown_dir:
+        visual_storyboard_manifest = build_visual_storyboard_manifest(
+            visual_graph_manifest
+        )
+    if args.visual_storyboard_output:
+        save_visual_storyboard_manifest(
+            visual_storyboard_manifest, args.visual_storyboard_output
+        )
+    if args.visual_storyboard_markdown_dir:
+        _write_storyboards(
+            visual_storyboard_manifest, args.visual_storyboard_markdown_dir
+        )
     counts = {
         "media_artifacts": bundle["media_manifest"]["artifact_count"],
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
@@ -142,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     if visual_graph_manifest is not None:
         counts["visual_graph_plans"] = visual_graph_manifest["plan_count"]
+    if visual_storyboard_manifest is not None:
+        counts["visual_storyboards"] = visual_storyboard_manifest["storyboard_count"]
     print(json.dumps(counts, sort_keys=True))
     return 0
 
@@ -174,11 +207,26 @@ def _write_mermaid_plans(manifest: dict, output_dir: str | Path) -> None:
         _atomic_write_text(target, compile_visual_graph_plan_to_mermaid(plan))
 
 
+def _write_storyboards(manifest: dict, output_dir: str | Path) -> None:
+    destination = Path(output_dir).expanduser()
+    destination.mkdir(parents=True, exist_ok=True)
+    for index, storyboard in enumerate(manifest["storyboards"], start=1):
+        filename = _artifact_filename(storyboard["artifact_path"], index, ".md")
+        _atomic_write_text(
+            destination / filename,
+            compile_visual_storyboard_to_markdown(storyboard),
+        )
+
+
 def _mermaid_filename(artifact_path: str, index: int) -> str:
+    return _artifact_filename(artifact_path, index, ".mmd")
+
+
+def _artifact_filename(artifact_path: str, index: int, suffix: str) -> str:
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", artifact_path).strip(".-")
     stem = stem[:80].rstrip(".-") or "artifact"
     digest = hashlib.sha256(artifact_path.encode("utf-8")).hexdigest()[:12]
-    return f"{index:04d}-{stem}-{digest}.mmd"
+    return f"{index:04d}-{stem}-{digest}{suffix}"
 
 
 def _atomic_write_text(path: Path, value: str) -> None:

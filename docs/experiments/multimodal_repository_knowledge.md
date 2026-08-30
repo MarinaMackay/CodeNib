@@ -280,6 +280,26 @@ The local metadata extractor may produce node-only plans because it does not
 invent visual relations. A configured VLM can populate `facts.relations`; only
 those validated relations become graph edges.
 
+To produce a video-ready but provider-neutral storyboard alongside the graph
+plans:
+
+```text
+python scripts/build_multimodal_knowledge.py /path/to/repository \
+  --output /tmp/multimodal-knowledge.json \
+  --visual-storyboard-output /tmp/visual-storyboards.json \
+  --visual-storyboard-markdown-dir /tmp/visual-storyboards
+```
+
+Each frame records a controlled visual prompt, narration, duration, graph-node
+focus, and source citations down to path, symbol, and line. Relation frames are
+created only for validated graph edges. Node-only plans instead produce entity
+frames that explicitly avoid inferring unseen relationships. Weak lexical
+bindings remain visible in graph metadata but are not promoted to storyboard
+citations; exact or higher-confidence custom grounding is required. The resulting
+manifest is a shot-list contract for a future image/video backend; it does not
+claim that video has already been rendered. The Markdown files let reviewers
+inspect the same production plan without a model key.
+
 To use an OpenAI-compatible VLM for visual fact extraction:
 
 ```text
