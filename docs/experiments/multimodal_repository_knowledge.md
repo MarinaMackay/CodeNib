@@ -256,6 +256,35 @@ python scripts/build_multimodal_knowledge.py /path/to/repository \
   --exclude-root /path/to/repository/generated
 ```
 
+The default grounding remains dependency-free lexical matching. To require
+evidence returned by CodeNib's persisted BM25 index instead, use:
+
+```text
+python scripts/build_multimodal_knowledge.py /path/to/repository \
+  --output /tmp/multimodal-knowledge.json \
+  --grounding-indexes bm25 \
+  --grounding-cache-dir /path/to/index-cache \
+  --grounding-language python
+```
+
+`bm25` mode accepts only exact returned definitions and exact identifier
+occurrences; it does not treat an arbitrary top-k result as evidence. Use
+`--grounding-indexes bm25+lsp` to also build or load CodeNib's symbol graph and
+query its LSP-shaped definition/reference provider. That provider selects the
+available CodeGraph, SCIP FactQueryIndex, or native clangd query backend, so
+the wiki layer does not introduce another graph implementation.
+
+Index-backed scores remain bounded by the visual entity's extraction
+confidence. An exact source hit therefore cannot turn a weak metadata-derived
+entity into a high-confidence claim. Symbol candidates require symbol-specific
+evidence; path-only index evidence can bind only to a path-level source
+candidate. Index-returned targets are inserted before the bounded lexical
+candidate inventory, so a definition later in a large repository cannot be
+lost merely because the lexical scan reached its candidate limit first. The
+total candidate count still respects `--max-source-candidates`. Backend errors
+fail the build rather than silently reverting to lexical matches; an ordinary
+missing or ambiguous LSP symbol is skipped as a non-match.
+
 To derive validated diagram plans at the same time, request the graph sidecar
 and optional Mermaid sources:
 
