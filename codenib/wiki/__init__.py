@@ -42,6 +42,7 @@ from .media_incremental import (
     merge_incremental_visual_facts,
     plan_incremental_visual_fact_update,
 )
+from .media_index_grounding import IndexBackedVisualGroundingScorer
 from .media_knowledge import (
     build_multimodal_knowledge_view,
     find_visual_code_links,
@@ -80,6 +81,7 @@ __all__ = [
     "MULTIMODAL_KNOWLEDGE_BUNDLE_SCHEMA",
     "MULTIMODAL_KNOWLEDGE_BUNDLE_VERSION",
     "MultimodalKnowledgeToolRouter",
+    "IndexBackedVisualGroundingScorer",
     "VISUAL_GRAPH_MANIFEST_SCHEMA",
     "VISUAL_GRAPH_MANIFEST_VERSION",
     "VISUAL_GRAPH_PLAN_SCHEMA",

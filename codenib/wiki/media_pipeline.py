@@ -56,6 +56,13 @@ def build_multimodal_repository_knowledge(
         selection=selection,
         max_candidates=max_source_candidates,
     )
+    augment_candidates = getattr(scorer, "augment_source_candidates", None)
+    if callable(augment_candidates):
+        source_candidates = augment_candidates(
+            visual_facts_manifest,
+            source_candidates,
+            max_candidates=max_source_candidates,
+        )
     grounding_manifest = ground_visual_facts_to_sources(
         visual_facts_manifest,
         source_candidates,
