@@ -12,12 +12,12 @@ to a real symbol span pulled from the indexes (no fabricated lines).
 
 from .builder import WikiBuilder
 from .media_artifacts import discover_media_manifest
-from .media_evidence import build_media_evidence_pack
 from .media_eval import (
     evaluate_mmwiki_predictions,
     evaluate_visual_code_grounding,
     evaluate_visual_fact_extraction,
 )
+from .media_evidence import build_media_evidence_pack
 from .media_facts import build_visual_facts_manifest, deterministic_visual_facts
 from .media_grounding import (
     VisualGroundingScorer,
@@ -29,6 +29,7 @@ from .media_incremental import (
     merge_incremental_visual_facts,
     plan_incremental_visual_fact_update,
 )
+from .media_index_grounding import IndexBackedVisualGroundingScorer
 from .media_knowledge import (
     build_multimodal_knowledge_view,
     find_visual_code_links,
@@ -54,6 +55,7 @@ __all__ = [
     "MULTIMODAL_KNOWLEDGE_BUNDLE_SCHEMA",
     "MULTIMODAL_KNOWLEDGE_BUNDLE_VERSION",
     "MultimodalKnowledgeToolRouter",
+    "IndexBackedVisualGroundingScorer",
     "WikiBuilder",
     "OpenAICompatibleVisualFactExtractor",
     "VisualGroundingScorer",
