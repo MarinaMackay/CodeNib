@@ -440,8 +440,10 @@ def _entry_embedding_text(
             _bounded_text(binding.get(key), label=f"binding.{key}", allow_empty=True)
             for key in ("entity_name", "source_path", "symbol", "evidence")
         )
+    text = " ".join(part for part in parts if part)
     return _bounded_text(
-        " ".join(part for part in parts if part), label="embedding text"
+        _truncate_utf8(text, max_bytes=_MAX_TEXT_BYTES),
+        label="embedding text",
     )
 
 
@@ -768,6 +770,15 @@ def _bounded_text(value: Any, *, label: str, allow_empty: bool = False) -> str:
     if any(ord(character) < 0x20 or ord(character) == 0x7F for character in text):
         raise ValueError(f"{label} contains control characters")
     return text
+
+
+def _truncate_utf8(value: str, *, max_bytes: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    marker = " …".encode("utf-8")
+    prefix = encoded[: max_bytes - len(marker)].decode("utf-8", errors="ignore")
+    return prefix.rstrip() + marker.decode("utf-8")
 
 
 def _relative_path(value: Any, *, label: str) -> str:

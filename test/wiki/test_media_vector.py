@@ -187,6 +187,27 @@ def test_visual_vector_index_rejects_a_tampered_knowledge_view():
         build_visual_vector_index(view)
 
 
+def test_visual_vector_index_truncates_large_grounding_context_at_utf8_boundary():
+    view = _knowledge_view()
+    view["entries"][0]["bindings"] = [
+        {
+            "source_path": f"src/component_{index}.py",
+            "symbol": f"Component{index}",
+            "entity_name": f"Component{index}",
+            "evidence": "路由调用边和精确符号定义 " * 16,
+        }
+        for index in range(80)
+    ]
+    _rehash_view(view)
+
+    index = build_visual_vector_index(view, dimensions=16)
+
+    text = index["records"][0]["embedding_text"]
+    assert text.endswith("…")
+    assert len(text.encode("utf-8")) <= 8192
+    assert "codenib/web/app.py" not in text
+
+
 def test_visual_vector_index_round_trip_and_tamper_detection(tmp_path):
     path = tmp_path / "visual-vector-index.json"
     index = build_visual_vector_index(_knowledge_view(), dimensions=16)
