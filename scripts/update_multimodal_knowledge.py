@@ -21,8 +21,10 @@ if _PROJECT_ROOT not in sys.path:
 from codenib.repository_source_selection import (  # noqa: E402
     DEFAULT_REPOSITORY_SOURCE_SELECTION,
 )
-from codenib.wiki import OpenAICompatibleVisualFactExtractor  # noqa: E402
+from codenib.wiki import IndexBackedVisualGroundingScorer  # noqa: E402
 from codenib.wiki import (
+    OpenAICompatibleVisualFactExtractor,
+    build_index_backed_visual_grounding_scorer,
     build_multimodal_knowledge_bundle,
     build_multimodal_knowledge_view,
     build_visual_facts_manifest,
@@ -75,6 +77,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=8192,
         help="Maximum source-symbol candidates to consider for grounding",
+    )
+    parser.add_argument(
+        "--grounding-indexes",
+        choices=("lexical", "bm25", "bm25+lsp"),
+        default="lexical",
+        help="Grounding evidence backend (default: deterministic lexical)",
+    )
+    parser.add_argument(
+        "--grounding-cache-dir",
+        default=None,
+        help="Optional CodeNib index cache used by index-backed grounding",
+    )
+    parser.add_argument(
+        "--grounding-language",
+        action="append",
+        default=[],
+        help="Language to index for grounding; may be repeated (default: python)",
     )
     parser.add_argument(
         "--dry-run",
@@ -156,13 +175,25 @@ def main(argv: list[str] | None = None) -> int:
             reusable_fact_packs=plan["reusable_fact_packs"],
             new_fact_packs=extracted_facts["facts"],
         )
+        scorer = _build_visual_grounding_scorer(args, repo_path=repo)
         source_candidates = discover_source_symbol_candidates(
             repo,
             exclude_roots=tuple(args.exclude_root),
             selection=DEFAULT_REPOSITORY_SOURCE_SELECTION,
             max_candidates=args.max_source_candidates,
         )
-        grounding = ground_visual_facts_to_sources(visual_facts, source_candidates)
+        augment_candidates = getattr(scorer, "augment_source_candidates", None)
+        if callable(augment_candidates):
+            source_candidates = augment_candidates(
+                visual_facts,
+                source_candidates,
+                max_candidates=args.max_source_candidates,
+            )
+        grounding = ground_visual_facts_to_sources(
+            visual_facts,
+            source_candidates,
+            scorer=scorer,
+        )
         knowledge_view = build_multimodal_knowledge_view(
             current_media, visual_facts, grounding
         )
@@ -183,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
                 plan,
                 extracted_facts,
                 extractor_id=extractor_id,
+                grounding_backend=args.grounding_indexes,
                 output_path=output_path,
             ),
             sort_keys=True,
@@ -214,6 +246,22 @@ def _extractor(
             repo_path=repo,
         ),
         identity,
+    )
+
+
+def _build_visual_grounding_scorer(
+    args: argparse.Namespace,
+    *,
+    repo_path: Path,
+) -> IndexBackedVisualGroundingScorer | None:
+    mode = str(args.grounding_indexes or "lexical")
+    if mode == "lexical":
+        return None
+    return build_index_backed_visual_grounding_scorer(
+        repo_path,
+        mode=mode,
+        languages=tuple(args.grounding_language or ("python",)),
+        cache_dir=args.grounding_cache_dir,
     )
 
 
@@ -262,12 +310,14 @@ def _update_summary(
     extracted_facts: dict,
     *,
     extractor_id: str,
+    grounding_backend: str,
     output_path: Path,
 ) -> dict:
     return {
         **plan["media_diff"]["counts"],
         "dry_run": False,
         "extractor": extractor_id,
+        "grounding_backend": grounding_backend,
         "reused_visual_fact_packs": len(plan["reusable_fact_packs"]),
         "regenerated_visual_fact_packs": extracted_facts["fact_count"],
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],

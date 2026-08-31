@@ -275,6 +275,61 @@ class IndexBackedVisualGroundingScorer:
         _retain_best(evidence, (path, ""), score * 0.8, detail, line=0)
 
 
+def build_index_backed_visual_grounding_scorer(
+    repo_path: str | Path,
+    *,
+    mode: str = "bm25",
+    languages: Iterable[str] = ("python",),
+    cache_dir: str | Path | None = None,
+) -> IndexBackedVisualGroundingScorer:
+    """Load CodeNib's existing indexes for visual-to-code grounding.
+
+    Index construction is intentionally lazy so importing the Wiki package does
+    not initialize compiler or LSP dependencies. Both full and incremental
+    bundle builders use this factory, keeping backend selection identical.
+    """
+
+    if mode not in {"bm25", "bm25+lsp"}:
+        raise ValueError("index grounding mode must be 'bm25' or 'bm25+lsp'")
+    normalized_languages = tuple(
+        language.strip()
+        for language in languages
+        if isinstance(language, str) and language.strip()
+    ) or ("python",)
+
+    from codenib.compiler.skill_context import build_skill_contexts
+
+    skill_ids = ["bm25_search"]
+    if mode == "bm25+lsp":
+        skill_ids.extend(["lsp_definition", "lsp_references"])
+    contexts = build_skill_contexts(
+        str(Path(repo_path).expanduser()),
+        skill_ids,
+        languages=normalized_languages,
+        cache_dir=str(cache_dir) if cache_dir is not None else None,
+        skills_dir=str(Path(__file__).resolve().parents[1] / "agent" / "skills"),
+    )
+    retrieve = contexts.get("retrieve")
+    bm25 = getattr(retrieve, "bm25", None)
+    expand = contexts.get("expand")
+    lsp_provider = getattr(expand, "lsp_provider", None)
+    if mode == "bm25+lsp" and lsp_provider is None:
+        code_graph = getattr(expand, "code_graph", None)
+        if code_graph is not None:
+            from codenib.agent.lsp_provider import StaticLSPProvider
+
+            lsp_provider = StaticLSPProvider(code_graph)
+    if bm25 is None:
+        raise ValueError("index-backed grounding did not load a BM25 index")
+    if mode == "bm25+lsp" and lsp_provider is None:
+        raise ValueError("bm25+lsp grounding did not load an LSP provider")
+    return IndexBackedVisualGroundingScorer(
+        bm25=bm25,
+        lsp_provider=lsp_provider if mode == "bm25+lsp" else None,
+        repo_path=repo_path,
+    )
+
+
 def _entity_hints(entity: Mapping[str, Any]) -> tuple[str, ...]:
     values: list[Any] = [entity.get("name")]
     raw = entity.get("grounding_candidates")

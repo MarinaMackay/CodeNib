@@ -10,8 +10,13 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
-from scripts.update_multimodal_knowledge import _extractor_identity
+from scripts.update_multimodal_knowledge import (
+    _build_visual_grounding_scorer,
+    _extractor_identity,
+    build_parser,
+)
 
 
 def _make_repo(tmp_path: Path) -> Path:
@@ -85,6 +90,7 @@ def test_update_reuses_unchanged_fact_pack_and_preserves_mode(tmp_path):
     assert summary["unchanged"] == 1
     assert summary["reused_visual_fact_packs"] == 1
     assert summary["regenerated_visual_fact_packs"] == 0
+    assert summary["grounding_backend"] == "lexical"
     assert _load(bundle)["bundle_sha256"] == summary["bundle_sha256"]
     assert stat.S_IMODE(bundle.stat().st_mode) == 0o640
 
@@ -250,3 +256,64 @@ def test_extractor_identity_binds_provider_and_model_with_bounded_fallback():
 
     assert len(identity.encode("utf-8")) <= 128
     assert "/sha256:" in identity
+
+
+def test_update_parser_accepts_index_grounding_options(tmp_path):
+    args = build_parser().parse_args(
+        [
+            str(tmp_path),
+            "--previous",
+            str(tmp_path / "bundle.json"),
+            "--grounding-indexes",
+            "bm25+lsp",
+            "--grounding-cache-dir",
+            str(tmp_path / "indexes"),
+            "--grounding-language",
+            "python",
+            "--grounding-language",
+            "rust",
+        ]
+    )
+
+    assert args.grounding_indexes == "bm25+lsp"
+    assert args.grounding_cache_dir == str(tmp_path / "indexes")
+    assert args.grounding_language == ["python", "rust"]
+
+
+def test_update_wires_same_bm25_and_lsp_contexts_as_full_build(tmp_path, monkeypatch):
+    calls = []
+    bm25 = object()
+    lsp = object()
+
+    def fake_build(repo_path, skill_ids, **options):
+        calls.append((repo_path, skill_ids, options))
+        return {
+            "retrieve": SimpleNamespace(bm25=bm25),
+            "expand": SimpleNamespace(lsp_provider=lsp),
+        }
+
+    monkeypatch.setattr(
+        "codenib.compiler.skill_context.build_skill_contexts",
+        fake_build,
+    )
+    args = build_parser().parse_args(
+        [
+            str(tmp_path),
+            "--previous",
+            str(tmp_path / "bundle.json"),
+            "--grounding-indexes",
+            "bm25+lsp",
+            "--grounding-cache-dir",
+            str(tmp_path / "indexes"),
+            "--grounding-language",
+            "rust",
+        ]
+    )
+
+    scorer = _build_visual_grounding_scorer(args, repo_path=tmp_path)
+
+    assert scorer.bm25 is bm25
+    assert scorer.lsp_provider is lsp
+    assert calls[0][1] == ["bm25_search", "lsp_definition", "lsp_references"]
+    assert calls[0][2]["languages"] == ("rust",)
+    assert calls[0][2]["cache_dir"] == str(tmp_path / "indexes")
