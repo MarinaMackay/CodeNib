@@ -42,6 +42,7 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
     mermaid_dir = tmp_path / "mermaid"
     storyboard_output = tmp_path / "storyboards.json"
     storyboard_dir = tmp_path / "storyboards"
+    archify_dir = tmp_path / "archify"
 
     completed = subprocess.run(
         [
@@ -63,6 +64,8 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
             str(storyboard_output),
             "--visual-storyboard-markdown-dir",
             str(storyboard_dir),
+            "--visual-graph-archify-dir",
+            str(archify_dir),
         ],
         check=True,
         stdout=subprocess.PIPE,
@@ -100,6 +103,11 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
     assert len(storyboard_files) == 1
     assert "architecture.svg" in storyboard_files[0].name
     assert "Visual direction:" in storyboard_files[0].read_text(encoding="utf-8")
+    archify_files = list(archify_dir.glob("*.architecture.json"))
+    assert len(archify_files) == 1
+    archify = json.loads(archify_files[0].read_text(encoding="utf-8"))
+    assert archify["diagram_type"] == "architecture"
+    assert len(archify["components"]) == len(graph_manifest["plans"][0]["nodes"])
 
 
 def test_build_multimodal_knowledge_script_rejects_missing_repository(tmp_path):
@@ -151,6 +159,12 @@ def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):
             str(tmp_path / "storyboards.json"),
             "--visual-storyboard-markdown-dir",
             str(tmp_path / "storyboards"),
+            "--visual-graph-archify-dir",
+            str(tmp_path / "archify"),
+            "--archify-repository-url",
+            "https://github.com/sysevol-ai/CodeNib",
+            "--archify-revision",
+            "a" * 40,
         ]
     )
 
@@ -163,6 +177,9 @@ def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):
     assert args.visual_graph_mermaid_dir == str(tmp_path / "mermaid")
     assert args.visual_storyboard_output == str(tmp_path / "storyboards.json")
     assert args.visual_storyboard_markdown_dir == str(tmp_path / "storyboards")
+    assert args.visual_graph_archify_dir == str(tmp_path / "archify")
+    assert args.archify_repository_url == "https://github.com/sysevol-ai/CodeNib"
+    assert args.archify_revision == "a" * 40
 
 
 def test_build_multimodal_knowledge_parser_accepts_index_grounding(tmp_path):

@@ -28,8 +28,10 @@ from codenib.wiki import (
     build_multimodal_repository_knowledge,
     build_visual_graph_manifest,
     build_visual_storyboard_manifest,
+    compile_visual_graph_plan_to_archify,
     compile_visual_graph_plan_to_mermaid,
     compile_visual_storyboard_to_markdown,
+    save_archify_architecture,
     save_multimodal_knowledge_bundle,
     save_visual_graph_manifest,
     save_visual_storyboard_manifest,
@@ -134,6 +136,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional directory to write one inspectable Markdown shot list per asset",
     )
+    parser.add_argument(
+        "--visual-graph-archify-dir",
+        default=None,
+        help="Optional directory to write Archify architecture JSON per plan",
+    )
+    parser.add_argument(
+        "--archify-repository-url",
+        default=None,
+        help="Public GitHub repository URL for revision-pinned Archify evidence",
+    )
+    parser.add_argument(
+        "--archify-revision",
+        default=None,
+        help="Full repository commit SHA for revision-pinned Archify evidence",
+    )
+    parser.add_argument(
+        "--archify-min-grounding-score",
+        type=float,
+        default=0.8,
+        help="Minimum grounding score exported as Archify source evidence",
+    )
     return parser
 
 
@@ -166,6 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.visual_graph_mermaid_dir
         or args.visual_storyboard_output
         or args.visual_storyboard_markdown_dir
+        or args.visual_graph_archify_dir
     ):
         visual_graph_manifest = build_visual_graph_manifest(bundle["knowledge_view"])
     if args.visual_graph_output:
@@ -185,6 +209,11 @@ def main(argv: list[str] | None = None) -> int:
         _write_storyboards(
             visual_storyboard_manifest, args.visual_storyboard_markdown_dir
         )
+    if args.visual_graph_archify_dir:
+        try:
+            _write_archify_plans(visual_graph_manifest, args)
+        except ValueError as exc:
+            parser.error(str(exc))
     counts = {
         "grounding_backend": args.grounding_indexes,
         "media_artifacts": bundle["media_manifest"]["artifact_count"],
@@ -256,6 +285,20 @@ def _write_storyboards(manifest: dict, output_dir: str | Path) -> None:
         )
 
 
+def _write_archify_plans(manifest: dict, args: argparse.Namespace) -> None:
+    destination = Path(args.visual_graph_archify_dir).expanduser()
+    destination.mkdir(parents=True, exist_ok=True)
+    for index, plan in enumerate(manifest["plans"], start=1):
+        document = compile_visual_graph_plan_to_archify(
+            plan,
+            repository_url=args.archify_repository_url,
+            revision=args.archify_revision,
+            minimum_grounding_score=args.archify_min_grounding_score,
+        )
+        target = destination / _archify_filename(plan["artifact_path"], index)
+        save_archify_architecture(document, target)
+
+
 def _mermaid_filename(artifact_path: str, index: int) -> str:
     return _artifact_filename(artifact_path, index, ".mmd")
 
@@ -265,6 +308,13 @@ def _artifact_filename(artifact_path: str, index: int, suffix: str) -> str:
     stem = stem[:80].rstrip(".-") or "artifact"
     digest = hashlib.sha256(artifact_path.encode("utf-8")).hexdigest()[:12]
     return f"{index:04d}-{stem}-{digest}{suffix}"
+
+
+def _archify_filename(artifact_path: str, index: int) -> str:
+    return (
+        _mermaid_filename(artifact_path, index).removesuffix(".mmd")
+        + ".architecture.json"
+    )
 
 
 def _atomic_write_text(path: Path, value: str) -> None:
