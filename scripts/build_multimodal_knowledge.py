@@ -22,6 +22,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 from codenib.wiki import (  # noqa: E402
+    IndexBackedVisualGroundingScorer,
     OpenAICompatibleVisualFactExtractor,
     build_multimodal_repository_knowledge,
     build_visual_graph_manifest,
@@ -65,6 +66,23 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=8192,
         help="Maximum source-symbol candidates to consider for grounding",
+    )
+    parser.add_argument(
+        "--grounding-indexes",
+        choices=("lexical", "bm25", "bm25+lsp"),
+        default="lexical",
+        help="Grounding evidence backend (default: deterministic lexical)",
+    )
+    parser.add_argument(
+        "--grounding-cache-dir",
+        default=None,
+        help="Optional CodeNib index cache used by index-backed grounding",
+    )
+    parser.add_argument(
+        "--grounding-language",
+        action="append",
+        default=[],
+        help="Language to index for grounding; may be repeated (default: python)",
     )
     parser.add_argument(
         "--visual-facts-model",
@@ -128,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"repository root is not a directory: {repo}")
     try:
         extractor = _build_visual_fact_extractor(args, repo_path=repo)
+        scorer = _build_visual_grounding_scorer(args, repo_path=repo)
     except ValueError as exc:
         parser.error(str(exc))
     bundle = build_multimodal_repository_knowledge(
@@ -135,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
         commit=args.commit,
         exclude_roots=tuple(args.exclude_root),
         extractor=extractor,
+        scorer=scorer,
         max_artifacts=args.max_artifacts,
         max_source_candidates=args.max_source_candidates,
     )
@@ -165,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
             visual_storyboard_manifest, args.visual_storyboard_markdown_dir
         )
     counts = {
+        "grounding_backend": args.grounding_indexes,
         "media_artifacts": bundle["media_manifest"]["artifact_count"],
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
         "source_candidates": bundle["source_candidate_count"],
@@ -197,6 +218,47 @@ def _build_visual_fact_extractor(
         repo_path=repo_path,
     )
     return extractor
+
+
+def _build_visual_grounding_scorer(
+    args: argparse.Namespace,
+    *,
+    repo_path: Path,
+) -> IndexBackedVisualGroundingScorer | None:
+    mode = str(args.grounding_indexes or "lexical")
+    if mode == "lexical":
+        return None
+    from codenib.compiler.skill_context import build_skill_contexts
+
+    skill_ids = ["bm25_search"]
+    if mode == "bm25+lsp":
+        skill_ids.extend(["lsp_definition", "lsp_references"])
+    contexts = build_skill_contexts(
+        str(repo_path),
+        skill_ids,
+        languages=tuple(args.grounding_language or ("python",)),
+        cache_dir=args.grounding_cache_dir,
+        skills_dir=str(Path(_PROJECT_ROOT) / "codenib" / "agent" / "skills"),
+    )
+    retrieve = contexts.get("retrieve")
+    bm25 = getattr(retrieve, "bm25", None)
+    expand = contexts.get("expand")
+    lsp_provider = getattr(expand, "lsp_provider", None)
+    if mode == "bm25+lsp" and lsp_provider is None:
+        code_graph = getattr(expand, "code_graph", None)
+        if code_graph is not None:
+            from codenib.agent.lsp_provider import StaticLSPProvider
+
+            lsp_provider = StaticLSPProvider(code_graph)
+    if bm25 is None:
+        raise ValueError("index-backed grounding did not load a BM25 index")
+    if mode == "bm25+lsp" and lsp_provider is None:
+        raise ValueError("bm25+lsp grounding did not load an LSP provider")
+    return IndexBackedVisualGroundingScorer(
+        bm25=bm25,
+        lsp_provider=lsp_provider if mode == "bm25+lsp" else None,
+        repo_path=repo_path,
+    )
 
 
 def _write_mermaid_plans(manifest: dict, output_dir: str | Path) -> None:
