@@ -17,9 +17,10 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from codenib.wiki import (  # noqa: E402
-    IndexBackedVisualGroundingScorer,
+from codenib.wiki import IndexBackedVisualGroundingScorer  # noqa: E402
+from codenib.wiki import (
     OpenAICompatibleVisualFactExtractor,
+    build_index_backed_visual_grounding_scorer,
     build_multimodal_repository_knowledge,
     save_multimodal_knowledge_bundle,
 )
@@ -169,36 +170,11 @@ def _build_visual_grounding_scorer(
     mode = str(args.grounding_indexes or "lexical")
     if mode == "lexical":
         return None
-    from codenib.compiler.skill_context import build_skill_contexts
-
-    skill_ids = ["bm25_search"]
-    if mode == "bm25+lsp":
-        skill_ids.extend(["lsp_definition", "lsp_references"])
-    contexts = build_skill_contexts(
-        str(repo_path),
-        skill_ids,
+    return build_index_backed_visual_grounding_scorer(
+        repo_path,
+        mode=mode,
         languages=tuple(args.grounding_language or ("python",)),
         cache_dir=args.grounding_cache_dir,
-        skills_dir=str(Path(_PROJECT_ROOT) / "codenib" / "agent" / "skills"),
-    )
-    retrieve = contexts.get("retrieve")
-    bm25 = getattr(retrieve, "bm25", None)
-    expand = contexts.get("expand")
-    lsp_provider = getattr(expand, "lsp_provider", None)
-    if mode == "bm25+lsp" and lsp_provider is None:
-        code_graph = getattr(expand, "code_graph", None)
-        if code_graph is not None:
-            from codenib.agent.lsp_provider import StaticLSPProvider
-
-            lsp_provider = StaticLSPProvider(code_graph)
-    if bm25 is None:
-        raise ValueError("index-backed grounding did not load a BM25 index")
-    if mode == "bm25+lsp" and lsp_provider is None:
-        raise ValueError("bm25+lsp grounding did not load an LSP provider")
-    return IndexBackedVisualGroundingScorer(
-        bm25=bm25,
-        lsp_provider=lsp_provider if mode == "bm25+lsp" else None,
-        repo_path=repo_path,
     )
 
 
