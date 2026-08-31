@@ -7,8 +7,14 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
-from scripts.build_multimodal_knowledge import build_parser
+import pytest
+
+from scripts.build_multimodal_knowledge import (
+    _build_visual_grounding_scorer,
+    build_parser,
+)
 
 
 def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
@@ -110,6 +116,119 @@ def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):
     assert args.visual_facts_api_key_env == "TEST_VLM_KEY"
     assert args.visual_facts_provider == "qwen"
     assert args.visual_facts_timeout == 15
+
+
+def test_build_multimodal_knowledge_parser_accepts_index_grounding(tmp_path):
+    output = tmp_path / "bundle.json"
+
+    args = build_parser().parse_args(
+        [
+            str(tmp_path),
+            "--output",
+            str(output),
+            "--grounding-indexes",
+            "bm25+lsp",
+            "--grounding-cache-dir",
+            str(tmp_path / "indexes"),
+            "--grounding-language",
+            "python",
+            "--grounding-language",
+            "rust",
+        ]
+    )
+
+    assert args.grounding_indexes == "bm25+lsp"
+    assert args.grounding_cache_dir == str(tmp_path / "indexes")
+    assert args.grounding_language == ["python", "rust"]
+
+
+def test_build_multimodal_knowledge_wires_bm25_and_lsp_contexts(tmp_path, monkeypatch):
+    calls = []
+    bm25 = object()
+    lsp = object()
+
+    def fake_build(repo_path, skill_ids, **options):
+        calls.append((repo_path, skill_ids, options))
+        return {
+            "retrieve": SimpleNamespace(bm25=bm25),
+            "expand": SimpleNamespace(lsp_provider=lsp),
+        }
+
+    monkeypatch.setattr(
+        "codenib.compiler.skill_context.build_skill_contexts",
+        fake_build,
+    )
+    args = build_parser().parse_args(
+        [
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "bundle.json"),
+            "--grounding-indexes",
+            "bm25+lsp",
+            "--grounding-cache-dir",
+            str(tmp_path / "indexes"),
+            "--grounding-language",
+            "rust",
+        ]
+    )
+
+    scorer = _build_visual_grounding_scorer(args, repo_path=tmp_path)
+
+    assert scorer.bm25 is bm25
+    assert scorer.lsp_provider is lsp
+    assert calls[0][1] == ["bm25_search", "lsp_definition", "lsp_references"]
+    assert calls[0][2]["languages"] == ("rust",)
+    assert calls[0][2]["cache_dir"] == str(tmp_path / "indexes")
+
+
+def test_build_multimodal_knowledge_rejects_missing_requested_lsp(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "codenib.compiler.skill_context.build_skill_contexts",
+        lambda *_args, **_kwargs: {
+            "retrieve": SimpleNamespace(bm25=object()),
+        },
+    )
+    args = build_parser().parse_args(
+        [
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "bundle.json"),
+            "--grounding-indexes",
+            "bm25+lsp",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="did not load an LSP provider"):
+        _build_visual_grounding_scorer(args, repo_path=tmp_path)
+
+
+def test_build_multimodal_knowledge_wraps_loaded_graph_for_lsp(tmp_path, monkeypatch):
+    graph = SimpleNamespace(
+        name_to_vertex={},
+        get_node_info_by_name=lambda _name: None,
+    )
+    monkeypatch.setattr(
+        "codenib.compiler.skill_context.build_skill_contexts",
+        lambda *_args, **_kwargs: {
+            "retrieve": SimpleNamespace(bm25=object()),
+            "expand": SimpleNamespace(lsp_provider=None, code_graph=graph),
+        },
+    )
+    args = build_parser().parse_args(
+        [
+            str(tmp_path),
+            "--output",
+            str(tmp_path / "bundle.json"),
+            "--grounding-indexes",
+            "bm25+lsp",
+        ]
+    )
+
+    scorer = _build_visual_grounding_scorer(args, repo_path=tmp_path)
+
+    assert scorer.lsp_provider.graph is graph
 
 
 def test_build_multimodal_knowledge_script_rejects_partial_vlm_config(tmp_path):
