@@ -296,6 +296,40 @@ python scripts/build_multimodal_knowledge.py /path/to/repository \
   --visual-facts-provider qwen
 ```
 
+After the initial bundle exists, update it without paying to re-extract
+unchanged media:
+
+```text
+python scripts/update_multimodal_knowledge.py /path/to/repository \
+  --previous /tmp/multimodal-knowledge.json
+```
+
+The command validates the previous bundle, rediscovers the current repository
+media, and reuses a visual fact pack only when both its extraction inputs and
+extractor identity still match. Added or changed media is extracted, removed
+media is dropped, and source candidates plus visual-code grounding are always
+rebuilt. Rebuilding grounding means a code-only change can improve or remove a
+binding without another VLM request. The completed bundle is validated and
+written atomically; an extraction or validation failure leaves an in-place
+bundle untouched.
+
+Use `--dry-run` to inspect the deterministic update plan without extraction,
+grounding, or filesystem writes:
+
+```text
+python scripts/update_multimodal_knowledge.py /path/to/repository \
+  --previous /tmp/multimodal-knowledge.json \
+  --dry-run
+```
+
+`--output` retains the previous bundle and writes the result elsewhere, while
+`--force-reextract` explicitly refreshes all current artifacts. For a VLM
+update, pass the same model, API base and provider options accepted by the
+initial build command. Incremental reuse is model-specific: the persisted
+extractor identity includes both provider and model (or a bounded digest for a
+long identity), so switching models cannot silently retain facts from the old
+model.
+
 ```python
 from codenib.wiki import OpenAICompatibleVisualFactExtractor
 
