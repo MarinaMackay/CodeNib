@@ -11,6 +11,12 @@ to a real symbol span pulled from the indexes (no fabricated lines).
 """
 
 from .builder import WikiBuilder
+from .media_archify import (
+    ARCHIFY_DIAGRAM_TYPE,
+    ARCHIFY_SCHEMA_VERSION,
+    compile_visual_graph_plan_to_archify,
+    save_archify_architecture,
+)
 from .media_artifacts import discover_media_manifest
 from .media_eval import (
     evaluate_mmwiki_predictions,
@@ -64,6 +70,8 @@ from .media_vlm import (
 )
 
 __all__ = [
+    "ARCHIFY_DIAGRAM_TYPE",
+    "ARCHIFY_SCHEMA_VERSION",
     "MULTIMODAL_KNOWLEDGE_BUNDLE_SCHEMA",
     "MULTIMODAL_KNOWLEDGE_BUNDLE_VERSION",
     "MultimodalKnowledgeToolRouter",
@@ -82,6 +90,7 @@ __all__ = [
     "build_visual_graph_manifest",
     "build_visual_graph_plan",
     "compile_visual_graph_plan_to_mermaid",
+    "compile_visual_graph_plan_to_archify",
     "deterministic_visual_facts",
     "diff_media_manifests",
     "discover_media_manifest",
@@ -98,6 +107,7 @@ __all__ = [
     "load_multimodal_knowledge_bundle",
     "load_visual_graph_manifest",
     "save_multimodal_knowledge_bundle",
+    "save_archify_architecture",
     "save_visual_graph_manifest",
     "search_visual_context",
     "validate_multimodal_knowledge_bundle",

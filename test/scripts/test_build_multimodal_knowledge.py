@@ -34,6 +34,7 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
     output = tmp_path / "bundle.json"
     graph_output = tmp_path / "visual-graphs.json"
     mermaid_dir = tmp_path / "mermaid"
+    archify_dir = tmp_path / "archify"
 
     completed = subprocess.run(
         [
@@ -51,6 +52,8 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
             str(graph_output),
             "--visual-graph-mermaid-dir",
             str(mermaid_dir),
+            "--visual-graph-archify-dir",
+            str(archify_dir),
         ],
         check=True,
         stdout=subprocess.PIPE,
@@ -77,6 +80,11 @@ def test_build_multimodal_knowledge_script_writes_bundle(tmp_path):
     mermaid = mermaid_files[0]
     assert "architecture.svg" in mermaid.name
     assert mermaid.read_text(encoding="utf-8").startswith("flowchart LR\n")
+    archify_files = list(archify_dir.glob("*.architecture.json"))
+    assert len(archify_files) == 1
+    archify = json.loads(archify_files[0].read_text(encoding="utf-8"))
+    assert archify["diagram_type"] == "architecture"
+    assert len(archify["components"]) == len(graph_manifest["plans"][0]["nodes"])
 
 
 def test_build_multimodal_knowledge_script_rejects_missing_repository(tmp_path):
@@ -124,6 +132,12 @@ def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):
             str(tmp_path / "graphs.json"),
             "--visual-graph-mermaid-dir",
             str(tmp_path / "mermaid"),
+            "--visual-graph-archify-dir",
+            str(tmp_path / "archify"),
+            "--archify-repository-url",
+            "https://github.com/sysevol-ai/CodeNib",
+            "--archify-revision",
+            "a" * 40,
         ]
     )
 
@@ -134,6 +148,9 @@ def test_build_multimodal_knowledge_parser_accepts_vlm_options(tmp_path):
     assert args.visual_facts_timeout == 15
     assert args.visual_graph_output == str(tmp_path / "graphs.json")
     assert args.visual_graph_mermaid_dir == str(tmp_path / "mermaid")
+    assert args.visual_graph_archify_dir == str(tmp_path / "archify")
+    assert args.archify_repository_url == "https://github.com/sysevol-ai/CodeNib"
+    assert args.archify_revision == "a" * 40
 
 
 def test_build_multimodal_knowledge_script_rejects_partial_vlm_config(tmp_path):

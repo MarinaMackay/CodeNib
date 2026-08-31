@@ -25,7 +25,9 @@ from codenib.wiki import (  # noqa: E402
     OpenAICompatibleVisualFactExtractor,
     build_multimodal_repository_knowledge,
     build_visual_graph_manifest,
+    compile_visual_graph_plan_to_archify,
     compile_visual_graph_plan_to_mermaid,
+    save_archify_architecture,
     save_multimodal_knowledge_bundle,
     save_visual_graph_manifest,
 )
@@ -102,6 +104,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional directory to write one compiled Mermaid file per plan",
     )
+    parser.add_argument(
+        "--visual-graph-archify-dir",
+        default=None,
+        help="Optional directory to write Archify architecture JSON per plan",
+    )
+    parser.add_argument(
+        "--archify-repository-url",
+        default=None,
+        help="Public GitHub repository URL for revision-pinned Archify evidence",
+    )
+    parser.add_argument(
+        "--archify-revision",
+        default=None,
+        help="Full repository commit SHA for revision-pinned Archify evidence",
+    )
+    parser.add_argument(
+        "--archify-min-grounding-score",
+        type=float,
+        default=0.8,
+        help="Minimum grounding score exported as Archify source evidence",
+    )
     return parser
 
 
@@ -127,12 +150,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     save_multimodal_knowledge_bundle(bundle, args.output)
     visual_graph_manifest = None
-    if args.visual_graph_output or args.visual_graph_mermaid_dir:
+    if (
+        args.visual_graph_output
+        or args.visual_graph_mermaid_dir
+        or args.visual_graph_archify_dir
+    ):
         visual_graph_manifest = build_visual_graph_manifest(bundle["knowledge_view"])
     if args.visual_graph_output:
         save_visual_graph_manifest(visual_graph_manifest, args.visual_graph_output)
     if args.visual_graph_mermaid_dir:
         _write_mermaid_plans(visual_graph_manifest, args.visual_graph_mermaid_dir)
+    if args.visual_graph_archify_dir:
+        try:
+            _write_archify_plans(visual_graph_manifest, args)
+        except ValueError as exc:
+            parser.error(str(exc))
     counts = {
         "media_artifacts": bundle["media_manifest"]["artifact_count"],
         "visual_fact_packs": bundle["visual_facts_manifest"]["fact_count"],
@@ -174,11 +206,32 @@ def _write_mermaid_plans(manifest: dict, output_dir: str | Path) -> None:
         _atomic_write_text(target, compile_visual_graph_plan_to_mermaid(plan))
 
 
+def _write_archify_plans(manifest: dict, args: argparse.Namespace) -> None:
+    destination = Path(args.visual_graph_archify_dir).expanduser()
+    destination.mkdir(parents=True, exist_ok=True)
+    for index, plan in enumerate(manifest["plans"], start=1):
+        document = compile_visual_graph_plan_to_archify(
+            plan,
+            repository_url=args.archify_repository_url,
+            revision=args.archify_revision,
+            minimum_grounding_score=args.archify_min_grounding_score,
+        )
+        target = destination / _archify_filename(plan["artifact_path"], index)
+        save_archify_architecture(document, target)
+
+
 def _mermaid_filename(artifact_path: str, index: int) -> str:
     stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", artifact_path).strip(".-")
     stem = stem[:80].rstrip(".-") or "artifact"
     digest = hashlib.sha256(artifact_path.encode("utf-8")).hexdigest()[:12]
     return f"{index:04d}-{stem}-{digest}.mmd"
+
+
+def _archify_filename(artifact_path: str, index: int) -> str:
+    return (
+        _mermaid_filename(artifact_path, index).removesuffix(".mmd")
+        + ".architecture.json"
+    )
 
 
 def _atomic_write_text(path: Path, value: str) -> None:

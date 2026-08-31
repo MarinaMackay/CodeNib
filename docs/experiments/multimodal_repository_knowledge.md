@@ -280,6 +280,25 @@ The local metadata extractor may produce node-only plans because it does not
 invent visual relations. A configured VLM can populate `facts.relations`; only
 those validated relations become graph edges.
 
+To hand the same validated plan to Archify, request its typed architecture IR:
+
+```text
+python scripts/build_multimodal_knowledge.py /path/to/repository \
+  --output /tmp/multimodal-knowledge.json \
+  --visual-graph-archify-dir /tmp/archify \
+  --archify-repository-url https://github.com/org/repository \
+  --archify-revision <full-40-character-commit-sha>
+```
+
+The exporter targets Archify's version 1 architecture schema. It does not ask
+Archify or a model to rediscover topology: components and connections come from
+the already validated VisualGraphPlan, and no caption-derived edge is added.
+Repository metadata is optional but fail-closed. When supplied, only bindings
+at or above `--archify-min-grounding-score` (default `0.8`) become Archify
+`sources`; the repository URL and full revision are emitted together so
+Archify can verify the origin, commit, blob, path, and line against `--repo-root`.
+CodeNib does not vendor Archify or bypass its own schema/renderer validation.
+
 To use an OpenAI-compatible VLM for visual fact extraction:
 
 ```text
