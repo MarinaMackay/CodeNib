@@ -362,7 +362,10 @@ unchanged media:
 
 ```text
 python scripts/update_multimodal_knowledge.py /path/to/repository \
-  --previous /tmp/multimodal-knowledge.json
+  --previous /tmp/multimodal-knowledge.json \
+  --grounding-indexes bm25+lsp \
+  --grounding-cache-dir /path/to/index-cache \
+  --grounding-language python
 ```
 
 The command validates the previous bundle, rediscovers the current repository

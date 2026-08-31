@@ -42,7 +42,10 @@ from .media_incremental import (
     merge_incremental_visual_facts,
     plan_incremental_visual_fact_update,
 )
-from .media_index_grounding import IndexBackedVisualGroundingScorer
+from .media_index_grounding import (
+    IndexBackedVisualGroundingScorer,
+    build_index_backed_visual_grounding_scorer,
+)
 from .media_knowledge import (
     build_multimodal_knowledge_view,
     find_visual_code_links,
@@ -94,6 +97,7 @@ __all__ = [
     "OpenAICompatibleVisualFactExtractor",
     "VisualGroundingScorer",
     "build_media_evidence_pack",
+    "build_index_backed_visual_grounding_scorer",
     "build_multimodal_knowledge_view",
     "build_multimodal_knowledge_bundle",
     "build_multimodal_repository_knowledge",
