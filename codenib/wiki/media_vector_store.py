@@ -52,6 +52,11 @@ class VisualQueryEmbedding:
         text = _query_text(text)
         provider = self._policy["provider"]
         dimensions = self._policy["dimensions"]
+        # CodeVectorStore probes its wrapper during construction even though
+        # this sidecar already carries a validated, immutable dimension. Do not
+        # start a remote or GPU-backed multimodal model for that internal probe.
+        if text == "codenib-dimension-probe":
+            return [1.0, *([0.0] * (dimensions - 1))]
         if self._embedder is None:
             if provider != DEFAULT_VISUAL_VECTOR_PROVIDER:
                 raise ValueError(
@@ -120,6 +125,12 @@ def create_visual_vector_store(
     """Create a CodeNib FAISS store bound to a visual embedding policy."""
 
     validated = validate_visual_vector_index(index)
+    if (
+        validated["embedding_policy"]["provider"]
+        != DEFAULT_VISUAL_VECTOR_PROVIDER
+        and query_embedder is None
+    ):
+        raise ValueError("non-local visual vector stores require a query embedder")
     identity = visual_vector_store_identity(validated, index_type=index_type)
     from ..index.embedding.vector_store import CodeVectorStore
 
