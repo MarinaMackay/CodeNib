@@ -41,6 +41,7 @@ from ..log_utils import get_logger
 from ..repository_filters import repository_path_is_visible
 from ..repository_source_selection import RepositorySourceSelection
 from ..wiki import WikiBuilder
+from ..wiki.media_archify import load_archify_architecture
 from ..wiki.media_evidence import build_media_evidence_pack
 from ..wiki.media_generation import (
     image_generator_from_config,
@@ -685,6 +686,42 @@ def _wiki_visual_vector_index_paths(config, repo_id: str, bundle) -> tuple[Path,
             / "multimodal-visual-vectors.json"
         )
     return tuple(candidates)
+
+
+def _wiki_archify_overview_paths(config, repo_id: str, bundle) -> tuple[Path, ...]:
+    """Return deterministic local locations for a validated Overview IR."""
+
+    data_root = Path(os.path.abspath(config.data_dir)) / "multimodal_knowledge"
+    repo_key = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
+    candidates = [data_root / f"{repo_key}.archify.json"]
+    repo_dir = str(getattr(getattr(bundle, "entry", None), "repo_dir", "") or "")
+    if repo_dir:
+        candidates.append(
+            Path(os.path.abspath(repo_dir)) / ".codenib" / "wiki-overview.archify.json"
+        )
+    return tuple(candidates)
+
+
+def _load_wiki_archify_overview(config, repo_id: str, bundle) -> dict | None:
+    """Load the first validated Archify sidecar available to this checkout."""
+
+    for path in _wiki_archify_overview_paths(config, repo_id, bundle):
+        if not os.path.lexists(path):
+            continue
+        try:
+            return load_archify_architecture(path)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "Invalid Wiki Archify overview for %s at %s: %s",
+                repo_id,
+                path,
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="The persisted Wiki Archify overview is invalid",
+            ) from exc
+    return None
 
 
 def _load_wiki_visual_vector_index(config, repo_id: str, bundle) -> dict | None:
@@ -1381,6 +1418,25 @@ async def wiki_multimodal_search(
             q,
             limit,
         )
+
+
+@app.get("/api/repos/{repo_id}/wiki-archify-overview")
+async def wiki_archify_overview(repo_id: str) -> dict:
+    """Serve the typed, source-linked architecture IR used by Overview."""
+
+    with _pinned_bundle(repo_id) as bundle:
+        document = await _run_pinned_thread(
+            _load_wiki_archify_overview,
+            load_config(),
+            repo_id,
+            bundle,
+        )
+        if document is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No Archify overview is available for this repository",
+            )
+        return document
 
 
 @app.get("/api/repos/{repo_id}/wiki/{page_id}/graph")

@@ -15,7 +15,9 @@ from .media_archify import (
     ARCHIFY_DIAGRAM_TYPE,
     ARCHIFY_SCHEMA_VERSION,
     compile_visual_graph_plan_to_archify,
+    load_archify_architecture,
     save_archify_architecture,
+    validate_archify_architecture,
 )
 from .media_artifacts import discover_media_manifest
 from .media_eval import (
@@ -164,6 +166,7 @@ __all__ = [
     "multimodal_tool_schemas",
     "plan_incremental_visual_fact_update",
     "load_multimodal_knowledge_bundle",
+    "load_archify_architecture",
     "load_visual_graph_manifest",
     "load_visual_storyboard_manifest",
     "save_archify_architecture",
@@ -176,6 +179,7 @@ __all__ = [
     "search_visual_vector_index",
     "update_visual_vector_store",
     "validate_multimodal_knowledge_bundle",
+    "validate_archify_architecture",
     "validate_visual_graph_manifest",
     "validate_visual_graph_plan",
     "validate_visual_storyboard",

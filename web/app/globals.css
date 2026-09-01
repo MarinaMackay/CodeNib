@@ -3426,6 +3426,128 @@ a.evidence-row:hover {
   box-shadow: 0 18px 50px -36px rgba(15, 23, 42, 0.35);
 }
 
+.wiki-archify {
+  margin: 0 0 28px;
+  padding: 20px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 36%),
+    linear-gradient(180deg, var(--bg-surface), var(--bg-muted));
+}
+
+.wiki-archify-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+
+.wiki-archify-head h2 {
+  margin: 0;
+  font-size: 19px;
+}
+
+.wiki-archify-head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.wiki-archify-profile {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.wiki-archify-canvas {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    linear-gradient(color-mix(in srgb, var(--border) 22%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 22%, transparent) 1px, transparent 1px),
+    var(--bg-subtle);
+  background-size: 24px 24px;
+}
+
+.wiki-archify-canvas svg {
+  display: block;
+  min-width: 680px;
+  width: 100%;
+  height: auto;
+  max-height: 560px;
+}
+
+.wiki-archify-connection line {
+  stroke: color-mix(in srgb, var(--accent) 56%, var(--border));
+  stroke-width: 2;
+}
+
+.wiki-archify-connection text {
+  fill: var(--muted);
+  font-size: 12px;
+  text-anchor: middle;
+}
+
+.wiki-archify-arrow {
+  fill: var(--accent);
+}
+
+.wiki-archify-component rect {
+  fill: color-mix(in srgb, var(--bg-surface) 92%, var(--accent-soft));
+  stroke: var(--accent-border);
+  stroke-width: 1.5;
+}
+
+.wiki-archify-component-label {
+  fill: var(--text);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.wiki-archify-component-sublabel {
+  fill: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.wiki-archify-evidence {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.wiki-archify-evidence article {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-subtle);
+}
+
+.wiki-archify-evidence strong {
+  font-size: 12px;
+}
+
+.wiki-archify-evidence span,
+.wiki-archify-evidence a {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wiki-archify-evidence a:hover {
+  color: var(--accent);
+}
+
 .wiki-multimodal-knowledge {
   container-type: inline-size;
   margin: 0 0 28px;
@@ -3875,6 +3997,14 @@ a.wiki-visual-search-result:hover {
 }
 
 @media (max-width: 780px) {
+  .wiki-archify-head {
+    display: grid;
+  }
+
+  .wiki-archify-profile {
+    justify-self: start;
+  }
+
   .wiki-multimodal-head {
     display: grid;
   }

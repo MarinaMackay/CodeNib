@@ -10,7 +10,9 @@ import pytest
 
 from codenib.wiki.media_archify import (
     compile_visual_graph_plan_to_archify,
+    load_archify_architecture,
     save_archify_architecture,
+    validate_archify_architecture,
 )
 from codenib.wiki.media_graph_plan import build_visual_graph_plan
 
@@ -129,3 +131,44 @@ def test_save_archify_architecture_is_canonical_and_preserves_mode(tmp_path):
 
     assert json.loads(output.read_text(encoding="utf-8")) == document
     assert output.stat().st_mode & 0o777 == 0o640
+    assert load_archify_architecture(output) == document
+
+
+def test_archify_validation_rejects_dangling_connections_and_unsafe_sources():
+    document = compile_visual_graph_plan_to_archify(
+        _plan(),
+        repository_url="https://github.com/sysevol-ai/CodeNib",
+        revision="a" * 40,
+    )
+    document["connections"][0]["to"] = "missing"
+    with pytest.raises(ValueError, match="endpoints"):
+        validate_archify_architecture(document)
+
+    document = compile_visual_graph_plan_to_archify(
+        _plan(),
+        repository_url="https://github.com/sysevol-ai/CodeNib",
+        revision="a" * 40,
+    )
+    document["components"][0]["sources"][0]["path"] = "../secret.py"
+    with pytest.raises(ValueError, match="repository-relative"):
+        validate_archify_architecture(document)
+
+
+def test_load_archify_architecture_rejects_duplicate_keys_and_links(tmp_path):
+    output = tmp_path / "overview.architecture.json"
+    output.write_text(
+        '{"schema_version":1,"schema_version":1,"diagram_type":"architecture"}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate key"):
+        load_archify_architecture(output)
+
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    link = tmp_path / "link.json"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable")
+    with pytest.raises(ValueError, match="stable bounded regular file"):
+        load_archify_architecture(link)

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchEdgeLabel,
+  fetchWikiArchifyOverview,
   fetchWikiMultimodalSummary,
   fetchWikiTree,
   fetchWikiPage,
@@ -252,6 +253,41 @@ describe("searchWikiVisuals", () => {
     await expect(searchWikiVisuals("repo", "architecture")).rejects.toThrow(
       "Visual search failed (503): Pinned WeMM runtime required",
     );
+  });
+});
+
+describe("fetchWikiArchifyOverview", () => {
+  it("returns typed Overview IR from the local Wiki runtime", async () => {
+    const document = {
+      schema_version: 1,
+      diagram_type: "architecture",
+      meta: {
+        title: "Repository architecture",
+        subtitle: "Source-linked view",
+        quality_profile: "standard",
+        viewBox: [1000, 420],
+      },
+      components: [],
+      connections: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => document,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchWikiArchifyOverview("owner/repo")).resolves.toEqual(document);
+    expect(fetchMock.mock.calls[0][0]).toMatch(
+      /\/api\/repos\/owner%2Frepo\/wiki-archify-overview$/,
+    );
+  });
+
+  it("is optional for repositories without an Archify sidecar", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchWikiArchifyOverview("owner/repo")).resolves.toBeNull();
   });
 });
 

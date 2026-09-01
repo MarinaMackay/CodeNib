@@ -1503,6 +1503,85 @@ def test_wiki_multimodal_bundle_returns_404_when_absent(tmp_path, monkeypatch):
     assert error.value.status_code == 404
 
 
+def test_wiki_archify_overview_serves_validated_typed_ir(tmp_path, monkeypatch):
+    repo_id = "owner/repo"
+    repo_dir = tmp_path / "repo"
+    output = repo_dir / ".codenib" / "wiki-overview.archify.json"
+    output.parent.mkdir(parents=True)
+    document = {
+        "schema_version": 1,
+        "diagram_type": "architecture",
+        "meta": {
+            "title": "Repository architecture",
+            "subtitle": "Validated source-linked overview",
+            "quality_profile": "standard",
+            "viewBox": [1000, 420],
+            "repository": {
+                "url": "https://github.com/owner/repo",
+                "revision": "a" * 40,
+            },
+        },
+        "components": [
+            {
+                "id": "WikiRuntime",
+                "type": "backend",
+                "label": "Wiki runtime",
+                "sublabel": "wiki_page",
+                "pos": [80, 110],
+                "size": [170, 72],
+                "sources": [
+                    {"path": "codenib/web/app.py", "line": 100, "label": "wiki_page"}
+                ],
+            }
+        ],
+        "connections": [],
+    }
+    from codenib.wiki.media_archify import save_archify_architecture
+
+    save_archify_architecture(document, output)
+    served = SimpleNamespace(entry=SimpleNamespace(repo_dir=str(repo_dir)))
+
+    class Registry:
+        @contextmanager
+        def pin(self, observed_repo_id):
+            assert observed_repo_id == repo_id
+            yield served
+
+    monkeypatch.setattr(web_app.app.state, "registry", Registry(), raising=False)
+    monkeypatch.setattr(
+        web_app, "load_config", lambda: SimpleNamespace(data_dir=str(tmp_path / "data"))
+    )
+
+    response = asyncio.run(web_app.wiki_archify_overview(repo_id))
+
+    assert response == document
+    assert response["components"][0]["sources"][0]["path"] == "codenib/web/app.py"
+
+
+def test_wiki_archify_overview_rejects_invalid_sidecar(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    output = repo_dir / ".codenib" / "wiki-overview.archify.json"
+    output.parent.mkdir(parents=True)
+    output.write_text('{"schema_version":1}', encoding="utf-8")
+    served = SimpleNamespace(entry=SimpleNamespace(repo_dir=str(repo_dir)))
+
+    class Registry:
+        @contextmanager
+        def pin(self, _repo_id):
+            yield served
+
+    monkeypatch.setattr(web_app.app.state, "registry", Registry(), raising=False)
+    monkeypatch.setattr(
+        web_app, "load_config", lambda: SimpleNamespace(data_dir=str(tmp_path / "data"))
+    )
+
+    with pytest.raises(web_app.HTTPException) as error:
+        asyncio.run(web_app.wiki_archify_overview("owner/repo"))
+
+    assert error.value.status_code == 500
+    assert "invalid" in str(error.value.detail).lower()
+
+
 def test_wiki_multimodal_bundle_rejects_invalid_persisted_data(tmp_path, monkeypatch):
     repo_dir = tmp_path / "repo"
     output = repo_dir / ".codenib" / "multimodal-knowledge.json"

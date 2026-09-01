@@ -18,6 +18,7 @@ import { wikiGraphPresentation } from "@/lib/wikiGraphPresentation";
 import {
   fetchCommits,
   fetchRepos,
+  fetchWikiArchifyOverview,
   fetchWikiMultimodalSummary,
   fetchWikiGraph,
   fetchWikiPage,
@@ -33,6 +34,7 @@ import {
   type CommitRef,
   type RepoInfo,
   type WikiMediaSlot,
+  type WikiArchifyOverview,
   type WikiMultimodalSummary,
   type WikiVisualSearchResponse,
   type WikiPage,
@@ -84,6 +86,106 @@ function ghFileUrl(
   const lines = start ? `#L${start}${end && end !== start ? `-L${end}` : ""}` : "";
   const root = (sourceUrl || `https://github.com/${repo}`).replace(/\/+$/, "");
   return `${root}/blob/${commit || "HEAD"}/${file}${lines}`;
+}
+
+function ArchifyOverview({ document }: { document: WikiArchifyOverview }) {
+  const components = new Map(document.components.map((item) => [item.id, item]));
+  const repository = document.meta.repository;
+  const sourceUrl = (path: string, line?: number) => {
+    if (!repository) return null;
+    const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+    return `${repository.url.replace(/\/+$/, "")}/blob/${repository.revision}/${encodedPath}${
+      line ? `#L${line}` : ""
+    }`;
+  };
+
+  return (
+    <section className="wiki-archify" aria-labelledby="wiki-archify-title">
+      <div className="wiki-archify-head">
+        <div>
+          <span className="wiki-multimodal-kicker">Validated Archify IR</span>
+          <h2 id="wiki-archify-title">{document.meta.title}</h2>
+          <p>{document.meta.subtitle}</p>
+        </div>
+        <span className="wiki-archify-profile mono">
+          {document.components.length} components · {document.connections.length} relations
+        </span>
+      </div>
+      <div className="wiki-archify-canvas">
+        <svg
+          viewBox={`0 0 ${document.meta.viewBox[0]} ${document.meta.viewBox[1]}`}
+          role="img"
+          aria-label={`${document.meta.title}: ${document.meta.subtitle}`}
+        >
+          <defs>
+            <marker
+              id="wiki-archify-arrow"
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
+            >
+              <path d="M0,0 L8,4 L0,8 Z" className="wiki-archify-arrow" />
+            </marker>
+          </defs>
+          {document.connections.map((connection) => {
+            const source = components.get(connection.from);
+            const target = components.get(connection.to);
+            if (!source || !target) return null;
+            const x1 = source.pos[0] + source.size[0] / 2;
+            const y1 = source.pos[1] + source.size[1] / 2;
+            const x2 = target.pos[0] + target.size[0] / 2;
+            const y2 = target.pos[1] + target.size[1] / 2;
+            return (
+              <g key={connection.id} className="wiki-archify-connection">
+                <line x1={x1} y1={y1} x2={x2} y2={y2} markerEnd="url(#wiki-archify-arrow)" />
+                <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 8}>
+                  {connection.label}
+                </text>
+              </g>
+            );
+          })}
+          {document.components.map((component) => (
+            <g
+              key={component.id}
+              className="wiki-archify-component"
+              transform={`translate(${component.pos[0]} ${component.pos[1]})`}
+            >
+              <rect width={component.size[0]} height={component.size[1]} rx="12" />
+              <text className="wiki-archify-component-label" x="14" y="29">
+                {component.label}
+              </text>
+              {component.sublabel && (
+                <text className="wiki-archify-component-sublabel" x="14" y="51">
+                  {component.sublabel}
+                </text>
+              )}
+            </g>
+          ))}
+        </svg>
+      </div>
+      <div className="wiki-archify-evidence" aria-label="Architecture source evidence">
+        {document.components.map((component) => (
+          <article key={component.id}>
+            <strong>{component.label}</strong>
+            <span className="mono">{component.sublabel || component.type}</span>
+            {(component.sources ?? []).map((source) => {
+              const url = sourceUrl(source.path, source.line);
+              const label = `${source.path}${source.line ? `:${source.line}` : ""}`;
+              return url ? (
+                <a key={label} href={url} target="_blank" rel="noreferrer" className="mono">
+                  {label} ↗
+                </a>
+              ) : (
+                <span key={label} className="mono">{label}</span>
+              );
+            })}
+          </article>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function TocTree({
@@ -672,6 +774,9 @@ export default function WikiPageView({
   const [multimodalSummary, setMultimodalSummary] =
     useState<WikiMultimodalSummary | null>(null);
   const [multimodalError, setMultimodalError] = useState<string | null>(null);
+  const [archifyOverview, setArchifyOverview] =
+    useState<WikiArchifyOverview | null>(null);
+  const [archifyError, setArchifyError] = useState<string | null>(null);
   const commitCost = commitEvidence(commits, selectedCommit);
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -681,6 +786,8 @@ export default function WikiPageView({
     setSelectedCommit(undefined);
     setMultimodalSummary(null);
     setMultimodalError(null);
+    setArchifyOverview(null);
+    setArchifyError(null);
     const controller = new AbortController();
 
     fetchRepos()
@@ -704,6 +811,15 @@ export default function WikiPageView({
       .catch((cause) => {
         if (!cancelled && cause instanceof Error && cause.name !== "AbortError") {
           setMultimodalError(cause.message);
+        }
+      });
+    fetchWikiArchifyOverview(repoId, { signal: controller.signal })
+      .then((document) => {
+        if (!cancelled) setArchifyOverview(document);
+      })
+      .catch((cause) => {
+        if (!cancelled && cause instanceof Error && cause.name !== "AbortError") {
+          setArchifyError(cause.message);
         }
       });
     setTocLoading(true);
@@ -1194,6 +1310,14 @@ export default function WikiPageView({
               ) : null}
               {page?.media_slots && page.media_slots.length > 0 && (
                 <MultimodalMedia slots={page.media_slots} repo={repo} />
+              )}
+              {activeId === "overview" && archifyOverview && (
+                <ArchifyOverview document={archifyOverview} />
+              )}
+              {activeId === "overview" && archifyError && (
+                <div className="wiki-multimodal-error" role="status">
+                  Architecture overview is unavailable: {archifyError}
+                </div>
               )}
               {activeId === "overview" && multimodalSummary && (
                 <MultimodalKnowledgePanel

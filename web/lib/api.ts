@@ -271,6 +271,44 @@ export interface WikiVisualSearchResponse {
   results: WikiVisualSearchResult[];
 }
 
+export interface WikiArchifySource {
+  path: string;
+  line?: number;
+  label?: string;
+}
+
+export interface WikiArchifyComponent {
+  id: string;
+  type: string;
+  label: string;
+  sublabel?: string;
+  pos: [number, number];
+  size: [number, number];
+  sources?: WikiArchifySource[];
+}
+
+export interface WikiArchifyConnection {
+  id: string;
+  from: string;
+  to: string;
+  label: string;
+  route: "auto";
+}
+
+export interface WikiArchifyOverview {
+  schema_version: 1;
+  diagram_type: "architecture";
+  meta: {
+    title: string;
+    subtitle: string;
+    quality_profile: string;
+    viewBox: [number, number];
+    repository?: { url: string; revision: string };
+  };
+  components: WikiArchifyComponent[];
+  connections: WikiArchifyConnection[];
+}
+
 export function isHighConfidenceVisualBinding(
   binding: WikiVisualCodeBinding,
 ): boolean {
@@ -432,6 +470,22 @@ export async function searchWikiVisuals(
     { signal: options.signal },
   );
   if (!response.ok) throw await responseError(response, "Visual search failed");
+  return response.json();
+}
+
+export async function fetchWikiArchifyOverview(
+  repoId: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<WikiArchifyOverview | null> {
+  if (isStaticRuntime()) return null;
+  const response = await fetch(
+    `${API_BASE}/api/repos/${encodeURIComponent(repoId)}/wiki-archify-overview`,
+    { signal: opts.signal },
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw await responseError(response, "Failed to load Archify overview");
+  }
   return response.json();
 }
 
