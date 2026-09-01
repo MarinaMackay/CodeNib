@@ -49,6 +49,12 @@ from ..wiki.media_generation import (
     redact_media_evidence_packs,
 )
 from ..wiki.media_storage import load_multimodal_knowledge_bundle
+from ..wiki.media_vector import (
+    DEFAULT_VISUAL_VECTOR_PROVIDER,
+    load_visual_vector_index,
+    search_visual_vector_index,
+)
+from ..wiki.media_wemm import WEMM_VISUAL_VECTOR_PROVIDER, WeMMVisualEmbeddingBackend
 from ..wiki.narrator import Narrator
 from ..wiki.sqlite_store import SQLiteWikiStore
 from .config import load_config
@@ -107,6 +113,9 @@ _MISSING_APP_STATE = object()
 # and a failed construction publishes no cache entry, so the next request owns
 # recovery.
 _WIKI_BUILD_LOCK = threading.Lock()
+_WIKI_VISUAL_SEARCH_BACKEND_LOCK = threading.Lock()
+_WIKI_VISUAL_SEARCH_BACKENDS: dict[tuple, WeMMVisualEmbeddingBackend] = {}
+_MAX_WIKI_VISUAL_SEARCH_BACKENDS = 2
 
 
 @dataclass(slots=True)
@@ -660,6 +669,129 @@ def _wiki_multimodal_bundle_paths(config, repo_id: str, bundle) -> tuple[Path, .
             Path(os.path.abspath(repo_dir)) / ".codenib" / "multimodal-knowledge.json"
         )
     return tuple(candidates)
+
+
+def _wiki_visual_vector_index_paths(config, repo_id: str, bundle) -> tuple[Path, ...]:
+    """Return deterministic, repository-bound visual sidecar locations."""
+
+    data_root = Path(os.path.abspath(config.data_dir)) / "multimodal_knowledge"
+    repo_key = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
+    candidates = [data_root / f"{repo_key}.visual-vectors.json"]
+    repo_dir = str(getattr(getattr(bundle, "entry", None), "repo_dir", "") or "")
+    if repo_dir:
+        candidates.append(
+            Path(os.path.abspath(repo_dir))
+            / ".codenib"
+            / "multimodal-visual-vectors.json"
+        )
+    return tuple(candidates)
+
+
+def _load_wiki_visual_vector_index(config, repo_id: str, bundle) -> dict | None:
+    for path in _wiki_visual_vector_index_paths(config, repo_id, bundle):
+        if not os.path.lexists(path):
+            continue
+        try:
+            return load_visual_vector_index(path)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "Invalid Wiki visual vector index for %s at %s: %s",
+                repo_id,
+                path,
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="The persisted Wiki visual vector index is invalid",
+            ) from exc
+    return None
+
+
+def _wiki_visual_query_embedder(config, bundle, index: Mapping):
+    policy = index["embedding_policy"]
+    provider = policy["provider"]
+    if provider == DEFAULT_VISUAL_VECTOR_PROVIDER:
+        return None
+    if provider != WEMM_VISUAL_VECTOR_PROVIDER:
+        raise HTTPException(
+            status_code=503,
+            detail="The persisted visual embedding provider is not available",
+        )
+    if not config.wiki_visual_search_trust_remote_code:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "WeMM visual search requires an explicit immutable-model "
+                "runtime opt-in"
+            ),
+        )
+    repo_dir = str(getattr(getattr(bundle, "entry", None), "repo_dir", "") or "")
+    if not repo_dir:
+        raise HTTPException(
+            status_code=503,
+            detail="The repository checkout is unavailable for visual search",
+        )
+    key = (
+        os.path.abspath(repo_dir),
+        policy["model"],
+        policy["model_revision"],
+        policy["dimensions"],
+        str(config.wiki_visual_search_device or ""),
+        config.wiki_visual_search_batch_size,
+    )
+    with _WIKI_VISUAL_SEARCH_BACKEND_LOCK:
+        backend = _WIKI_VISUAL_SEARCH_BACKENDS.get(key)
+        if backend is None:
+            backend = WeMMVisualEmbeddingBackend(
+                repo_path=repo_dir,
+                model=policy["model"],
+                dimensions=policy["dimensions"],
+                revision=policy["model_revision"],
+                trust_remote_code=True,
+                device=config.wiki_visual_search_device,
+                batch_size=config.wiki_visual_search_batch_size,
+            )
+            if len(_WIKI_VISUAL_SEARCH_BACKENDS) >= _MAX_WIKI_VISUAL_SEARCH_BACKENDS:
+                oldest = next(iter(_WIKI_VISUAL_SEARCH_BACKENDS))
+                _WIKI_VISUAL_SEARCH_BACKENDS.pop(oldest, None)
+            _WIKI_VISUAL_SEARCH_BACKENDS[key] = backend
+    return backend.embed_queries
+
+
+def _search_wiki_visual_vectors(
+    config,
+    repo_id: str,
+    bundle,
+    query: str,
+    limit: int,
+) -> dict:
+    index = _load_wiki_visual_vector_index(config, repo_id, bundle)
+    if index is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No visual vector index is available for this repository",
+        )
+    embedder = _wiki_visual_query_embedder(config, bundle, index)
+    try:
+        results = search_visual_vector_index(
+            index,
+            query,
+            limit=limit,
+            embedder=embedder,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    policy = index["embedding_policy"]
+    return {
+        "query": query.strip(),
+        "result_count": len(results),
+        "provider": policy["provider"],
+        "model": policy["model"],
+        "model_revision": policy["model_revision"],
+        "dimensions": policy["dimensions"],
+        "index_sha256": index["index_sha256"],
+        "results": results,
+    }
 
 
 def _load_wiki_multimodal_bundle(config, repo_id: str, bundle) -> dict | None:
@@ -1227,6 +1359,28 @@ async def wiki_multimodal_bundle(repo_id: str) -> dict:
                 detail="No multimodal Wiki bundle is available for this repository",
             )
         return _summarize_wiki_multimodal_bundle(persisted)
+
+
+@app.get("/api/repos/{repo_id}/wiki-multimodal/search")
+async def wiki_multimodal_search(
+    repo_id: str,
+    q: Annotated[str, Query(min_length=1, max_length=2048)],
+    limit: Annotated[int, Query(ge=1, le=12)] = 6,
+) -> dict:
+    """Search a validated visual-vector sidecar without exposing embeddings."""
+
+    config = load_config()
+    if not config.wiki_visual_search_enabled:
+        raise HTTPException(status_code=404, detail="Visual search is disabled")
+    with _pinned_bundle(repo_id) as bundle:
+        return await _run_pinned_thread(
+            _search_wiki_visual_vectors,
+            config,
+            repo_id,
+            bundle,
+            q,
+            limit,
+        )
 
 
 @app.get("/api/repos/{repo_id}/wiki/{page_id}/graph")

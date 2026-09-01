@@ -421,6 +421,49 @@ wiki_visual_facts_options:
     }
 
 
+def test_wiki_visual_search_defaults_are_local_safe(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("wiki_agent: false\n")
+
+    config = load_config(str(config_path))
+
+    assert config.wiki_visual_search_enabled is True
+    assert config.wiki_visual_search_trust_remote_code is False
+    assert config.wiki_visual_search_device is None
+    assert config.wiki_visual_search_batch_size == 1
+
+
+def test_wiki_visual_search_environment_requires_bounded_batch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("wiki_agent: false\n")
+    monkeypatch.setenv("CODENIB_WIKI_VISUAL_SEARCH_BATCH_SIZE", "65")
+
+    with pytest.raises(ValueError, match="must be between 1 and 64"):
+        load_config(str(config_path))
+
+
+def test_wiki_visual_search_environment_enables_pinned_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("wiki_visual_search_enabled: false\n")
+    monkeypatch.setenv("CODENIB_WIKI_VISUAL_SEARCH_ENABLED", "true")
+    monkeypatch.setenv("CODENIB_WIKI_VISUAL_SEARCH_TRUST_REMOTE_CODE", "true")
+    monkeypatch.setenv("CODENIB_WIKI_VISUAL_SEARCH_DEVICE", "mps")
+    monkeypatch.setenv("CODENIB_WIKI_VISUAL_SEARCH_BATCH_SIZE", "2")
+
+    config = load_config(str(config_path))
+
+    assert config.wiki_visual_search_enabled is True
+    assert config.wiki_visual_search_trust_remote_code is True
+    assert config.wiki_visual_search_device == "mps"
+    assert config.wiki_visual_search_batch_size == 2
+
+
 def test_config_profile_extends_relative_base_and_merges_options(
     tmp_path: Path,
 ) -> None:

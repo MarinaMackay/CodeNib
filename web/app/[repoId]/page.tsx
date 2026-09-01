@@ -1,6 +1,14 @@
 "use client";
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import Header from "@/components/Header";
 import Markdown from "@/components/Markdown";
 import AskBar from "@/components/AskBar";
@@ -18,6 +26,7 @@ import {
   isHighConfidenceVisualBinding,
   materializedWikiMediaSlots,
   repoRelative,
+  searchWikiVisuals,
   shouldWithholdWikiPage,
   type CodemapResponse,
   type Citation,
@@ -25,6 +34,7 @@ import {
   type RepoInfo,
   type WikiMediaSlot,
   type WikiMultimodalSummary,
+  type WikiVisualSearchResponse,
   type WikiPage,
   type WikiPageRef,
   wikiMediaCitationCount,
@@ -319,12 +329,142 @@ function groundingScore(score: number): string {
   return Number.isFinite(score) ? score.toFixed(2) : "—";
 }
 
+function VisualSemanticSearch({
+  repoId,
+  repo,
+}: {
+  repoId: string;
+  repo: RepoInfo | null;
+}) {
+  const [query, setQuery] = useState("");
+  const [response, setResponse] = useState<WikiVisualSearchResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const controllerRef = useRef<AbortController | null>(null);
+
+  useEffect(
+    () => () => {
+      controllerRef.current?.abort();
+    },
+    [],
+  );
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalized = query.trim();
+    if (!normalized || loading) return;
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await searchWikiVisuals(repoId, normalized, {
+        signal: controller.signal,
+      });
+      setResponse(result);
+    } catch (cause) {
+      if (cause instanceof Error && cause.name !== "AbortError") {
+        setError(cause.message);
+      }
+    } finally {
+      if (controllerRef.current === controller) {
+        controllerRef.current = null;
+        setLoading(false);
+      }
+    }
+  };
+
+  return (
+    <section className="wiki-visual-search" aria-labelledby="wiki-visual-search-title">
+      <div className="wiki-visual-search-head">
+        <div>
+          <span className="wiki-multimodal-kicker">Shared semantic space</span>
+          <h3 id="wiki-visual-search-title">Search repository visuals</h3>
+          <p>Describe a concept, subsystem, or flow to retrieve grounded images.</p>
+        </div>
+        {response && (
+          <span className="wiki-visual-search-model mono">
+            {response.model} · {response.dimensions}d
+          </span>
+        )}
+      </div>
+      <form className="wiki-visual-search-form" onSubmit={submit}>
+        <label className="sr-only" htmlFor="wiki-visual-search-input">
+          Visual search query
+        </label>
+        <input
+          id="wiki-visual-search-input"
+          type="search"
+          value={query}
+          maxLength={2048}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="e.g. FactQueryIndex data flow"
+        />
+        <button type="submit" disabled={!query.trim() || loading}>
+          {loading ? "Searching…" : "Search visuals"}
+        </button>
+      </form>
+      {error && <p className="wiki-visual-search-error" role="status">{error}</p>}
+      {response && !loading && (
+        <div className="wiki-visual-search-results" aria-live="polite">
+          {response.results.length > 0 ? (
+            response.results.map((result) => {
+              const artifactUrl = ghFileUrl(
+                repo?.repo,
+                repo?.source_url,
+                repo?.base_commit,
+                result.artifact_path,
+              );
+              const content = (
+                <>
+                  <div className="wiki-visual-search-result-head">
+                    <strong>{result.caption || repoRelative(result.artifact_path)}</strong>
+                    <span>{groundingScore(result.score)}</span>
+                  </div>
+                  <code>{repoRelative(result.artifact_path)}</code>
+                  <p>{result.role_hint || result.mime_type}</p>
+                  {(result.source_paths.length > 0 || result.symbols.length > 0) && (
+                    <small>
+                      {[...result.source_paths.slice(0, 2), ...result.symbols.slice(0, 2)]
+                        .join(" · ")}
+                    </small>
+                  )}
+                </>
+              );
+              return artifactUrl ? (
+                <a
+                  className="wiki-visual-search-result"
+                  href={artifactUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  key={result.entry_sha256}
+                >
+                  {content}
+                </a>
+              ) : (
+                <article className="wiki-visual-search-result" key={result.entry_sha256}>
+                  {content}
+                </article>
+              );
+            })
+          ) : (
+            <p className="wiki-multimodal-empty">No visual matches found.</p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function MultimodalKnowledgePanel({
   summary,
   repo,
+  repoId,
 }: {
   summary: WikiMultimodalSummary;
   repo: RepoInfo | null;
+  repoId: string;
 }) {
   const facts = summary.visual_facts_manifest.facts;
   const [selectedPath, setSelectedPath] = useState(facts[0]?.artifact_path ?? "");
@@ -490,6 +630,7 @@ function MultimodalKnowledgePanel({
       ) : (
         <p className="wiki-multimodal-empty">No visual facts have been extracted.</p>
       )}
+      <VisualSemanticSearch repoId={repoId} repo={repo} />
     </section>
   );
 }
@@ -1055,7 +1196,11 @@ export default function WikiPageView({
                 <MultimodalMedia slots={page.media_slots} repo={repo} />
               )}
               {activeId === "overview" && multimodalSummary && (
-                <MultimodalKnowledgePanel summary={multimodalSummary} repo={repo} />
+                <MultimodalKnowledgePanel
+                  summary={multimodalSummary}
+                  repo={repo}
+                  repoId={repoId}
+                />
               )}
               {activeId === "overview" && multimodalError && (
                 <div className="wiki-multimodal-error" role="status">

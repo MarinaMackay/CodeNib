@@ -25,7 +25,9 @@ from codenib.source_fingerprint import capture_repository_source
 from codenib.web.schemas import ChatRequest, ChatResponse
 from codenib.wiki import (
     build_multimodal_repository_knowledge,
+    build_visual_vector_index,
     save_multimodal_knowledge_bundle,
+    save_visual_vector_index,
 )
 
 
@@ -1523,6 +1525,101 @@ def test_wiki_multimodal_bundle_rejects_invalid_persisted_data(tmp_path, monkeyp
 
     assert error.value.status_code == 500
     assert "invalid" in str(error.value.detail).lower()
+
+
+def test_wiki_visual_search_queries_persisted_local_sidecar(tmp_path, monkeypatch):
+    repo_id = "owner/repo"
+    repo_dir = tmp_path / "repo"
+    docs = repo_dir / "docs"
+    source = repo_dir / "src"
+    docs.mkdir(parents=True)
+    source.mkdir()
+    (docs / "architecture.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><text>WikiBuilder</text></svg>',
+        encoding="utf-8",
+    )
+    (source / "wiki.py").write_text("class WikiBuilder:\n    pass\n", encoding="utf-8")
+    bundle = build_multimodal_repository_knowledge(repo_dir)
+    sidecar = build_visual_vector_index(bundle["knowledge_view"])
+    output = repo_dir / ".codenib" / "multimodal-visual-vectors.json"
+    save_visual_vector_index(sidecar, output)
+    served = SimpleNamespace(entry=SimpleNamespace(repo_dir=str(repo_dir)))
+
+    class Registry:
+        @contextmanager
+        def pin(self, observed_repo_id):
+            assert observed_repo_id == repo_id
+            yield served
+
+    monkeypatch.setattr(web_app.app.state, "registry", Registry(), raising=False)
+    monkeypatch.setattr(
+        web_app,
+        "load_config",
+        lambda: SimpleNamespace(
+            data_dir=str(tmp_path / "data"),
+            wiki_visual_search_enabled=True,
+            wiki_visual_search_trust_remote_code=False,
+            wiki_visual_search_device=None,
+            wiki_visual_search_batch_size=1,
+        ),
+    )
+
+    response = asyncio.run(
+        web_app.wiki_multimodal_search(repo_id, q="repository visual artifact", limit=3)
+    )
+
+    assert response["provider"] == "local"
+    assert response["result_count"] == 1
+    assert response["results"][0]["artifact_path"] == "docs/architecture.svg"
+    assert "embedding" not in response["results"][0]
+
+
+def test_wiki_visual_search_fails_closed_for_unconfigured_wemm(tmp_path, monkeypatch):
+    repo_id = "owner/repo"
+    repo_dir = tmp_path / "repo"
+    docs = repo_dir / "docs"
+    docs.mkdir(parents=True)
+    (docs / "architecture.svg").write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><text>WikiBuilder</text></svg>',
+        encoding="utf-8",
+    )
+    bundle = build_multimodal_repository_knowledge(repo_dir)
+    sidecar = build_visual_vector_index(
+        bundle["knowledge_view"],
+        document_embedder=lambda records: [[1.0, 0.0] for _ in records],
+        provider="wemm/sentence-transformers",
+        model="tencent/WeMM-Embedding-2B",
+        model_revision="a" * 40,
+        dimensions=2,
+        document_modalities=("image", "text"),
+    )
+    output = repo_dir / ".codenib" / "multimodal-visual-vectors.json"
+    save_visual_vector_index(sidecar, output)
+    served = SimpleNamespace(entry=SimpleNamespace(repo_dir=str(repo_dir)))
+
+    class Registry:
+        @contextmanager
+        def pin(self, _repo_id):
+            yield served
+
+    monkeypatch.setattr(web_app.app.state, "registry", Registry(), raising=False)
+    monkeypatch.setattr(
+        web_app,
+        "load_config",
+        lambda: SimpleNamespace(
+            data_dir=str(tmp_path / "data"),
+            wiki_visual_search_enabled=True,
+            wiki_visual_search_trust_remote_code=False,
+            wiki_visual_search_device=None,
+            wiki_visual_search_batch_size=1,
+        ),
+    )
+
+    with pytest.raises(web_app.HTTPException) as error:
+        asyncio.run(web_app.wiki_multimodal_search(repo_id, q="Wiki", limit=3))
+
+    assert error.value.status_code == 503
+    assert "explicit" in str(error.value.detail).lower()
 
 
 def test_wiki_media_storage_keys_cannot_traverse_data_root(tmp_path):

@@ -637,6 +637,13 @@ class QAConfig:
     wiki_visual_facts_api_base: Optional[str] = None
     wiki_visual_facts_api_key: Optional[str] = field(default=None, repr=False)
     wiki_visual_facts_options: Dict[str, Any] = field(default_factory=dict)
+    # Reader-facing semantic search over a persisted visual-vector sidecar.
+    # Local sidecars need no model process. Remote-code WeMM sidecars remain
+    # fail-closed unless the operator explicitly opts into the pinned revision.
+    wiki_visual_search_enabled: bool = True
+    wiki_visual_search_trust_remote_code: bool = False
+    wiki_visual_search_device: Optional[str] = None
+    wiki_visual_search_batch_size: int = 1
     # Optional OpenAI-compatible endpoint for the Ask agent. Provider-native
     # models (for example Vertex or Anthropic) normally leave these unset.
     model_api_base: Optional[str] = None
@@ -714,6 +721,20 @@ class QAConfig:
             self.wiki_visual_facts_enabled,
             source="wiki_visual_facts_enabled",
         )
+        self.wiki_visual_search_enabled = _validated_bool(
+            self.wiki_visual_search_enabled,
+            source="wiki_visual_search_enabled",
+        )
+        self.wiki_visual_search_trust_remote_code = _validated_bool(
+            self.wiki_visual_search_trust_remote_code,
+            source="wiki_visual_search_trust_remote_code",
+        )
+        if (
+            isinstance(self.wiki_visual_search_batch_size, bool)
+            or not isinstance(self.wiki_visual_search_batch_size, int)
+            or not 1 <= self.wiki_visual_search_batch_size <= 64
+        ):
+            raise ValueError("wiki_visual_search_batch_size must be between 1 and 64")
         self.model_options = validate_model_options(
             self.model_options,
             source="model_options",
@@ -848,6 +869,25 @@ def load_config(path: Optional[str] = None) -> QAConfig:
             data.get("wiki_visual_facts_options"),
             source="wiki_visual_facts_options",
         ),
+        wiki_visual_search_enabled=_validated_bool(
+            data.get(
+                "wiki_visual_search_enabled",
+                defaults.wiki_visual_search_enabled,
+            ),
+            source="wiki_visual_search_enabled",
+        ),
+        wiki_visual_search_trust_remote_code=_validated_bool(
+            data.get(
+                "wiki_visual_search_trust_remote_code",
+                defaults.wiki_visual_search_trust_remote_code,
+            ),
+            source="wiki_visual_search_trust_remote_code",
+        ),
+        wiki_visual_search_device=data.get("wiki_visual_search_device"),
+        wiki_visual_search_batch_size=data.get(
+            "wiki_visual_search_batch_size",
+            defaults.wiki_visual_search_batch_size,
+        ),
         model_api_base=data.get("model_api_base"),
         model_api_key=data.get("model_api_key"),
         model_options=validate_model_options(
@@ -920,6 +960,30 @@ def load_config(path: Optional[str] = None) -> QAConfig:
         ]
     if os.environ.get("CODENIB_WIKI_VISUAL_FACTS_API_KEY"):
         cfg.wiki_visual_facts_api_key = os.environ["CODENIB_WIKI_VISUAL_FACTS_API_KEY"]
+    if os.environ.get("CODENIB_WIKI_VISUAL_SEARCH_ENABLED") is not None:
+        cfg.wiki_visual_search_enabled = _parse_env_bool(
+            os.environ["CODENIB_WIKI_VISUAL_SEARCH_ENABLED"],
+            source="CODENIB_WIKI_VISUAL_SEARCH_ENABLED",
+        )
+    if os.environ.get("CODENIB_WIKI_VISUAL_SEARCH_TRUST_REMOTE_CODE") is not None:
+        cfg.wiki_visual_search_trust_remote_code = _parse_env_bool(
+            os.environ["CODENIB_WIKI_VISUAL_SEARCH_TRUST_REMOTE_CODE"],
+            source="CODENIB_WIKI_VISUAL_SEARCH_TRUST_REMOTE_CODE",
+        )
+    if os.environ.get("CODENIB_WIKI_VISUAL_SEARCH_DEVICE"):
+        cfg.wiki_visual_search_device = os.environ["CODENIB_WIKI_VISUAL_SEARCH_DEVICE"]
+    if os.environ.get("CODENIB_WIKI_VISUAL_SEARCH_BATCH_SIZE"):
+        try:
+            batch_size = int(os.environ["CODENIB_WIKI_VISUAL_SEARCH_BATCH_SIZE"])
+        except ValueError as exc:
+            raise ValueError(
+                "CODENIB_WIKI_VISUAL_SEARCH_BATCH_SIZE must be an integer"
+            ) from exc
+        if not 1 <= batch_size <= 64:
+            raise ValueError(
+                "CODENIB_WIKI_VISUAL_SEARCH_BATCH_SIZE must be between 1 and 64"
+            )
+        cfg.wiki_visual_search_batch_size = batch_size
     if os.environ.get("CODENIB_DEMO_API_BASE"):
         cfg.model_api_base = os.environ["CODENIB_DEMO_API_BASE"]
     if os.environ.get("CODENIB_DEMO_API_KEY"):

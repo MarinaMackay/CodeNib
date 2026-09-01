@@ -249,6 +249,28 @@ export interface WikiVisualCodeBinding {
   evidence: string;
 }
 
+export interface WikiVisualSearchResult {
+  artifact_path: string;
+  score: number;
+  caption: string;
+  role_hint: string;
+  mime_type: string;
+  source_paths: string[];
+  symbols: string[];
+  entry_sha256: string;
+}
+
+export interface WikiVisualSearchResponse {
+  query: string;
+  result_count: number;
+  provider: string;
+  model: string;
+  model_revision: string;
+  dimensions: number;
+  index_sha256: string;
+  results: WikiVisualSearchResult[];
+}
+
 export function isHighConfidenceVisualBinding(
   binding: WikiVisualCodeBinding,
 ): boolean {
@@ -390,6 +412,26 @@ export async function fetchWikiMultimodalSummary(
   if (!response.ok) {
     throw await responseError(response, "Failed to load multimodal Wiki data");
   }
+  return response.json();
+}
+
+export async function searchWikiVisuals(
+  repoId: string,
+  query: string,
+  options: { limit?: number; signal?: AbortSignal } = {},
+): Promise<WikiVisualSearchResponse> {
+  if (isStaticRuntime()) {
+    throw new Error("Visual search requires the local CodeNib runtime");
+  }
+  const params = new URLSearchParams({
+    q: query,
+    limit: String(options.limit ?? 6),
+  });
+  const response = await fetch(
+    `${API_BASE}/api/repos/${encodeURIComponent(repoId)}/wiki-multimodal/search?${params}`,
+    { signal: options.signal },
+  );
+  if (!response.ok) throw await responseError(response, "Visual search failed");
   return response.json();
 }
 

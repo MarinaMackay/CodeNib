@@ -7,6 +7,7 @@ import {
   isSourceCheckedWikiPage,
   isHighConfidenceVisualBinding,
   materializedWikiMediaSlots,
+  searchWikiVisuals,
   shouldWithholdWikiPage,
   type WikiMediaSlot,
   type WikiVisualCodeBinding,
@@ -209,6 +210,47 @@ describe("fetchWikiMultimodalSummary", () => {
 
     await expect(fetchWikiMultimodalSummary("owner/repo")).rejects.toThrow(
       "Failed to load multimodal Wiki data (500): Persisted bundle is invalid",
+    );
+  });
+});
+
+describe("searchWikiVisuals", () => {
+  it("sends a bounded semantic query to the repository visual index", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        query: "request flow",
+        result_count: 0,
+        provider: "local",
+        model: "local/hash-visual-embedding-v1",
+        model_revision: "",
+        dimensions: 64,
+        index_sha256: "a".repeat(64),
+        results: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await searchWikiVisuals("owner/repo", "request flow", {
+      limit: 4,
+    });
+
+    expect(result.query).toBe("request flow");
+    expect(fetchMock.mock.calls[0][0]).toMatch(
+      /\/api\/repos\/owner%2Frepo\/wiki-multimodal\/search\?q=request\+flow&limit=4$/,
+    );
+  });
+
+  it("surfaces a disabled or unavailable visual runtime", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: async () => JSON.stringify({ detail: "Pinned WeMM runtime required" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(searchWikiVisuals("repo", "architecture")).rejects.toThrow(
+      "Visual search failed (503): Pinned WeMM runtime required",
     );
   });
 });
