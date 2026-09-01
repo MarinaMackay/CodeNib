@@ -48,6 +48,9 @@ web/*.tsbuildinfo
 !web/package.json
 !web/tsconfig.json
 !web/package-lock.json
+!integrations/pi-codenib/package.json
+!integrations/pi-codenib/package-lock.json
+!integrations/pi-codenib/tsconfig.json
 # Keep committed experiment-run evidence (relocated out of results/).
 !docs/experiments/agent_compile_runs/**/*.json
 .env.local
