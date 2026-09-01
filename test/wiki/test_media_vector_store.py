@@ -208,12 +208,20 @@ def test_non_local_store_requires_query_embedder():
     with pytest.raises(ValueError, match="require a query embedder"):
         create_visual_vector_store(index)
 
+    query_calls = []
+
+    def queries(texts):
+        query_calls.extend(texts)
+        return [[1.0, 0.0] for _ in texts]
+
     store = create_visual_vector_store(
         index,
-        query_embedder=lambda texts: [[1.0, 0.0] for _ in texts],
+        query_embedder=queries,
     )
+    assert query_calls == []
     update_visual_vector_store(store, index)
     assert visual_vector_search_results(store, index, "component", limit=1)
+    assert query_calls == ["component"]
 
 
 def test_documents_have_the_strict_schema_8_row_shape():
