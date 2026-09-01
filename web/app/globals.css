@@ -3548,6 +3548,67 @@ a.evidence-row:hover {
   color: var(--accent);
 }
 
+.wiki-storyboard-videos {
+  margin: 0 0 28px;
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, #8b5cf6 28%, var(--border));
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 0% 0%, color-mix(in srgb, #8b5cf6 12%, transparent), transparent 34%),
+    linear-gradient(180deg, var(--bg-surface), var(--bg-muted));
+}
+
+.wiki-storyboard-video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.wiki-storyboard-video-grid > article {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-subtle);
+}
+
+.wiki-storyboard-video-grid video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #0c1321;
+}
+
+.wiki-storyboard-video-meta {
+  display: grid;
+  gap: 5px;
+  padding: 11px;
+}
+
+.wiki-storyboard-video-meta strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wiki-storyboard-video-meta > span,
+.wiki-storyboard-video-meta a,
+.wiki-storyboard-video-meta div > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.wiki-storyboard-video-meta div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wiki-storyboard-video-meta a:hover {
+  color: var(--accent);
+}
+
 .wiki-multimodal-knowledge {
   container-type: inline-size;
   margin: 0 0 28px;

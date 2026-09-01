@@ -19,6 +19,7 @@ import {
   fetchCommits,
   fetchRepos,
   fetchWikiArchifyOverview,
+  fetchWikiStoryboardVideos,
   fetchWikiMultimodalSummary,
   fetchWikiGraph,
   fetchWikiPage,
@@ -35,6 +36,7 @@ import {
   type RepoInfo,
   type WikiMediaSlot,
   type WikiArchifyOverview,
+  type WikiStoryboardVideoManifest,
   type WikiMultimodalSummary,
   type WikiVisualSearchResponse,
   type WikiPage,
@@ -183,6 +185,73 @@ function ArchifyOverview({ document }: { document: WikiArchifyOverview }) {
             })}
           </article>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function StoryboardVideoGallery({
+  manifest,
+  repo,
+}: {
+  manifest: WikiStoryboardVideoManifest;
+  repo: RepoInfo | null;
+}) {
+  const visibleVideos = [...manifest.videos]
+    .sort((left, right) => right.source_citations.length - left.source_citations.length)
+    .slice(0, 6);
+  return (
+    <section className="wiki-storyboard-videos" aria-labelledby="wiki-video-title">
+      <div className="wiki-archify-head">
+        <div>
+          <span className="wiki-multimodal-kicker">Rendered locally from validated plans</span>
+          <h2 id="wiki-video-title">Source-grounded code walkthroughs</h2>
+          <p>
+            Real MP4 assets compiled from the repository&apos;s typed storyboard frames.
+          </p>
+        </div>
+        <span className="wiki-archify-profile mono">
+          {visibleVideos.length === manifest.video_count
+            ? `${manifest.video_count} video${manifest.video_count === 1 ? "" : "s"}`
+            : `${visibleVideos.length} of ${manifest.video_count} videos`}
+        </span>
+      </div>
+      <div className="wiki-storyboard-video-grid">
+        {visibleVideos.map((video) => {
+          const src = mediaAssetUrl(video.uri);
+          return (
+            <article key={video.content_sha256}>
+              {src && (
+                <video controls preload="metadata" src={src}>
+                  Video preview is unavailable in this browser.
+                </video>
+              )}
+              <div className="wiki-storyboard-video-meta">
+                <strong>{video.artifact_path}</strong>
+                <span className="mono">
+                  {(video.duration_ms / 1000).toFixed(1)}s · {video.frame_count} frames · {video.renderer}
+                </span>
+                <div>
+                  {video.source_citations.slice(0, 6).map((path) => {
+                    const url = ghFileUrl(
+                      repo?.repo,
+                      repo?.source_url,
+                      repo?.base_commit,
+                      path,
+                    );
+                    return url ? (
+                      <a key={path} href={url} target="_blank" rel="noreferrer" className="mono">
+                        {path} ↗
+                      </a>
+                    ) : (
+                      <span key={path} className="mono">{path}</span>
+                    );
+                  })}
+                </div>
+              </div>
+            </article>
+          );
+        })}
       </div>
     </section>
   );
@@ -777,6 +846,9 @@ export default function WikiPageView({
   const [archifyOverview, setArchifyOverview] =
     useState<WikiArchifyOverview | null>(null);
   const [archifyError, setArchifyError] = useState<string | null>(null);
+  const [storyboardVideos, setStoryboardVideos] =
+    useState<WikiStoryboardVideoManifest | null>(null);
+  const [storyboardVideoError, setStoryboardVideoError] = useState<string | null>(null);
   const commitCost = commitEvidence(commits, selectedCommit);
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -788,6 +860,8 @@ export default function WikiPageView({
     setMultimodalError(null);
     setArchifyOverview(null);
     setArchifyError(null);
+    setStoryboardVideos(null);
+    setStoryboardVideoError(null);
     const controller = new AbortController();
 
     fetchRepos()
@@ -820,6 +894,15 @@ export default function WikiPageView({
       .catch((cause) => {
         if (!cancelled && cause instanceof Error && cause.name !== "AbortError") {
           setArchifyError(cause.message);
+        }
+      });
+    fetchWikiStoryboardVideos(repoId, { signal: controller.signal })
+      .then((manifest) => {
+        if (!cancelled) setStoryboardVideos(manifest);
+      })
+      .catch((cause) => {
+        if (!cancelled && cause instanceof Error && cause.name !== "AbortError") {
+          setStoryboardVideoError(cause.message);
         }
       });
     setTocLoading(true);
@@ -1317,6 +1400,14 @@ export default function WikiPageView({
               {activeId === "overview" && archifyError && (
                 <div className="wiki-multimodal-error" role="status">
                   Architecture overview is unavailable: {archifyError}
+                </div>
+              )}
+              {activeId === "overview" && storyboardVideos && (
+                <StoryboardVideoGallery manifest={storyboardVideos} repo={repo} />
+              )}
+              {activeId === "overview" && storyboardVideoError && (
+                <div className="wiki-multimodal-error" role="status">
+                  Storyboard videos are unavailable: {storyboardVideoError}
                 </div>
               )}
               {activeId === "overview" && multimodalSummary && (

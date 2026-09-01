@@ -369,10 +369,25 @@ focus, and source citations down to path, symbol, and line. Relation frames are
 created only for validated graph edges. Node-only plans instead produce entity
 frames that explicitly avoid inferring unseen relationships. Weak lexical
 bindings remain visible in graph metadata but are not promoted to storyboard
-citations; exact or higher-confidence custom grounding is required. The resulting
-manifest is a shot-list contract for a future image/video backend; it does not
-claim that video has already been rendered. The Markdown files let reviewers
-inspect the same production plan without a model key.
+citations; exact or higher-confidence custom grounding is required. The
+Markdown files let reviewers inspect the same production plan without a model
+key. To compile those validated frames into real, locally playable MP4 assets,
+install `ffmpeg` and add the video output directory:
+
+```text
+python scripts/build_multimodal_knowledge.py /path/to/repository \
+  --output /tmp/multimodal-knowledge.json \
+  --visual-storyboard-output /tmp/visual-storyboards.json \
+  --visual-storyboard-video-dir \
+    /path/to/repository/.codenib/wiki-storyboard-videos
+```
+
+The renderer creates deterministic title-card frames with narration and source
+evidence, compiles them with `ffmpeg`, and records the storyboard hash, MP4
+hash, duration, dimensions, frame count, citations, and renderer version in
+`manifest.json`. The local Wiki authenticates that manifest and every MP4 before
+showing the video gallery in Overview. It rejects linked, missing, oversized,
+or modified files instead of serving unverified video bytes.
 
 To expose a validated bundle in the local Wiki overview, write it to the
 repository-local discovery path and then serve the Wiki normally:

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchEdgeLabel,
   fetchWikiArchifyOverview,
+  fetchWikiStoryboardVideos,
   fetchWikiMultimodalSummary,
   fetchWikiTree,
   fetchWikiPage,
@@ -288,6 +289,36 @@ describe("fetchWikiArchifyOverview", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchWikiArchifyOverview("owner/repo")).resolves.toBeNull();
+  });
+});
+
+describe("fetchWikiStoryboardVideos", () => {
+  it("loads the authenticated local video gallery", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        schema: "codenib.storyboard-video-manifest.v1",
+        storyboard_manifest_sha256: "a".repeat(64),
+        video_count: 1,
+        videos: [],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchWikiStoryboardVideos("owner/repo");
+
+    expect(result?.video_count).toBe(1);
+    expect(fetchMock.mock.calls[0][0]).toMatch(
+      /\/api\/repos\/owner%2Frepo\/wiki-storyboard-videos$/,
+    );
+  });
+
+  it("returns null when no real videos were rendered", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchWikiStoryboardVideos("owner/repo")).resolves.toBeNull();
   });
 });
 

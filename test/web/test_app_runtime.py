@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import threading
@@ -1580,6 +1581,68 @@ def test_wiki_archify_overview_rejects_invalid_sidecar(tmp_path, monkeypatch):
 
     assert error.value.status_code == 500
     assert "invalid" in str(error.value.detail).lower()
+
+
+def test_wiki_storyboard_video_manifest_and_asset_are_authenticated(
+    tmp_path, monkeypatch
+):
+    repo_id = "owner/repo"
+    repo_dir = tmp_path / "repo"
+    video_dir = repo_dir / ".codenib" / "wiki-storyboard-videos"
+    video_dir.mkdir(parents=True)
+    video_bytes = b"\x00\x00\x00\x18ftypmp42" + b"video-payload"
+    filename = "001-runtime.mp4"
+    (video_dir / filename).write_bytes(video_bytes)
+    manifest = {
+        "schema": "codenib.storyboard-video-manifest.v1",
+        "storyboard_manifest_sha256": "a" * 64,
+        "video_count": 1,
+        "videos": [
+            {
+                "schema": "codenib.storyboard-video-provenance.v1",
+                "renderer": "local/ffmpeg-storyboard-v1",
+                "storyboard_sha256": "b" * 64,
+                "artifact_path": "docs/runtime.svg",
+                "output_path": filename,
+                "mime_type": "video/mp4",
+                "content_sha256": hashlib.sha256(video_bytes).hexdigest(),
+                "size_bytes": len(video_bytes),
+                "width": 960,
+                "height": 540,
+                "fps": 24,
+                "frame_count": 3,
+                "duration_ms": 12000,
+                "source_citations": ["codenib/web/app.py"],
+                "ffmpeg_version": "ffmpeg version test",
+            }
+        ],
+    }
+    (video_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    served = SimpleNamespace(entry=SimpleNamespace(repo_dir=str(repo_dir)))
+
+    class Registry:
+        @contextmanager
+        def pin(self, observed_repo_id):
+            assert observed_repo_id == repo_id
+            yield served
+
+    monkeypatch.setattr(web_app.app.state, "registry", Registry(), raising=False)
+    monkeypatch.setattr(
+        web_app, "load_config", lambda: SimpleNamespace(data_dir=str(tmp_path / "data"))
+    )
+
+    listing = asyncio.run(web_app.wiki_storyboard_videos(repo_id))
+    response = asyncio.run(web_app.wiki_storyboard_video_asset(repo_id, filename))
+
+    assert listing["video_count"] == 1
+    assert listing["videos"][0]["uri"].endswith(filename)
+    assert response.body == video_bytes
+    assert response.media_type == "video/mp4"
+
+    (video_dir / filename).write_bytes(video_bytes + b"tampered")
+    with pytest.raises(web_app.HTTPException) as error:
+        asyncio.run(web_app.wiki_storyboard_videos(repo_id))
+    assert error.value.status_code == 500
 
 
 def test_wiki_multimodal_bundle_rejects_invalid_persisted_data(tmp_path, monkeypatch):

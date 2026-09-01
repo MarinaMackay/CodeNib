@@ -309,6 +309,32 @@ export interface WikiArchifyOverview {
   connections: WikiArchifyConnection[];
 }
 
+export interface WikiStoryboardVideo {
+  schema: "codenib.storyboard-video-provenance.v1";
+  renderer: string;
+  storyboard_sha256: string;
+  artifact_path: string;
+  output_path: string;
+  uri: string;
+  mime_type: "video/mp4";
+  content_sha256: string;
+  size_bytes: number;
+  width: number;
+  height: number;
+  fps: number;
+  frame_count: number;
+  duration_ms: number;
+  source_citations: string[];
+  ffmpeg_version: string;
+}
+
+export interface WikiStoryboardVideoManifest {
+  schema: "codenib.storyboard-video-manifest.v1";
+  storyboard_manifest_sha256: string;
+  video_count: number;
+  videos: WikiStoryboardVideo[];
+}
+
 export function isHighConfidenceVisualBinding(
   binding: WikiVisualCodeBinding,
 ): boolean {
@@ -485,6 +511,22 @@ export async function fetchWikiArchifyOverview(
   if (response.status === 404) return null;
   if (!response.ok) {
     throw await responseError(response, "Failed to load Archify overview");
+  }
+  return response.json();
+}
+
+export async function fetchWikiStoryboardVideos(
+  repoId: string,
+  opts: { signal?: AbortSignal } = {},
+): Promise<WikiStoryboardVideoManifest | null> {
+  if (isStaticRuntime()) return null;
+  const response = await fetch(
+    `${API_BASE}/api/repos/${encodeURIComponent(repoId)}/wiki-storyboard-videos`,
+    { signal: opts.signal },
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw await responseError(response, "Failed to load storyboard videos");
   }
   return response.json();
 }

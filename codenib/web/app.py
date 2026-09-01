@@ -55,6 +55,10 @@ from ..wiki.media_vector import (
     load_visual_vector_index,
     search_visual_vector_index,
 )
+from ..wiki.media_video import (
+    load_storyboard_video_manifest,
+    read_storyboard_video_asset,
+)
 from ..wiki.media_wemm import WEMM_VISUAL_VECTOR_PROVIDER, WeMMVisualEmbeddingBackend
 from ..wiki.narrator import Narrator
 from ..wiki.sqlite_store import SQLiteWikiStore
@@ -103,6 +107,7 @@ _WIKI_MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".png": "image/png",
     ".svg": "image/svg+xml",
+    ".mp4": "video/mp4",
 }
 
 logger = get_logger(__name__)
@@ -702,6 +707,25 @@ def _wiki_archify_overview_paths(config, repo_id: str, bundle) -> tuple[Path, ..
     return tuple(candidates)
 
 
+def _wiki_storyboard_video_manifest_paths(
+    config, repo_id: str, bundle
+) -> tuple[Path, ...]:
+    """Return deterministic locations for locally rendered video manifests."""
+
+    data_root = Path(os.path.abspath(config.data_dir)) / "multimodal_knowledge"
+    repo_key = hashlib.sha256(repo_id.encode("utf-8")).hexdigest()
+    candidates = [data_root / f"{repo_key}.storyboard-videos" / "manifest.json"]
+    repo_dir = str(getattr(getattr(bundle, "entry", None), "repo_dir", "") or "")
+    if repo_dir:
+        candidates.append(
+            Path(os.path.abspath(repo_dir))
+            / ".codenib"
+            / "wiki-storyboard-videos"
+            / "manifest.json"
+        )
+    return tuple(candidates)
+
+
 def _load_wiki_archify_overview(config, repo_id: str, bundle) -> dict | None:
     """Load the first validated Archify sidecar available to this checkout."""
 
@@ -720,6 +744,28 @@ def _load_wiki_archify_overview(config, repo_id: str, bundle) -> dict | None:
             raise HTTPException(
                 status_code=500,
                 detail="The persisted Wiki Archify overview is invalid",
+            ) from exc
+    return None
+
+
+def _load_wiki_storyboard_videos(
+    config, repo_id: str, bundle
+) -> tuple[dict, Path] | None:
+    for path in _wiki_storyboard_video_manifest_paths(config, repo_id, bundle):
+        if not os.path.lexists(path):
+            continue
+        try:
+            return load_storyboard_video_manifest(path), path
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "Invalid Wiki storyboard videos for %s at %s: %s",
+                repo_id,
+                path,
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="The persisted Wiki storyboard video manifest is invalid",
             ) from exc
     return None
 
@@ -1030,6 +1076,18 @@ def _safe_media_filename(value: str) -> str:
     if Path(filename).suffix.lower() not in _WIKI_MEDIA_TYPES:
         raise HTTPException(status_code=404, detail="media asset not found")
     return filename
+
+
+def _safe_storyboard_video_filename(value: str) -> str:
+    if (
+        not value
+        or len(value.encode("utf-8")) > 128
+        or not value.isascii()
+        or any(not (character.isalnum() or character in "._-") for character in value)
+        or Path(value).suffix.lower() != ".mp4"
+    ):
+        raise HTTPException(status_code=404, detail="storyboard video not found")
+    return value
 
 
 def _edge_labeler(repo_id: str, commit: str | None = None, bundle=None):
@@ -1437,6 +1495,68 @@ async def wiki_archify_overview(repo_id: str) -> dict:
                 detail="No Archify overview is available for this repository",
             )
         return document
+
+
+@app.get("/api/repos/{repo_id}/wiki-storyboard-videos")
+async def wiki_storyboard_videos(repo_id: str) -> dict:
+    """List authenticated, locally rendered storyboard videos for Overview."""
+
+    with _pinned_bundle(repo_id) as bundle:
+        loaded = await _run_pinned_thread(
+            _load_wiki_storyboard_videos,
+            load_config(),
+            repo_id,
+            bundle,
+        )
+        if loaded is None:
+            raise HTTPException(
+                status_code=404,
+                detail="No storyboard videos are available for this repository",
+            )
+        manifest, _path = loaded
+        videos = []
+        for video in manifest["videos"]:
+            videos.append(
+                {
+                    **video,
+                    "uri": (
+                        f"api/repos/{quote(repo_id, safe='')}/"
+                        f"wiki-storyboard-videos/{quote(video['output_path'], safe='')}"
+                    ),
+                }
+            )
+        return {**manifest, "videos": videos}
+
+
+@app.get("/api/repos/{repo_id}/wiki-storyboard-videos/{filename}")
+async def wiki_storyboard_video_asset(repo_id: str, filename: str) -> Response:
+    """Serve one MP4 only after manifest and content authentication."""
+
+    safe_filename = _safe_storyboard_video_filename(filename)
+    with _pinned_bundle(repo_id) as bundle:
+        loaded = await _run_pinned_thread(
+            _load_wiki_storyboard_videos,
+            load_config(),
+            repo_id,
+            bundle,
+        )
+        if loaded is None:
+            raise HTTPException(status_code=404, detail="storyboard video not found")
+        _manifest, manifest_path = loaded
+        payload = await _run_pinned_thread(
+            read_storyboard_video_asset, manifest_path, safe_filename
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail="storyboard video not found")
+        return Response(
+            content=payload,
+            media_type="video/mp4",
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": "inline",
+            },
+        )
 
 
 @app.get("/api/repos/{repo_id}/wiki/{page_id}/graph")

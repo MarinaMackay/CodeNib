@@ -104,6 +104,14 @@ from .media_vector_store import (
     visual_vector_search_results,
     visual_vector_store_identity,
 )
+from .media_video import (
+    VIDEO_RENDERER_ID,
+    load_storyboard_video_manifest,
+    read_storyboard_video_asset,
+    render_visual_storyboard_manifest_videos,
+    render_visual_storyboard_video,
+    validate_storyboard_video_manifest,
+)
 from .media_vlm import (
     OpenAICompatibleVisualFactExtractor,
     visual_fact_extractor_from_config,
@@ -135,6 +143,7 @@ __all__ = [
     "VisualQueryEmbedding",
     "VisualVectorDocument",
     "VISUAL_VECTOR_STORE_SCHEMA",
+    "VIDEO_RENDERER_ID",
     "WeMMVisualEmbeddingBackend",
     "build_media_evidence_pack",
     "build_index_backed_visual_grounding_scorer",
@@ -165,8 +174,12 @@ __all__ = [
     "merge_incremental_visual_facts",
     "multimodal_tool_schemas",
     "plan_incremental_visual_fact_update",
+    "read_storyboard_video_asset",
+    "render_visual_storyboard_manifest_videos",
+    "render_visual_storyboard_video",
     "load_multimodal_knowledge_bundle",
     "load_archify_architecture",
+    "load_storyboard_video_manifest",
     "load_visual_graph_manifest",
     "load_visual_storyboard_manifest",
     "save_archify_architecture",
@@ -180,6 +193,7 @@ __all__ = [
     "update_visual_vector_store",
     "validate_multimodal_knowledge_bundle",
     "validate_archify_architecture",
+    "validate_storyboard_video_manifest",
     "validate_visual_graph_manifest",
     "validate_visual_graph_plan",
     "validate_visual_storyboard",

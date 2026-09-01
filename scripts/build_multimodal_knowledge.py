@@ -31,6 +31,7 @@ from codenib.wiki import (
     compile_visual_graph_plan_to_archify,
     compile_visual_graph_plan_to_mermaid,
     compile_visual_storyboard_to_markdown,
+    render_visual_storyboard_manifest_videos,
     save_archify_architecture,
     save_multimodal_knowledge_bundle,
     save_visual_graph_manifest,
@@ -137,6 +138,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional directory to write one inspectable Markdown shot list per asset",
     )
     parser.add_argument(
+        "--visual-storyboard-video-dir",
+        default=None,
+        help="Optional directory to render real local MP4 videos with ffmpeg",
+    )
+    parser.add_argument(
+        "--ffmpeg",
+        default=None,
+        help="Optional absolute path to the ffmpeg executable",
+    )
+    parser.add_argument(
         "--visual-graph-archify-dir",
         default=None,
         help="Optional directory to write Archify architecture JSON per plan",
@@ -189,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         or args.visual_graph_mermaid_dir
         or args.visual_storyboard_output
         or args.visual_storyboard_markdown_dir
+        or args.visual_storyboard_video_dir
         or args.visual_graph_archify_dir
     ):
         visual_graph_manifest = build_visual_graph_manifest(bundle["knowledge_view"])
@@ -197,7 +209,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.visual_graph_mermaid_dir:
         _write_mermaid_plans(visual_graph_manifest, args.visual_graph_mermaid_dir)
     visual_storyboard_manifest = None
-    if args.visual_storyboard_output or args.visual_storyboard_markdown_dir:
+    if (
+        args.visual_storyboard_output
+        or args.visual_storyboard_markdown_dir
+        or args.visual_storyboard_video_dir
+    ):
         visual_storyboard_manifest = build_visual_storyboard_manifest(
             visual_graph_manifest
         )
@@ -209,6 +225,16 @@ def main(argv: list[str] | None = None) -> int:
         _write_storyboards(
             visual_storyboard_manifest, args.visual_storyboard_markdown_dir
         )
+    video_manifest = None
+    if args.visual_storyboard_video_dir:
+        try:
+            video_manifest = render_visual_storyboard_manifest_videos(
+                visual_storyboard_manifest,
+                args.visual_storyboard_video_dir,
+                ffmpeg=args.ffmpeg,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.visual_graph_archify_dir:
         try:
             _write_archify_plans(visual_graph_manifest, args)
@@ -226,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
         counts["visual_graph_plans"] = visual_graph_manifest["plan_count"]
     if visual_storyboard_manifest is not None:
         counts["visual_storyboards"] = visual_storyboard_manifest["storyboard_count"]
+    if video_manifest is not None:
+        counts["storyboard_videos"] = video_manifest["video_count"]
     print(json.dumps(counts, sort_keys=True))
     return 0
 
